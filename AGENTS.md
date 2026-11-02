@@ -104,7 +104,9 @@ A change is not done until the document it contradicts is corrected in the same 
 
 ## Git
 
-Existing history is the convention: imperative, capitalized, sentence-style subjects, no prefixes. Keep it rather than introducing a scheme retroactively.
+The repository was re-initialised, so these rules define the convention from the
+first commit rather than describing a history. There is no earlier scheme to
+imitate or preserve.
 
 - **One logical change per commit.** A code slice, its test and the doc it contradicts are one commit. Two unrelated documents are two commits.
 - **Subject**: `Add ...`, `Fix ...`, `Document ...`, `Remove ...`. Imperative mood, capitalized, no trailing period, 72 characters maximum.
