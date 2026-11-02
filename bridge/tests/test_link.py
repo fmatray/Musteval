@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+
 import pytest
 
 from bridge.link import FakeTransport, SerialTransport, Transport
@@ -91,7 +94,7 @@ async def test_fake_transport_refuses_writes_before_open():
 async def test_fake_transport_feed_adds_lines_later():
     transport = FakeTransport()
     await transport.open()
-    transport.feed(b"late")
+    transport.feed(b"late\n")
     assert await transport.read_line() == b"late"
     await transport.close()
 
@@ -132,6 +135,23 @@ async def test_logged_lines_are_parseable_ndjson():
     assert json.loads(seen[0]) == {"v": 1, "type": "hello", "id": "b-1", "ts": 0}
 
 
+async def test_feed_reassembles_a_line_split_across_chunks():
+    """`feed` must not lose bytes when a caller hands it a partial line."""
+    transport = FakeTransport()
+    await transport.open()
+    transport.feed(b'{"v":1', b',"type":"pong"}', b"\n")
+    assert await transport.read_line() == b'{"v":1,"type":"pong"}'
+    await transport.close()
+
+
+async def test_on_write_replies_are_reassembled_too():
+    transport = FakeTransport(on_write=lambda line: [b"partial", b"-reply\n"])
+    await transport.open()
+    await transport.write_line(b"x")
+    assert await transport.read_line() == b"partial-reply"
+    await transport.close()
+
+
 async def test_read_logging_is_silent_without_a_sink():
     transport = FakeTransport([b"line\n"])
     await transport.open()
@@ -150,6 +170,96 @@ async def test_serial_transport_reports_a_missing_port():
 
 async def test_serial_transport_reads_nothing_when_closed():
     assert await SerialTransport("/dev/null").read_line() is None
+
+
+async def test_serial_transport_carries_a_line_across_a_real_fd():
+    """The reader thread reassembles a line written by the other end."""
+    master, slave = os.openpty()
+    path = os.ttyname(slave)
+    transport = SerialTransport(path, read_timeout=0.05)
+    try:
+        await transport.open()
+        os.write(master, b'{"v":1,')
+        os.write(master, b'"type":"pong"}\n')
+        line = await asyncio.wait_for(transport.read_line(), 2)
+        assert line == b'{"v":1,"type":"pong"}'
+        await transport.write_line(b"to-device")
+        assert os.read(master, 64) == b"to-device\n"
+    finally:
+        await transport.close()
+        for fd in (master, slave):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+async def test_serial_transport_reports_a_write_on_a_closed_port():
+    transport = SerialTransport("/dev/definitely-not-a-port")
+    with pytest.raises(TransportError, match="not open"):
+        await transport.write_line(b"x")
+
+
+async def test_serial_transport_survives_the_peer_closing():
+    """A vanished peer is reported as `None`, not an exception out of the thread."""
+    master, slave = os.openpty()
+    transport = SerialTransport(os.ttyname(slave), read_timeout=0.02)
+    await transport.open()
+    os.close(slave)
+    # Closing the master is what makes the slave read fail, as an unplug does.
+    os.close(master)
+    assert await asyncio.wait_for(transport.read_line(), 2) is None
+    await transport.close()
+
+
+# -- port autodetection ------------------------------------------------
+
+
+class _Port:
+    def __init__(self, device: str, vid: int | None) -> None:
+        self.device = device
+        self.vid = vid
+
+
+def _patch_comports(monkeypatch, ports) -> None:
+    import serial.tools.list_ports as list_ports
+
+    monkeypatch.setattr(list_ports, "comports", lambda: ports)
+
+
+def test_find_port_skips_a_device_that_is_neither(monkeypatch):
+    """A motherboard UART with no VID is not a candidate; the USB one is."""
+    from bridge.link import find_port
+
+    _patch_comports(
+        monkeypatch,
+        [_Port("/dev/ttyS0", None), _Port("/dev/ttyUSB9", 0x1A86)],
+    )
+    assert find_port() == "/dev/ttyUSB9"
+
+
+def test_find_port_returns_the_first_candidate(monkeypatch):
+    from bridge.link import find_port
+
+    _patch_comports(
+        monkeypatch,
+        [_Port("/dev/ttyACM3", 0x303A), _Port("/dev/ttyACM4", 0x303A)],
+    )
+    assert find_port() == "/dev/ttyACM3"
+
+
+def test_find_port_accepts_a_ttyacm_without_a_vid(monkeypatch):
+    from bridge.link import find_port
+
+    _patch_comports(monkeypatch, [_Port("/dev/ttyACM7", None)])
+    assert find_port() == "/dev/ttyACM7"
+
+
+def test_find_port_returns_none_when_nothing_matches(monkeypatch):
+    from bridge.link import find_port
+
+    _patch_comports(monkeypatch, [_Port("/dev/ttyS0", None)])
+    assert find_port() is None
 
 
 # -- the --target guard (`10-test-agent.md` §3) -------------------------

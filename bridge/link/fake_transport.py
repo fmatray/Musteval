@@ -33,12 +33,12 @@ class FakeTransport(Transport):
         self.written: list[bytes] = []
         self._on_write = on_write
         self._opened = False
+        self._inbound = LineAssembler(MAX_RX_BYTES)
 
     async def open(self) -> None:
         self._opened = True
-        assembler = LineAssembler(MAX_RX_BYTES)
         for chunk in self._scripted:
-            for line in assembler.feed(chunk):
+            for line in self._inbound.feed(chunk):
                 self._lines.put_nowait(line)
 
     async def close(self) -> None:
@@ -67,10 +67,15 @@ class FakeTransport(Transport):
         self.written.append(line)
         if self._on_write is not None:
             for reply in self._on_write(line) or ():
-                for framed in LineAssembler(MAX_RX_BYTES).feed(reply):
+                for framed in self._inbound.feed(reply):
                     self._lines.put_nowait(framed)
 
-    def feed(self, *lines: bytes) -> None:
-        """Enqueue inbound lines after construction, newline optional."""
-        for line in lines:
-            self._lines.put_nowait(line[:-1] if line.endswith(b"\n") else line)
+    def feed(self, *chunks: bytes) -> None:
+        """Enqueue inbound bytes after construction, through the real assembler.
+
+        A chunk may end mid-line; the assembler holds it until the newline
+        arrives, exactly as the serial reader would.
+        """
+        for chunk in chunks:
+            for line in self._inbound.feed(chunk):
+                self._lines.put_nowait(line)
