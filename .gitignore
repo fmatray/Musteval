@@ -1,0 +1,23 @@
+# Python (bridge)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ESP-IDF (firmware)
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+*.bin
+*.elf
+*.map
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp
