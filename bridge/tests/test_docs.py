@@ -121,21 +121,98 @@ def test_encode_round_trips_every_catalog_type():
 
 # -- 03 config examples respect their own bounds -----------------------
 
+# `03-config.md`'s Full schema table, transcribed by hand into what a test can
+# check (`AGENTS.md`, cross-doc invariant 3). Every entry restates one row; the
+# test below fails if a row is added to the doc and not to this map, so the two
+# cannot drift. Prose parsing was tried first and was wrong: `wifi.retry_backoff_ms`
+# reads "1..6 entries, 100..60000 each", whose first pair is a length, not a value.
+#
+# `[]` means "every element"; a bare `[]`-keyed entry (`wifi.networks[]`) bounds the
+# list's own length.
+BOUNDS: dict[str, tuple[float, float]] = {
+    "version": (1, 1),
+    "device.name": (1, 32),
+    "wifi.connect_timeout_ms": (1000, 120000),
+    "wifi.retry_backoff_ms[]": (100, 60000),
+    "wifi.networks[]": (1, 8),
+    "wifi.networks[].ssid": (1, 32),
+    "wifi.networks[].priority": (0, 100),
+    "ntp.servers[]": (1, 4),
+    "ntp.sync_interval_s": (60, 86400),
+    "ntp.sync_timeout_ms": (100, 60000),
+    "llm.providers[]": (1, 4),
+    "llm.providers[].model": (1, 64),
+    "llm.providers[].timeout_ms": (1000, 120000),
+    "llm.providers[].max_output_tokens": (16, 8192),
+    "llm.max_tool_rounds": (1, 16),
+    "llm.max_history_messages": (0, 32),
+    "llm.max_calls_per_hour": (0, 100000),
+    "llm.max_calls_per_day": (0, 1000000),
+    "mcp.servers[]": (0, 4),
+    "mcp.servers[].timeout_ms": (1000, 60000),
+    "agent.max_input_bytes": (256, 4096),
+    "tools.http_allow_hosts[]": (0, 8),
+    "tools.memory_max_bytes": (256, 4096),
+    "sys.safe_mode_after": (2, 10),
+    "serial.max_line_bytes": (512, 4096),
+    "geo.cache_ttl_s": (60, 86400),
+    "geo.timeout_ms": (1000, 15000),
+    "geo.max_bssids": (4, 32),
+    "geo.providers[]": (1, 4),
+    "mqtt.max_servers": (1, 8),
+    "mqtt.servers[].port": (1, 65535),
+    "mqtt.servers[].host": (1, 128),
+    "mqtt.servers[].client_id": (1, 64),
+    "mqtt.servers[].username": (1, 64),
+    "mqtt.servers[].keepalive_s": (10, 300),
+    "mqtt.servers[].topics[]": (0, 8),
+    "mqtt.servers[].topics[].filter": (1, 128),
+}
 
-def _config_bounds() -> dict[str, tuple[float, float]]:
-    """Numeric bounds from `03-config.md`'s Full schema table, keyed by dotted path."""
+# Rows whose bounds are not one numeric pair. Listed so a new row is noticed.
+NON_NUMERIC_ROWS = {
+    "device.log_level",
+    "wifi.networks[].password_ref",
+    "ntp.timezone",
+    "llm.providers[].id",
+    "llm.providers[].base_url",
+    "llm.providers[].api_key_ref",
+    "llm.providers[].token_param",
+    "llm.providers[].extra_body",
+    "mcp.servers[].id",
+    "mcp.servers[].url",
+    "mcp.servers[].enabled",
+    "mcp.servers[].auth_header_ref",
+    "agent.system_prompt",
+    "tools.allow_dangerous",
+    "geo.enabled",
+    "geo.providers[].id",
+    "geo.providers[].kind",
+    "geo.providers[].url",
+    "geo.providers[].api_key_ref",
+    "mqtt.servers[]",
+    "mqtt.servers[].id",
+    "mqtt.servers[].tls",
+    "mqtt.servers[].password_ref",
+    "mqtt.servers[].qos",
+    "mqtt.servers[].topics[].qos",
+    "serial.baud",
+}
+
+
+def _schema_rows() -> list[str]:
+    """Every key row of the Full schema table, which spans `## config.json`."""
     text = _read("03-config.md")
-    section = _section(text, "Full schema")
-    bounds: dict[str, tuple[float, float]] = {}
-    for row in _table_rows(section):
-        key, rng = row[0].strip("`"), row[-1]
-        numbers = re.findall(r"-?\d+(?:\.\d+)?", rng)
-        if len(numbers) >= 2:
-            bounds[key] = (float(numbers[0]), float(numbers[1]))
-    return bounds
+    start = text.index("### Full schema")
+    end = text.index("\n## ", start)
+    section = text[start:end]
+    # Only the schema table's rows are backticked keys; the provider-compatibility
+    # table below it is a matrix of names and booleans.
+    return [row[0].strip("`") for row in _table_rows(section) if row[0].startswith("`")]
 
 
 def _walk(node, prefix=""):
+    """Yield `(path, value)` with `[]` on every list, so paths match the schema."""
     if isinstance(node, dict):
         for key, value in node.items():
             path = f"{prefix}.{key}" if prefix else key
@@ -143,22 +220,54 @@ def _walk(node, prefix=""):
             yield from _walk(value, path)
     elif isinstance(node, list):
         for item in node:
-            yield from _walk(item, prefix)
+            if isinstance(item, (dict, list)):
+                yield from _walk(item, f"{prefix}[]")
+            else:
+                yield f"{prefix}[]", item
+
+
+# `wifi.retry_backoff_ms` is the one row whose table key names the list but whose
+# bound applies to each entry, so it is encoded as the `[]` form.
+KEY_ALIASES = {"wifi.retry_backoff_ms": "wifi.retry_backoff_ms[]"}
+
+
+def test_the_bounds_map_covers_exactly_the_documented_rows():
+    """A row added to `03-config.md` and not encoded here fails this test."""
+    rows = {KEY_ALIASES.get(row, row) for row in _schema_rows()}
+    encoded = set(BOUNDS) | NON_NUMERIC_ROWS
+    assert rows - encoded == set(), f"uncoded rows: {sorted(rows - encoded)}"
+    assert encoded - rows == set(), f"rows that no longer exist: {sorted(encoded - rows)}"
+
+
+def test_a_length_bound_is_not_mistaken_for_a_value_bound():
+    """`wifi.retry_backoff_ms` bounds its entries, not the list length."""
+    assert BOUNDS["wifi.retry_backoff_ms[]"] == (100, 60000)
+    assert "wifi.retry_backoff_ms" not in BOUNDS
 
 
 def test_every_config_example_stays_inside_its_documented_bounds():
-    bounds = _config_bounds()
-    assert bounds, "no numeric bounds parsed from 03-config.md"
+    """`AGENTS.md`, cross-doc invariant 3: the docs are the fixture corpus."""
     text = _read("03-config.md")
-    checked = 0
+    seen: set[str] = set()
     for block in _json_fences(text):
         try:
             example = json.loads(block)
         except json.JSONDecodeError:
             continue
         for path, value in _walk(example):
-            if path in bounds and isinstance(value, (int, float)) and not isinstance(value, bool):
-                low, high = bounds[path]
-                assert low <= value <= high, f"{path}={value} outside [{low}, {high}]"
-                checked += 1
-    assert checked > 0, "no bounded field was exercised"
+            if path not in BOUNDS:
+                continue
+            low, high = BOUNDS[path]
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, list):
+                actual = len(value)
+            elif isinstance(value, (int, float)):
+                actual = value
+            else:
+                continue
+            assert low <= actual <= high, f"{path}={actual} outside [{low}, {high}]"
+            seen.add(path)
+    missing = set(BOUNDS) - seen
+    assert len(seen) >= 20, f"only {len(seen)} bounded paths exercised: {sorted(seen)}"
+    assert not missing or len(missing) < len(BOUNDS), "the walk exercises nothing"
