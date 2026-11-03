@@ -27,6 +27,9 @@ import tty
 from pathlib import Path
 from typing import Any, Iterable
 
+import base64
+import binascii
+
 from bridge.protocol import (
     COMMAND_NAMES,
     MAX_RX_BYTES,
@@ -500,8 +503,25 @@ class TestAgent:
         if name == "sandbox.delete":
             result = {"path": args.get("path"), "deleted": True}
         elif name == "sandbox.write":
-            result = {"path": args.get("path"), "created": args.get("offset", 0) == 0,
-                      "bytes": len(str(args.get("data", "")).encode("utf-8"))}
+            # The device decodes the chunk, so the tool does too: a client that
+            # sent raw text where base64 was owed would otherwise look correct.
+            raw = str(args.get("data", ""))
+            try:
+                chunk = base64.b64decode(raw, validate=True)
+            except (binascii.Error, ValueError):
+                self.reply(
+                    "command.result",
+                    {"name": name, "ok": False,
+                     "error": {"code": "E_PROTOCOL", "message": "data is not base64"},
+                     "duration_ms": 0},
+                    reply_to=frame.id,
+                )
+                return
+            result = {
+                "path": args.get("path"),
+                "created": args.get("offset", 0) == 0,
+                "bytes": len(chunk),
+            }
         else:
             result = dict(STATUS) if name == "status" else {"echo": args}
         self.reply(

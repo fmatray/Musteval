@@ -6,6 +6,7 @@ open `/files`, walk into a directory, edit a file and delete an entry.
 
 from __future__ import annotations
 
+import base64
 import json
 
 from bridge.client import Session
@@ -56,6 +57,7 @@ def _device(line: bytes) -> list[bytes]:
         ]
 
     if name == "sandbox.list":
+        _device.lists.append(args.get("path"))
         path = args.get("path", "/workspace/")
         # The screen sends an already-directory path; the keys below are canonical.
         return result(
@@ -70,19 +72,30 @@ def _device(line: bytes) -> list[bytes]:
                         "truncated": False}}
         )
     if name == "sandbox.write":
+        assert args.get("encoding") == "base64"
+        chunk = base64.b64decode(args["data"])
+        if not args.get("offset"):
+            _device.buffers[args["path"]] = b""
+        _device.buffers[args["path"]] += chunk
         _device.writes.append(args)
-        return result({"result": {"path": args["path"], "created": True, "bytes": 0}})
+        return result(
+            {"result": {"path": args["path"], "created": True, "bytes": len(chunk)}}
+        )
     _device.deleted.append(args["path"])
     return result({"result": {"path": args["path"], "deleted": True}})
 
 
 _device.writes = []  # type: ignore[attr-defined]
 _device.deleted = []  # type: ignore[attr-defined]
+_device.lists = []  # type: ignore[attr-defined]
+_device.buffers = {}  # type: ignore[attr-defined]
 
 
 def _app() -> BridgeApp:
     _device.writes = []  # type: ignore[attr-defined]
     _device.deleted = []  # type: ignore[attr-defined]
+    _device.lists = []  # type: ignore[attr-defined]
+    _device.buffers = {}  # type: ignore[attr-defined]
     session = Session(FakeTransport(on_write=_device), ack_timeout=1, ping_interval=99)
     return BridgeApp(session)
 
@@ -157,8 +170,8 @@ async def test_enter_on_a_file_opens_the_editor_and_ctrl_s_writes_it_back():
         assert _device.writes  # type: ignore[attr-defined]
         written = _device.writes[-1]  # type: ignore[attr-defined]
         assert written["path"] == "/workspace/notes.txt"
-        assert written["data"] == "goodbye"
         assert written["final"] is True
+        assert _device.buffers["/workspace/notes.txt"] == b"goodbye"  # type: ignore[attr-defined]
 
 
 async def test_escape_in_the_editor_writes_nothing():
@@ -217,7 +230,7 @@ async def test_n_creates_a_file_in_the_current_directory():
         await pilot.press("enter")
         await pilot.pause(0.2)
         assert _device.writes[-1]["path"] == "/workspace/new.txt"  # type: ignore[attr-defined]
-        assert _device.writes[-1]["data"] == ""  # type: ignore[attr-defined]
+        assert _device.buffers["/workspace/new.txt"] == b""  # type: ignore[attr-defined]
 
 
 async def test_a_path_outside_the_sandbox_never_reaches_the_device():
@@ -230,3 +243,41 @@ async def test_a_path_outside_the_sandbox_never_reaches_the_device():
         assert "outside /workspace" in "\n".join(
             str(line.text) for line in app.query_one("#chat-log").lines
         )
+
+
+async def test_one_slash_files_issues_one_listing():
+    """`action_show` owns the fetch; the route must not also send one."""
+    app = _app()
+    async with app.run_test() as pilot:
+        await _open_files(pilot, app)
+        assert _device.lists == ["/workspace/"]  # type: ignore[attr-defined]
+
+
+async def test_a_repeated_files_path_refetches_that_directory():
+    app = _app()
+    async with app.run_test() as pilot:
+        await _open_files(pilot, app)
+        app.submit("/files /workspace/runs")
+        await pilot.pause(0.2)
+        screen = app.query_one(FilesScreen)
+        assert screen.current_path() == "/workspace/runs/"
+        assert _device.lists[-1] == "/workspace/runs/"  # type: ignore[attr-defined]
+
+
+async def test_a_file_above_the_chunk_cap_is_staged_in_several_frames():
+    """`04` §4.20 allows 2048 raw bytes per frame; a bigger save must split."""
+    from bridge.protocol import SANDBOX_CHUNK_BYTES
+
+    body = "x" * (SANDBOX_CHUNK_BYTES * 2 + 5)
+    app = _app()
+    async with app.run_test() as pilot:
+        await _open_files(pilot, app)
+        await app.save_file("/workspace/big.txt", body)
+        await pilot.pause(0.2)
+
+        frames = [w for w in _device.writes if w["path"] == "/workspace/big.txt"]  # type: ignore[attr-defined]
+        assert len(frames) == 3
+        assert [f["offset"] for f in frames] == [0, SANDBOX_CHUNK_BYTES, SANDBOX_CHUNK_BYTES * 2]
+        assert [f["final"] for f in frames] == [False, False, True]
+        # `bytes` is the decoded length, so the sum is the file the user typed.
+        assert _device.buffers["/workspace/big.txt"].decode() == body  # type: ignore[attr-defined]

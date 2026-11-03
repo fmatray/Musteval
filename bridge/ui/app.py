@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import time
 from typing import Any
 
@@ -26,6 +28,7 @@ from .modals import (
 )
 from .task_prompt import TaskPrompt
 from ..protocol import (
+    SANDBOX_CHUNK_BYTES,
     SANDBOX_ROOT,
     SandboxPathError,
     sandbox_join,
@@ -695,6 +698,9 @@ class BridgeApp(App):
         self._todo_open = False
         self._seen_lines: set[str] = set()
         self._files_path: str = ""
+        #: Set when `/files <path>` wants a specific directory; `action_show` is
+        #: the one place that fetches, so the screen never lists twice.
+        self._files_target: str = ""
 
     # -- lifecycle ------------------------------------------------------
 
@@ -751,8 +757,12 @@ class BridgeApp(App):
             self._logs().refresh_view()
         if name == "settings" and not self._config_fetched:
             self.run_worker(self._request("config.get"))
-        if name == "files" and not self._files_path:
-            self.run_worker(self.browse(SANDBOX_ROOT))
+        if name == "files":
+            # An explicit `/files <path>` always refetches; a bare `/files` only
+            # fetches the first time, then shows the path the reader left it at.
+            target, self._files_target = self._files_target, ""
+            if target or not self._files_path:
+                self.run_worker(self.browse(target or SANDBOX_ROOT))
 
     async def edit_setting(self, path: str) -> None:
         """Edit one config row: prompt, coerce, then send `config.set`.
@@ -902,17 +912,32 @@ class BridgeApp(App):
         except SandboxPathError as exc:
             self._chat().write(f"[error] {exc}")
             return
-        await self._request(
-            "sandbox.write", {"path": path, "data": "", "offset": 0, "final": True}
-        )
+        await self.save_file(path, "")
         await self.view_file(path)
 
     async def save_file(self, path: str, text: str) -> None:
-        """Write a whole buffer. Staged by the device, committed on `final`."""
-        await self._request(
-            "sandbox.write",
-            {"path": path, "data": text, "encoding": "utf8", "offset": 0, "final": True},
-        )
+        """Stage the whole buffer in `04` §4.20 chunks, committing on the last.
+
+        `data` carries at most `SANDBOX_CHUNK_BYTES` raw bytes per frame, so a
+        file above that is several `sandbox.write` calls rather than one that
+        overruns the cap and comes back `E_PROTOCOL`.
+        """
+        raw = text.encode("utf-8")
+        chunks = [
+            raw[i : i + SANDBOX_CHUNK_BYTES]
+            for i in range(0, len(raw), SANDBOX_CHUNK_BYTES)
+        ] or [b""]
+        for index, chunk in enumerate(chunks):
+            await self._request(
+                "sandbox.write",
+                {
+                    "path": path,
+                    "data": base64.b64encode(chunk).decode("ascii"),
+                    "encoding": "base64",
+                    "offset": index * SANDBOX_CHUNK_BYTES,
+                    "final": index == len(chunks) - 1,
+                },
+            )
 
     def action_back(self) -> None:
         """`05-bridge.md` §6: Esc closes the top modal, then leaves a screen.
@@ -1166,8 +1191,8 @@ class BridgeApp(App):
             except SandboxPathError as exc:
                 self._chat().write(f"✗ {exc}")
                 return
+            self._files_target = target
             self.action_show("files")
-            await self.browse(target)
             return
         if head in LOCAL_COMMANDS:
             self._run_local(head)

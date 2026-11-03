@@ -335,9 +335,12 @@ Opening the screen sends `sandbox.list` for `/workspace/` once. `Enter` on a
 directory descends into it; `Enter` on a file opens it for viewing.
 
 Editing happens in one modal holding a `TextArea`, pre-filled from `sandbox.read`.
-`Ctrl+S` sends `sandbox.write` for the whole buffer, which fits because a sandbox
-file above the read cap is reported `truncated` and refused for editing rather than
-half-saved over the original. `Esc` discards. Nothing is written on navigation, so
+`Ctrl+S` sends `sandbox.write` for the whole buffer, split into `04` §4.20 chunks of
+at most 2048 raw bytes, `base64`-encoded, each carrying its `offset` and the last
+carrying `final:true`. The device therefore commits or leaves the previous file
+intact; a buffer is never half-written by a failed frame. A file the device reported
+`truncated` is refused for editing instead, because saving a partial read would write
+the cut back over the original. `Esc` discards. Nothing is written on navigation, so
 leaving the screen with an open modal cannot silently save.
 
 Deleting asks `y`/`n` first, naming the path, and sends `sandbox.delete`. A

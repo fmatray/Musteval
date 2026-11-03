@@ -19,6 +19,10 @@ from __future__ import annotations
 
 ROOT = "/workspace/"
 
+#: `04` §4.20: the most raw bytes one `sandbox.write` may carry, mirroring
+#: `fs.put` §4.16. A larger file is staged in several frames.
+SANDBOX_CHUNK_BYTES = 2048
+
 
 class SandboxPathError(ValueError):
     """A path that does not resolve strictly inside the agent sandbox."""
