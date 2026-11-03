@@ -95,6 +95,14 @@ The primary interaction pane.
   - `Tab` accepts the completion instead of moving focus, because completing a
     half-typed command is what the composer's suggestion is for. `Shift+Tab`
     keeps its platform meaning.
+  - While a slash command is being typed, the candidate completions are listed
+    above the composer: the command names after `/`, and a command's subcommands
+    after `/tasks ` and the like. The list filters as the user types, shows at
+    most eight rows and ends with a `+N more` row when the list is longer, so it
+    never pushes the conversation off the screen. It is a hint, not a menu: `Tab`
+    accepts the ghost completion, and Enter submits whatever has been typed. The
+    list disappears when the composer is empty and when the typed text stops
+    being a command prefix.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer.
