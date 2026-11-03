@@ -313,14 +313,17 @@ conversation log is never focusable, so `Tab` cannot land on it. `PageUp`,
 | `F5` | Switch to Logs screen |
 | `F6` | Switch to MQTT screen |
 | `Esc` | Close the top modal; otherwise leave a non-Chat screen for Chat; on Chat, cancel the current run |
+| `Ctrl+R` | Force reconnect (close port, clear state, re-handshake) |
+| `Ctrl+Q` | Exit bridge |
+
+The slash commands are the primary route to every screen; the function keys above
+remain as aliases for them.
 
 `Esc` on a modal is bound by the modal, not by the App: `ModalScreen` sets `_modal`,
 which suppresses app-level bindings, so an app-level `Esc` never fires while one is
 open. Every prompt therefore extends `PromptBox` in `bridge/ui/modals.py`, which owns
 that binding and dismisses with a result. Popping the screen instead would leave the
 `push_screen_wait` worker awaiting a future that is never resolved.
-| `Ctrl+R` | Force reconnect (close port, clear state, re-handshake) |
-| `Ctrl+Q` | Exit bridge |
 
 ### 6.2 Screen-Specific Bindings
 
@@ -356,10 +359,10 @@ Slash commands in the Chat input are mapped to protocol frames.
 
 | Command | Protocol Mapping | Args | Note |
 |---|---|---|---|
-| `/status` | `command {name:"status"}` | none | Forces status refresh |
+| `/status` | `command {name:"status"}` | none | Forces status refresh; also switches to the Status screen |
 | `/reload` | `command {name:"reload"}` | none | Re-reads flash configs |
 | `/reboot` | `command {name:"reboot"}` | none | Restarts device |
-| `/tasks` | `command {name:"tasks.list"}` | none | Lists tasks in chat |
+| `/tasks` | `command {name:"tasks.list"}` | none | Lists tasks in chat; also switches to the Tasks screen |
 | `/run <id>` | `command {name:"tasks.run"}` | `id` | Runs a task now |
 | `/tasks add` | `command {name:"tasks.set"}` | `task` | Opens a blank task modal, then sends it |
 | `/tasks set <id>` | `command {name:"tasks.set"}` | `task` | Opens the cached task in a modal, then sends it |
@@ -371,7 +374,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/secret set <k>` | `secret.set` | `key` | Prompts for value (masked) |
 | `/templates` | `command {name:"templates.list"}`| none | Lists prompt templates |
 | `/template <n>` | `command {name:"template.get"}` | `name` | Dumps template text |
-| `/mqtt` | `command {name:"mqtt.status"}` | none | Lists brokers and state |
+| `/mqtt` | `command {name:"mqtt.status"}` | none | Lists brokers and state; also switches to the MQTT screen |
 | `/fs put <p>` | `command {name:"fs.put"}` | `path, data, offset, final` | Uploads a local file to `userfs` in 2 KiB chunks; refuses a path outside the allowlist before sending |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
@@ -385,6 +388,8 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/ping` | `ping` | none | Tests link latency |
 | `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
 | `/cancel` | `cancel` | none | Cancels current run |
+| `/logs` | (Local) | none | Switches to the Logs screen |
+| `/help` | (Local) | none | Switches to the Help screen |
 | `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
 | `/quit` | (Local) | none | Exits TUI |
 
