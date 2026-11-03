@@ -108,8 +108,10 @@ partition table and NVS key pages.
 
 NVS encryption is enabled in v1 and requires this partition (D-OQ1); flash encryption and secure boot are NOT enabled.
 
+`firmware/partitions.csv` holds exactly this table, byte for byte; `#` is the only
+comment form `gen_esp32part.py` accepts, so the fence is valid CSV on its own.
+
 ```c
-/* partitions.csv */
 # Name,    Type, SubType, Offset,   Size,     Flags
 nvs,       data, nvs,     0x9000,   0x6000,
 nvs_keys,  data, nvs_keys, 0xF000,   0x1000,
