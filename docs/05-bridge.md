@@ -205,50 +205,38 @@ Chat input (`/mqtt publish`) or by the agent; the screen has no composer.
 ```
 
 ### 5.6 Help Screen (F1)
-Documentation for keybindings and commands.
 
-**Mockup:**
+The help body is generated from one table, `COMMANDS` in `bridge/ui/help.py`: every
+head `commands.py` accepts and every `LOCAL_COMMANDS` entry appears exactly once, so
+the screen cannot drift from the parser. Each entry carries a `usage`, a one-line
+`summary`, and whether it is local (`05` §7). A command that is accepted but absent
+from the table, or documented but rejected, fails a test rather than a user's memory.
+
+When the longest usage in a group is wider than a column that still fits a terminal,
+each form moves to its own line with the summary indented beneath it. The result
+never exceeds 78 columns, so no line wraps on a narrow terminal.
+
 ```text
-+-----------------------------------------------------------------------+
-| [Help]                                                                |
-+-----------------------------------------------------------------------+
-| F1: Help | F2: Chat | F3: Status | F4: Tasks | F5: Logs | F6: MQTT    |
-| Ctrl+R: Reconnect | Ctrl+Q: Quit                                      |
-|                                                                       |
-| Device Commands:                                                      |
-| /status            - Force refresh status                             |
-| /reload            - Reload device config                             |
-| /reboot            - Restart device                                   |
-| /tasks             - List tasks                                       |
-| /run <id>          - Run a task now                                   |
-| /tasks add         - Add a task (blank modal)                         |
-| /tasks set <id>    - Edit an existing task                            |
-| /tasks enable <id> - Enable a task                                    |
-| /tasks disable <id>- Disable a task                                   |
-| /tasks delete <id> - Delete a task (confirmed)                        |
-| /config get <p>    - Read a config value                              |
-| /config set <p> <v>- Update a config value                            |
-| /secret set <k>    - Enter a secret (masked)                          |
-| /templates         - List prompt templates                            |
-| /template <n>      - Dump a template                                  |
-| /mqtt              - List brokers and state                           |
-| /mqtt publish <srv> <topic> <payload> - Publish a message             |
-| /geo               - Force a fresh location fix                       |
-| /fs put <p>        - Upload a local file to the device                |
-|                                                                       |
-| Local Commands:                                                       |
-| /tools             - List built-in and MCP tools                      |
-| /mcp               - List MCP servers and state                       |
-| /usage             - Token totals for this link session               |
-| /context           - Input size and token usage                       |
-| /todo              - Re-render todo phases and tasks                  |
-| /export            - Write the chat log to a markdown file            |
-| /retry             - Resend the last prompt                           |
-| /ping              - Test link latency                                |
-| /diag              - Heap, safe mode, tool and LLM counters           |
-| /cancel            - Cancel the current run                           |
-| /quit              - Exit the bridge                                  |
-+-----------------------------------------------------------------------+
+F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT
+Ctrl+R Reconnect | Ctrl+Q Quit
+Esc Closes a modal and cancels a run
+
+Device commands
+  /status
+      force a status refresh
+  /tasks
+  /tasks add
+  /tasks set <id>
+  /tasks enable <id>
+  /tasks disable <id>
+  /tasks delete <id>
+      list tasks, or add, set, enable, disable or delete one
+  /run <id>
+      run a task now
+
+Local commands
+  /tools    list built-in and MCP tools
+  /mcp      list MCP servers from the last status
 ```
 
 ## 6. Keybindings
@@ -263,6 +251,7 @@ Documentation for keybindings and commands.
 | `F4` | Switch to Tasks screen |
 | `F5` | Switch to Logs screen |
 | `F6` | Switch to MQTT screen |
+| `Esc` | Close the top modal; otherwise leave a non-Chat screen for Chat; on Chat, cancel the current run |
 | `Ctrl+R` | Force reconnect (close port, clear state, re-handshake) |
 | `Ctrl+Q` | Exit bridge |
 
@@ -272,7 +261,8 @@ Documentation for keybindings and commands.
 |---|---|---|
 | Chat | `Enter` | Send prompt |
 | Chat | `Ctrl+J` | Insert newline in input |
-| Chat | `Esc` | Cancel current agent run (`cancel` message) |
+| Chat | `Right`/`Tab` | Accept the autocomplete suggestion in the composer |
+| Chat | `Esc` | No modal and no other screen on top: cancel the current agent run (`cancel` message) |
 | Chat | `Ctrl+L` | Clear current session scrollback |
 | Status | `R` | Request `status` command |
 | Tasks | `Up`/`Down` | Navigate task list |
@@ -383,7 +373,7 @@ chain, not a selectable list, and the fallback only advances on failure),
 ## 8. Secrets & Redaction
 
 The Bridge follows strict security rules to prevent secret leakage on the host:
-1. **Masked Input**: When `/secret set <key>` is used, the Bridge enters a temporary modal state where characters are replaced by `*`.
+1. **Masked Input**: `/secret set <key>` opens a modal holding a single `password=True` field, so every character renders as `*`. The value is read only through `Screen.dismiss` on Enter; Esc or an empty value dismisses with `None`, and the command is never sent. The parser receives the value afterwards, so no secret is ever a constructor argument, an argument to a logged call, or a rendered line.
 2. **No Echo**: The Bridge never renders the `value` field of a `secret.set` result.
 3. **Log Redaction**: If the device sends a `log` message that accidentally contains a secret (should be prevented by firmware), the bridge cannot detect it; however, the Bridge MUST NOT log its own internal protocol frames to a file unless `--json` (debug) is enabled.
 

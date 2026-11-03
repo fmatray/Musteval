@@ -53,14 +53,14 @@ flowchart LR
 
 | ID | Boundary | Data crossing | Control |
 |---|---|---|---|
-| B1 | User -> bridge process | Keystrokes, displayed transcript | OS user account; bridge holds no secrets |
-| B2 | Bridge -> device over USB CDC | NDJSON envelopes, prompts, `secret.set` values | Line framing and size caps (`E_PROTOCOL`), no authentication in v1 (see section 9) |
-| B3 | Firmware -> flash | Config, prompts, NVS secrets | NVS namespace separation; LittleFS `/workspace/` is the only agent-writable path |
-| B4 | Device -> WiFi AP | Traffic, PSK during association | WPA2/WPA3 as configured by the AP; PSK from NVS only |
-| B5 | Device -> LLM provider | Prompt text, tool definitions, API key | TLS with certificate verification (section 5) |
-| B6 | Device -> MCP server | Tool calls, auth header | TLS with certificate verification; per-server `enabled` |
-| B7 | Model output -> tool executor | Tool names and JSON arguments | Frozen tool surface, gating flags, path confinement (section 6) |
-| B8 | User-authored files -> agent | System prompt, skills, declarative tools | Files are user-owned and trusted at the same level as the firmware config |
+| B1 | User → bridge process | Keystrokes, displayed transcript | OS user account; bridge holds no secrets |
+| B2 | Bridge → device over USB CDC | NDJSON envelopes, prompts, `secret.set` values | Line framing and size caps (`E_PROTOCOL`), no authentication in v1 (see section 9) |
+| B3 | Firmware → flash | Config, prompts, NVS secrets | NVS namespace separation; LittleFS `/workspace/` is the only agent-writable path |
+| B4 | Device → WiFi AP | Traffic, PSK during association | WPA2/WPA3 as configured by the AP; PSK from NVS only |
+| B5 | Device → LLM provider | Prompt text, tool definitions, API key | TLS with certificate verification (section 5) |
+| B6 | Device → MCP server | Tool calls, auth header | TLS with certificate verification; per-server `enabled` |
+| B7 | Model output → tool executor | Tool names and JSON arguments | Frozen tool surface, gating flags, path confinement (section 6) |
+| B8 | User-authored files → agent | System prompt, skills, declarative tools | Files are user-owned and trusted at the same level as the firmware config |
 
 ## 4. Threat model
 

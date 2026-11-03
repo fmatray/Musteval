@@ -8,6 +8,7 @@ import threading
 from typing import Callable
 
 import serial
+from serial.tools import list_ports
 
 from .transport import LineAssembler, Transport, TransportError
 from ..protocol import MAX_RX_BYTES
@@ -19,8 +20,6 @@ def find_port() -> str | None:
     Lives here because `pyserial` is confined to `link` (`09-bridge-architecture.md`
     §7): `__main__` must not import it to pick a default port.
     """
-    from serial.tools import list_ports
-
     candidates = [
         p.device
         for p in list_ports.comports()
@@ -36,8 +35,6 @@ def _is_pty(path: str) -> bool:
 
 def _is_usb(path: str) -> bool:
     """True when `path` is a USB CDC device."""
-    from serial.tools import list_ports
-
     if path.startswith(("/dev/ttyACM", "/dev/ttyUSB")):
         return True
     return any(p.device == path and p.vid is not None for p in list_ports.comports())

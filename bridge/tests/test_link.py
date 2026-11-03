@@ -222,9 +222,10 @@ class _Port:
 
 
 def _patch_comports(monkeypatch, ports) -> None:
-    import serial.tools.list_ports as list_ports
+    # Patching `link`'s own binding keeps pyserial out of the test (`09` §6).
+    from bridge.link import serial_transport
 
-    monkeypatch.setattr(list_ports, "comports", lambda: ports)
+    monkeypatch.setattr(serial_transport.list_ports, "comports", lambda: ports)
 
 
 def test_find_port_skips_a_device_that_is_neither(monkeypatch):

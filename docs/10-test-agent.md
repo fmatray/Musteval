@@ -165,7 +165,8 @@ So `status` is the one name that does not echo. It returns this constant, which 
 schema-valid against §3.9 and identical on every run:
 
 ```json
-{"wifi":{"state":"off","ssid":null,"rssi":null,"ip":null,"failovers":0},"time":{"synced":true,"unix":1730563600,"tz":"UTC"},"llm":{"provider":"test","model":"test-echo","available":true,"last_error":null,"calls_hour":0,"calls_day":0,"limit_hour":null,"limit_day":null},"mcp":[],"agent":{"busy":false,"run_id":null,"queue_depth":0,"max_queue":2},"mqtt":[],"geo":null,"storage":{"userfs":{"used_bytes":0,"total_bytes":3932160},"wsfs":{"used_bytes":0,"total_bytes":1048576},"workspace_quota_bytes":65536},"mem":{"heap_free":0,"psram_free":0},"sys":{"safe_mode":false,"boot_failures":0,"tool_calls":0,"tool_failures":0},"uptime_s":0,"boot_id":"00000001"}```
+{"wifi":{"state":"off","ssid":null,"rssi":null,"ip":null,"failovers":0},"time":{"synced":true,"unix":1730563600,"tz":"UTC"},"llm":{"provider":"test","model":"test-echo","available":true,"last_error":null,"calls_hour":0,"calls_day":0,"limit_hour":null,"limit_day":null},"mcp":[],"agent":{"busy":false,"run_id":null,"queue_depth":0,"max_queue":2},"mqtt":[],"geo":null,"storage":{"userfs":{"used_bytes":0,"total_bytes":3932160},"wsfs":{"used_bytes":0,"total_bytes":1048576},"workspace_quota_bytes":65536},"mem":{"heap_free":0,"psram_free":0},"sys":{"safe_mode":false,"boot_failures":0,"tool_calls":0,"tool_failures":0},"uptime_s":0,"boot_id":"00000001"}
+```
 
 `boot_id` matches the `hello_ack` value, which `04` §3.9 requires. The counters are
 zeros and `mem` is zeroed because there is no heap to read; a test asserting on

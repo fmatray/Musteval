@@ -10,7 +10,7 @@ Goal: Establish a bootable baseline with correct memory and storage layout.
 - **Scope**: Target configuration, PSRAM, dual LittleFS partitions, NVS namespaces, LED.
 - **Deliverables**: `app`, `store` modules.
 - **Acceptance Tests**:
- - `idf.py set-target esp32s3 build flash monitor` -> Boots, prints PSRAM: 8MB (octal), and logs both mounts: `userfs` at `/fs` (`3932160` bytes) and `wsfs` at `/workspace` (`1048576` bytes).
+ - `idf.py set-target esp32s3 build flash monitor` → Boots, prints PSRAM: 8MB (octal), and logs both mounts: `userfs` at `/fs` (`3932160` bytes) and `wsfs` at `/workspace` (`1048576` bytes).
  - Cross-mount isolation: after writing `/workspace/probe.txt`, `open("/workspace/../config.json", "r")` fails with `ENOENT`; formatting `wsfs` leaves `/fs/config.json` intact.
  - Corrupt-`wsfs` recovery: erase `wsfs` from the monitor, reboot, firmware reformats it and boots; the same test on `userfs` halts with `E_STORAGE` instead of wiping.
  - NVS namespaces `secrets`, `runtime` and `memory` initialized.
@@ -24,10 +24,10 @@ Goal: Establish the NDJSON communication channel with the Bridge.
 - **Scope**: USB CDC, NDJSON framing, basic command dispatch, log bridging.
 - **Deliverables**: `link` module; bridge-side `protocol` + `link` + `client` packages, importable and testable without Textual so M1's `hello`/`hello_ack` and `ping`/`pong` acceptance tests run headless via `FakeTransport`. Also `bridge/tools/test_agent.py`, the fake peer these tests run against headlessly over a pty (`10-test-agent.md`).
 - **Acceptance Tests**:
- - Connect `uv run bridge` -> `hello` / `hello_ack` exchange successful.
+ - Connect `uv run bridge` → `hello` / `hello_ack` exchange successful.
  - `ping` / `pong` cycle < 10ms.
  - `status` command returns current device state.
- - Input validation: Send 5 KiB line -> `E_PROTOCOL` emitted; malformed JSON -> `E_PROTOCOL`. Link survives without reboot.
+ - Input validation: Send 5 KiB line → `E_PROTOCOL` emitted; malformed JSON → `E_PROTOCOL`. Link survives without reboot.
  - Log hook: `ESP_LOGI` prints in monitor as NDJSON `log` messages while link is open (D9).
  - `uv run bridge --target test --port <pty>` completes `hello`/`hello_ack`, `ping`/`pong` and one `command` round trip against `bridge/tools/test_agent.py`, with no board attached.
 
@@ -36,8 +36,8 @@ Goal: Implement the frozen config schema and secret resolution.
 - **Scope**: `/config.json` parsing, `secret_ref` resolution, `config.get/set`, `secret.set`.
 - **Deliverables**: `cfg` module.
 - **Acceptance Tests**:
- - Boot with an unresolved `secret_ref` (e.g., `nvs:missing_key`) -> Monitor emits `E_CONFIG` naming the key; device continues in degraded mode.
- - Bridge sends `secret.set` -> Value stored in `secrets` namespace; `reload` command re-resolves refs without reboot.
+ - Boot with an unresolved `secret_ref` (e.g., `nvs:missing_key`) → Monitor emits `E_CONFIG` naming the key; device continues in degraded mode.
+ - Bridge sends `secret.set` → Value stored in `secrets` namespace; `reload` command re-resolves refs without reboot.
  - `config.get` returns `secret_ref` strings (e.g., `"nvs:llm_api_key"`) and never the resolved values.
  - Filesystem baselines: `/prompts/`, `/skills/`, `/tools/` read-only; `/workspace/` writable.
 
@@ -48,9 +48,9 @@ Goal: Secure connectivity to the AI provider.
 - **Acceptance Tests**:
  - WiFi: Connect to multiple networks in `wifi.networks[]`; first failure (wrong password) logs `E_WIFI` then connects to second.
  - Clock: `ntp_synced` event fires; clock discipline verified via `time.now`.
- - LLM: Non-streaming prompt -> `agent.start` (spinner) -> `agent.final`.
- - TLS Security: Connect to host with self-signed cert -> fails with `E_LLM_UNAVAILABLE`; no plaintext fallback.
- - Fallback: First provider unreachable -> second provider used transparently.
+ - LLM: Non-streaming prompt → `agent.start` (spinner) → `agent.final`.
+ - TLS Security: Connect to host with self-signed cert → fails with `E_LLM_UNAVAILABLE`; no plaintext fallback.
+ - Fallback: First provider unreachable → second provider used transparently.
 
 ### M4: Agent Loop & Tool surface
 Goal: implement the serialized agent run and the tool execution engine.
@@ -96,7 +96,7 @@ Goal: implement the serialized agent run and the tool execution engine.
    re-prompted once per remaining round, and a one-round question is never blocked.
  - Close-out exhaustion: with `llm.max_tool_rounds` reached, the run finalizes anyway
    and `agent.final` reports `todo_open: true`; the run never hangs.
- - Control: `cancel` command interrupts current run -> `E_CANCELLED`.
+ - Control: `cancel` command interrupts current run → `E_CANCELLED`.
  - Import: `fs.put` in 2 KiB chunks writes `/skills/<n>.md`, and after `reload` the
    skill appears; the same upload to a path shipped in the image returns `E_CONFIG`
    and the built-in is unchanged; an interrupted upload leaves the prior file
@@ -111,7 +111,7 @@ Goal: Full automation, remote capabilities, and final security audit.
 - **Acceptance Tests**:
   - Triggers: `boot`, `wifi_connected`, `gpio`, `event`, `schedule` (at/every) all fire associated tasks.
   - Missed-fire: `missed: "skip"` skips late tasks; `run_once` fires them on next sync.
-  - MCP: Server enabled -> `mcp.<server_id>.<tool_name>` appears in tool list; server down -> `E_MCP` isolated, agent continues.
+  - MCP: Server enabled → `mcp.<server_id>.<tool_name>` appears in tool list; server down → `E_MCP` isolated, agent continues.
   - Redaction Audit: Set `llm_api_key` to `"SENTINEL-123"`. Capture full link traffic. `grep "SENTINEL-123"` must return 0 results.
   - Safe-mode recovery: with a `tasks.json` whose `boot` task panics, the device reaches safe mode, `prompt` and `tasks.run` return `E_SAFE_MODE`, no MQTT client connects, and `config.set` plus `reload` clears safe mode without reflashing.
   - NVS Encryption: `secret.set` a sentinel, read the NVS partition over the serial bootloader, and the sentinel is absent from the dump (`S18`).

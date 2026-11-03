@@ -62,7 +62,7 @@ L4   __main__.py    CLI flags, wiring, entry point
 L3   ui/            Textual App, screens, widgets
       |
 L2   client/        Session: correlation, heartbeat, backoff
-     commands.py    slash command -> frames (leaf at L2)
+     commands.py    slash command → frames (leaf at L2)
       |
 L1   link/          Transport ABC, SerialTransport, FakeTransport
       |

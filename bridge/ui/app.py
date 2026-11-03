@@ -14,36 +14,30 @@ from ..client import LinkState, Session
 from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
 from ..protocol import Frame, new_id
+from .help import COMMANDS, HELP_TEXT, CommandSuggester
+from .modals import ConfirmPrompt, SecretPrompt
 from .render import (
+    SlashHighlighter,
     clip,
     render_diag,
+    render_json_block,
     render_status,
     render_tool_call,
     render_tool_result,
     sanitize,
 )
 
-HELP_TEXT = """\
-F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT
-Ctrl+R Reconnect | Ctrl+Q Quit
-
-Device commands
-  /status /reload /reboot /tasks /run <id> /tasks set|enable|disable|delete <id>
-  /config get <p> /config set <p> <v> /secret set <k> /templates /template <n>
-  /mqtt /mqtt publish <srv> <topic> <payload> /geo /fs put <p>
-  /retry /ping /cancel
-
-Local commands
-  /tools /mcp /usage /context /todo /diag /export /quit
-"""
-
-
 class ChatScreen(Vertical):
     """`05-bridge.md` §5.1: the conversation pane, composer at the bottom."""
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="chat-log", wrap=True, markup=False, highlight=False)
-        yield Input(placeholder="Type a prompt, or / for a command", id="chat-input")
+        yield Input(
+            placeholder="Type a prompt, or / for a command",
+            id="chat-input",
+            suggester=CommandSuggester(),
+            highlighter=SlashHighlighter(frozenset(c.name for c in COMMANDS)),
+        )
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
@@ -165,6 +159,7 @@ class BridgeApp(App):
         Binding("f4", "show('tasks')", "Tasks"),
         Binding("f5", "show('logs')", "Logs"),
         Binding("f6", "show('mqtt')", "MQTT"),
+        Binding("escape", "back", "Back / Cancel"),
         Binding("ctrl+r", "reconnect", "Reconnect"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
@@ -224,6 +219,21 @@ class BridgeApp(App):
             self._render_tasks()
         if name == "logs":
             self._flush_logs()
+
+    def action_back(self) -> None:
+        """`05-bridge.md` §6: Esc closes the top modal, then leaves a screen.
+
+        On Chat it cancels the current run, which is the one place Esc changes
+        device state rather than local navigation.
+        """
+        if len(self.screen_stack) > 1:
+            self.pop_screen()
+            return
+        if self.query_one("#chat").display is False:
+            self.action_show("chat")
+            return
+        frame = Frame(type="cancel", id=new_id("b"), ts=0, body={"reason": "user"})
+        self.run_worker(self.session.send(frame), exclusive=False)
 
     async def action_reconnect(self) -> None:
         await self.session.close()
@@ -364,7 +374,7 @@ class BridgeApp(App):
                 self._seen_lines.add(line)
                 self._chat().write(line)
             return
-        self._chat().write(clip(str(result), 400))
+        self._chat().write(render_json_block(result))
 
     # -- input ----------------------------------------------------------
 
@@ -405,15 +415,42 @@ class BridgeApp(App):
             self._chat().write("waiting for the run…")
 
     async def _run_command(self, text: str) -> None:
+        head = text[1:].split()[0] if len(text) > 1 else ""
+        if head in LOCAL_COMMANDS:
+            self._run_local(head)
+            return
+        if head == "diag":
+            # `05-bridge.md` §7: reuses the `status` frame, renders only the
+            # diagnostic half, so the chat gets fresh counters rather than the
+            # last screen refresh.
+            await self._request("status")
+            self._chat().write(
+                "\n".join(render_diag(self._last_status)) if self._last_status else "no status yet"
+            )
+            return
+        if head == "secret" and self._pending_secret is None:
+            # `05-bridge.md` §8.1: masked modal, Esc cancels without sending.
+            parts = text[1:].split()
+            if len(parts) < 3 or parts[1] != "set":
+                self._chat().write("✗ usage: /secret set <key>")
+                return
+            value = await self.push_screen_wait(SecretPrompt(parts[2]))
+            if value is None:
+                self._chat().write("secret entry cancelled")
+                return
+            self._pending_secret = value
+        words = text[1:].split()
+        if words[:2] == ["tasks", "delete"] and len(words) >= 3:
+            # `05-bridge.md` §7: delete is the one irreversible command.
+            if not await self.push_screen_wait(ConfirmPrompt(f"Delete task {words[2]}?")):
+                self._chat().write("delete cancelled")
+                return
+        # Built after the modals: a secret prompt fills the value `parse` reads.
         state = CommandState(
             tasks=self._tasks,
             last_prompt=self._last_prompt,
             secret_value=self._secret_value(),
         )
-        head = text[1:].split()[0] if len(text) > 1 else ""
-        if head in LOCAL_COMMANDS:
-            self._run_local(head)
-            return
         try:
             frames = parse(text, state)
         except CommandError as exc:
@@ -475,8 +512,6 @@ class BridgeApp(App):
             self._chat().write(
                 "last run left the todo list open" if self._todo_open else "no open todos"
             )
-        elif head == "diag":
-            self._chat().write("\n".join(render_diag(self._last_status)) if self._last_status else "no status yet")
         elif head == "export":
             stamp = time.strftime("%Y%m%d-%H%M%S")
             self._chat().write(f"exported bridge-export-{stamp}.md")

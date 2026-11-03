@@ -271,3 +271,26 @@ def test_every_config_example_stays_inside_its_documented_bounds():
     missing = set(BOUNDS) - seen
     assert len(seen) >= 20, f"only {len(seen)} bounded paths exercised: {sorted(seen)}"
     assert not missing or len(missing) < len(BOUNDS), "the walk exercises nothing"
+
+
+# -- `09-bridge-architecture.md` §6: the two import laws -----------------
+
+
+#: `09` §6: the import name, and the one package allowed to use it. Spelled in
+#: two pieces because the law's own grep must print nothing, this file included.
+LAWS = {"text" + "ual": "ui", "ser" + "ial": "link"}
+
+
+@pytest.mark.parametrize(("module", "home"), LAWS.items())
+def test_the_import_laws_hold_everywhere(module, home):
+    """`09` §6 states both as grep laws; this is the grep, indented imports included."""
+    root = Path(__file__).resolve().parents[1]
+    pattern = re.compile(rf"^\s*(?:import|from)\s+{module}\b")
+    offenders = [
+        f"{path.relative_to(root)}:{number}"
+        for path in sorted(root.rglob("*.py"))
+        if path.relative_to(root).parts[0] != home
+        for number, line in enumerate(path.read_text().splitlines(), 1)
+        if pattern.match(line)
+    ]
+    assert offenders == [], f"{module} imported outside bridge/{home}/"

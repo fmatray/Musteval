@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
+from rich.highlighter import Highlighter
+from rich.syntax import Syntax
+from rich.text import Text
+
 #: `05-bridge.md` §5.5: payloads are never interpreted as terminal escapes.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_PLACEHOLDER = re.compile(r"<[^<>]*>")
 
 PAYLOAD_CLIP = 120
 RESULT_CLIP = 80
+
+#: Result bodies are structured; `None` means "one line is enough".
+JSON_CLIP_ROWS = 12
 
 
 def sanitize(text: str) -> str:
@@ -88,3 +97,63 @@ def render_diag(status: dict[str, Any]) -> list[str]:
         f"llm calls hour: {llm.get('calls_hour')}/{llm.get('limit_hour')}",
         f"llm calls day: {llm.get('calls_day')}/{llm.get('limit_day')}",
     ]
+
+
+# -- syntax highlighting -------------------------------------------------
+#
+# Colour never carries meaning on its own: the plain text is identical with or
+# without a highlight, so a monochrome terminal loses nothing (`05-bridge.md` §5).
+
+
+def json_payload(value: Any) -> str:
+    """Compact JSON for a tool result, or `str(value)` when it is not JSON-able."""
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def render_json_block(value: Any) -> Any:
+    """A result body as a highlighted JSON block, or a clipped line if it is scalar.
+
+    Returning a `Syntax` renderable is what makes the block highlighted; a string
+    keeps the log readable for the common one-value result.
+    """
+    if isinstance(value, str):
+        return clip(value, RESULT_CLIP)
+    if value is None:
+        return "null"
+    rendered = json_payload(value)
+    if len(rendered) <= RESULT_CLIP:
+        return rendered
+    return Syntax(
+        rendered,
+        "json",
+        theme="ansi_dark",
+        background_color="default",
+        word_wrap=True,
+        line_numbers=False,
+    )
+
+
+class SlashHighlighter(Highlighter):
+    """Colour the command head in the composer, and dim the usage placeholders.
+
+    `heads` is passed in so `render` holds no copy of the command catalogue:
+    `help.COMMANDS` is its only owner (`05-bridge.md` §7).
+    """
+
+    def __init__(self, heads: frozenset[str]) -> None:
+        super().__init__()
+        self._heads = heads
+
+    def highlight(self, text: Text) -> None:
+        raw = text.plain
+        if not raw.startswith("/"):
+            return
+        head = raw[1:].split(" ", 1)[0]
+        if head not in self._heads:
+            return
+        text.stylize("bold", 0, len(head) + 1)  # the slash and the head
+        for match in _PLACEHOLDER.finditer(raw):
+            text.stylize("dim", match.start(), match.end())
