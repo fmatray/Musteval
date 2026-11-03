@@ -120,7 +120,9 @@ The primary interaction pane.
   - The prompt bar above the composer is one row of facts about the link and the
     agent, in the manner of a shell's prompt line. Segments are joined by ` | `
     and each is a value the bridge already holds, so the bar never costs a
-    frame: the link state (`down`, `linking`, `linked`, `flaky`, `refused`), the
+    frame: the link state (`down`, `linking`, `linked`, `flaky`, `refused`; while the
+    link is down, linking or refused that word is the whole bar, because every
+    other fact would be the last thing heard before the link died), the
     provider and model while a `status` has named one, the agent's `idle` or
     `busy <run_id>`, a queue segment only while the queue is non-empty, RSSI in
     `dBm`, workspace use against its quota, `SAFE MODE` while safe mode is

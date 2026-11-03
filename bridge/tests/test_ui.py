@@ -365,6 +365,19 @@ def test_the_bar_omits_what_it_does_not_know_rather_than_inventing_it():
     assert render_prompt_bar("down", {}, {}, 0) == "down"
 
 
+def test_an_unreachable_link_shows_no_fact_that_would_be_stale():
+    """Every other segment would be the last thing heard before the link died."""
+    status = {
+        "llm": {"provider": "openai", "model": "m", "available": True},
+        "agent": {"busy": False, "queue_depth": 0},
+        "wifi": {"rssi": -58},
+    }
+    assert render_prompt_bar("down", {"device": "m01"}, status, 99) == "down"
+    assert render_prompt_bar("rejected", {"device": "m01"}, status, 99) == "refused"
+    # A flaky link still carries current facts: the device is answering.
+    assert "openai/m" in render_prompt_bar("degraded", {"device": "m01"}, status, 99)
+
+
 def test_the_bar_reports_the_facts_that_explain_a_trouble():
     status = {
         "llm": {"provider": "openai", "model": "m", "available": False},

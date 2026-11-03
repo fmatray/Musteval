@@ -99,6 +99,10 @@ _LINK_WORDS = {
 }
 
 
+#: States in which no fact from the device can be current.
+_UNREACHABLE = frozenset({"down", "connecting", "wait_ack", "rejected"})
+
+
 def render_prompt_bar(
     link: str,
     ack: dict[str, Any],
@@ -120,7 +124,12 @@ def render_prompt_bar(
     wsfs = storage.get("wsfs") or {}
     sysinfo = status.get("sys") or {}
 
-    segments = [_LINK_WORDS.get(link, link)]
+    word = _LINK_WORDS.get(link, link)
+    # Without a link every other fact is stale, and a stale fact printed beside
+    # `down` reads as current. The link word alone is the honest bar.
+    if link in _UNREACHABLE:
+        return word
+    segments = [word]
 
     # Nothing is claimed before the device has said it: an empty `status` leaves
     # the bar with the link state alone rather than "no model", which would blame
