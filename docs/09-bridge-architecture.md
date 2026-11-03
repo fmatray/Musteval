@@ -256,7 +256,9 @@ terminal to be tested.
 
 `modals.py` owns every prompt, because `ModalScreen` suppresses app bindings and
 an app-level `Esc` would never fire; `task_prompt.py` is the JSON editor for the
-Tasks screen's `E` and `N`. `testing.py` is test-only: it hosts a pilot that
+Tasks screen's `E` and `N`, and `files.py` holds the Files screen's path arithmetic
+— `join`, `parent`, and the `/workspace/` confinement check — so the screen itself
+holds no state the module does not own. `testing.py` is test-only: it hosts a pilot that
 pushes one modal, because the `textual` law of §6 applies to `bridge/tests/` too
 and a test may not import Textual itself.
 

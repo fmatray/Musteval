@@ -17,8 +17,21 @@ from ..protocol import Frame, new_id
 from .help import COMMANDS, HELP_TEXT, CommandSuggester, options
 from .history import PromptHistory
 from .logs import LogBuffer, LogFilter, render_log_line
-from .modals import ConfirmPrompt, FilterPrompt, SecretPrompt, ValuePrompt
+from .modals import (
+    ConfirmPrompt,
+    FilePrompt,
+    FilterPrompt,
+    SecretPrompt,
+    ValuePrompt,
+)
 from .task_prompt import TaskPrompt
+from ..protocol import (
+    SANDBOX_ROOT,
+    SandboxPathError,
+    sandbox_join,
+    sandbox_normalise,
+    sandbox_parent,
+)
 from .settings import ROWS, coerce, flatten, lookup, render_value
 from .render import (
     SlashHighlighter,
@@ -504,6 +517,87 @@ class SettingsScreen(Vertical):
         self.app.run_worker(self.app._request("config.get"))  # type: ignore[attr-defined]
 
 
+class FilesScreen(Vertical):
+    """`05-bridge.md` §5.8. Browsing the agent sandbox, `/workspace/` only."""
+
+    BINDINGS = [
+        Binding("e", "edit_file", "Edit", show=False),
+        Binding("d", "delete_entry", "Delete", show=False),
+        Binding("n", "new_file", "New", show=False),
+        Binding("u", "go_up", "Up", show=False),
+        Binding("r", "refetch", "Refresh", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Static("/workspace/", id="files-path")
+        yield DataTable(id="files-table", cursor_type="row")
+        yield Static(
+            "[Enter] Open [E] Edit [D] Delete [N] New [U] Up [R] Refresh",
+            id="files-hint",
+        )
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.path: str = SANDBOX_ROOT
+
+    def on_mount(self) -> None:
+        table = self.query_one("#files-table", DataTable)
+        table.add_columns("Type", "Name", "Bytes")
+
+    def on_show(self) -> None:
+        self.query_one("#files-table", DataTable).focus()
+
+    def render_entries(self, path: str, entries: list[dict[str, Any]]) -> None:
+        table = self.query_one("#files-table", DataTable)
+        table.clear()
+        self.path = path
+        self.query_one("#files-path", Static).update(path)
+        if path != SANDBOX_ROOT:
+            table.add_row("d", "..", "-", key="..")
+        for entry in entries:
+            name = str(entry.get("name", "-"))
+            is_directory = bool(entry.get("dir"))
+            table.add_row(
+                "d" if is_directory else "f",
+                name,
+                "-" if is_directory else str(entry.get("bytes", 0)),
+                key=f"{path.rstrip('/')}/{name}",
+            )
+
+    def current_path(self) -> str:
+        return self.path
+
+    def selected_entry(self) -> tuple[str, str] | None:
+        """Return `(path, kind)` for the cursor row, or `None` on an empty table."""
+        table = self.query_one("#files-table", DataTable)
+        if table.row_count == 0 or table.cursor_row is None:
+            return None
+        kind, name, _ = table.get_row_at(table.cursor_row)
+        if str(name) == "..":
+            return (sandbox_parent(self.current_path()), "dir")
+        path = sandbox_join(self.current_path(), str(name))
+        return (path, "dir" if str(kind) == "d" else "file")
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.app.run_worker(self.app.open_entry())  # type: ignore[attr-defined]
+
+    def action_edit_file(self) -> None:
+        self.app.run_worker(self.app.edit_file())  # type: ignore[attr-defined]
+
+    def action_delete_entry(self) -> None:
+        self.app.run_worker(self.app.delete_entry())  # type: ignore[attr-defined]
+
+    def action_new_file(self) -> None:
+        self.app.run_worker(self.app.new_file())  # type: ignore[attr-defined]
+
+    def action_go_up(self) -> None:
+        self.app.run_worker(self.app.browse(sandbox_parent(self.current_path())))  # type: ignore[attr-defined]
+
+    def action_refetch(self) -> None:
+        self.app.run_worker(self.app.browse(self.current_path()))  # type: ignore[attr-defined]
+
+
 class MqttScreen(Vertical):
     """`05-bridge.md` §5.5: read-only broker state and traffic."""
 
@@ -577,6 +671,7 @@ class BridgeApp(App):
         Binding("f4", "show('tasks')", "Tasks"),
         Binding("f5", "show('logs')", "Logs"),
         Binding("f6", "show('mqtt')", "MQTT"),
+        Binding("f7", "show('files')", "Files"),
         Binding("escape", "back", "Back / Cancel"),
         Binding("ctrl+r", "reconnect", "Reconnect"),
         Binding("ctrl+q", "quit", "Quit"),
@@ -599,6 +694,7 @@ class BridgeApp(App):
         self._last_input_bytes = 0
         self._todo_open = False
         self._seen_lines: set[str] = set()
+        self._files_path: str = ""
 
     # -- lifecycle ------------------------------------------------------
 
@@ -611,12 +707,13 @@ class BridgeApp(App):
             yield LogsScreen(id="logs")
             yield SettingsScreen(id="settings")
             yield MqttScreen(id="mqtt")
+            yield FilesScreen(id="files")
             yield HelpScreen(id="help")
         yield Footer()
 
     async def on_mount(self) -> None:
         self.session.install_sink(self._on_frame)
-        for name in ("status", "tasks", "logs", "settings", "mqtt", "help"):
+        for name in ("status", "tasks", "logs", "settings", "mqtt", "files", "help"):
             self.query_one(f"#{name}").display = False
         self.query_one("#chat").display = True
         # Run in a worker: mounting must not block the loop that pumps the
@@ -634,7 +731,16 @@ class BridgeApp(App):
         await self._request("status")
 
     def action_show(self, name: str) -> None:
-        for screen in ("chat", "status", "tasks", "logs", "settings", "mqtt", "help"):
+        for screen in (
+            "chat",
+            "status",
+            "tasks",
+            "logs",
+            "settings",
+            "mqtt",
+            "files",
+            "help",
+        ):
             self.query_one(f"#{screen}").display = screen == name
         self.title = name.capitalize()
         if name == "status":
@@ -645,6 +751,8 @@ class BridgeApp(App):
             self._logs().refresh_view()
         if name == "settings" and not self._config_fetched:
             self.run_worker(self._request("config.get"))
+        if name == "files" and not self._files_path:
+            self.run_worker(self.browse(SANDBOX_ROOT))
 
     async def edit_setting(self, path: str) -> None:
         """Edit one config row: prompt, coerce, then send `config.set`.
@@ -721,6 +829,90 @@ class BridgeApp(App):
             self._logs().apply_filter(tag.strip(), level.strip() or None)
         except ValueError as exc:
             self._chat().write(f"✗ {exc}")
+
+    # -- files (`05` §5.8) ----------------------------------------------
+
+    def _files(self) -> FilesScreen:
+        return self.query_one(FilesScreen)
+
+    async def browse(self, path: str) -> None:
+        """List one sandbox directory. The device refuses a path outside it."""
+        try:
+            path = sandbox_normalise(path)
+        except SandboxPathError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        # A listing path is always a directory, so it is shown with its `/`
+        # (`sandbox_display`), and `normalise` strips it again on the way out.
+        if not path.endswith("/"):
+            path += "/"
+        self._files_path = path
+        await self._request("sandbox.list", {"path": path})
+
+    async def open_entry(self) -> None:
+        """Enter: descend into a directory, or view a file."""
+        chosen = self._files().selected_entry()
+        if chosen is None:
+            return
+        path, kind = chosen
+        if kind == "dir":
+            await self.browse(path)
+            return
+        await self.view_file(path)
+
+    async def view_file(self, path: str) -> None:
+        body = await self._request("sandbox.read", {"path": path})
+        if not body:
+            return
+        text = str(body.get("text", ""))
+        if body.get("truncated"):
+            # Editing a partial file would save the cut over the original.
+            self._chat().write(f"[warn] {path} is above the read cap; not opened")
+            return
+        edited = await self.push_screen_wait(FilePrompt(path, text))
+        if edited is None or edited == text:
+            return
+        # A dismissed modal writes nothing: only Ctrl+S inside it commits.
+        await self.save_file(path, edited)
+
+    async def edit_file(self) -> None:
+        chosen = self._files().selected_entry()
+        if chosen is None or chosen[1] != "file":
+            return
+        await self.view_file(chosen[0])
+
+    async def delete_entry(self) -> None:
+        chosen = self._files().selected_entry()
+        if chosen is None:
+            return
+        path, kind = chosen
+        if kind == "dir":
+            self._chat().write(f"[warn] {path} is a directory; the device refuses")
+            return
+        if not await self.push_screen_wait(ConfirmPrompt(f"Delete {path}?")):
+            return
+        await self._request("sandbox.delete", {"path": path})
+
+    async def new_file(self) -> None:
+        name = await self.push_screen_wait(ValuePrompt("New file name", ""))
+        if not name:
+            return
+        try:
+            path = sandbox_join(self._files_path, name)
+        except SandboxPathError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        await self._request(
+            "sandbox.write", {"path": path, "data": "", "offset": 0, "final": True}
+        )
+        await self.view_file(path)
+
+    async def save_file(self, path: str, text: str) -> None:
+        """Write a whole buffer. Staged by the device, committed on `final`."""
+        await self._request(
+            "sandbox.write",
+            {"path": path, "data": text, "encoding": "utf8", "offset": 0, "final": True},
+        )
 
     def action_back(self) -> None:
         """`05-bridge.md` §6: Esc closes the top modal, then leaves a screen.
@@ -887,6 +1079,22 @@ class BridgeApp(App):
             )
             self.run_worker(self._request("config.get"))
             return
+        if name == "sandbox.list" and isinstance(result, dict):
+            self.query_one("#files", FilesScreen).render_entries(
+                str(result.get("path", SANDBOX_ROOT)), result.get("entries") or []
+            )
+            return
+        if name == "sandbox.read":
+            # Consumed by the editor modal; echoing the body here would print
+            # the whole file into the chat log.
+            return
+        if name in ("sandbox.write", "sandbox.delete"):
+            self._chat().write(
+                f"{name} {result.get('path')} "
+                + ("created" if result.get("created") else "ok")
+            )
+            self.run_worker(self.browse(self._files_path))
+            return
         if name == "secret.set":
             # Never render the value; `05-bridge.md` §8.
             line = f"secret {result.get('key')} stored ({result.get('length')} bytes)"
@@ -898,7 +1106,10 @@ class BridgeApp(App):
 
     # -- input ----------------------------------------------------------
 
-    async def _request(self, name: str, args: dict[str, Any] | None = None) -> None:
+    async def _request(
+        self, name: str, args: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Send one command and return its `result`, or `None` on any failure."""
         frame = Frame(
             type="command",
             id=new_id("b"),
@@ -909,9 +1120,11 @@ class BridgeApp(App):
             reply = await self.session.request(frame)
         except SessionError as exc:
             self._chat().write(f"✗ {exc}")
-            return
-        if reply.type == "command.result":
-            self._on_command_result(reply)
+            return None
+        if reply.type != "command.result":
+            return None
+        self._on_command_result(reply)
+        return reply.body.get("result") if reply.body.get("ok") else None
 
     def submit(self, text: str) -> None:
         if text.startswith("/"):
@@ -944,6 +1157,17 @@ class BridgeApp(App):
             self.action_show(head if len(words) == 1 else "chat")
         if head == "settings":
             self.action_show("settings")
+            return
+        if head == "files":
+            # `/files` opens at the sandbox root; `/files /workspace/runs` opens there.
+            target = words[1] if len(words) > 1 else SANDBOX_ROOT
+            try:
+                target = sandbox_normalise(target)
+            except SandboxPathError as exc:
+                self._chat().write(f"✗ {exc}")
+                return
+            self.action_show("files")
+            await self.browse(target)
             return
         if head in LOCAL_COMMANDS:
             self._run_local(head)

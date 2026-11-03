@@ -174,6 +174,55 @@ async def test_secret_is_never_echoed_back(agent):
         await session.close()
 
 
+async def test_the_sandbox_lists_and_reads_over_the_wire(agent):
+    """`04` §4.17/§4.18 against the real tool: a listing then a file body."""
+    session = await _session(agent.port, ack_timeout=2)
+    try:
+        await session.connect()
+        listing = await session.request(
+            Frame(
+                type="command",
+                id=new_id("b"),
+                ts=0,
+                body={"name": "sandbox.list", "args": {"path": "/workspace/"}},
+            )
+        )
+        assert listing.body["ok"] is True
+        names = [entry["name"] for entry in listing.body["result"]["entries"]]
+        assert names == ["runs", "notes.md"]
+
+        body = await session.request(
+            Frame(
+                type="command",
+                id=new_id("b"),
+                ts=0,
+                body={"name": "sandbox.read", "args": {"path": "/workspace/notes.md"}},
+            )
+        )
+        assert body.body["result"]["text"].startswith("# notes")
+        assert body.body["result"]["bytes"] == len(body.body["result"]["text"])
+    finally:
+        await session.close()
+
+
+async def test_the_sandbox_refuses_a_path_outside_it(agent):
+    session = await _session(agent.port, ack_timeout=2)
+    try:
+        await session.connect()
+        reply = await session.request(
+            Frame(
+                type="command",
+                id=new_id("b"),
+                ts=0,
+                body={"name": "sandbox.read", "args": {"path": "/fs/config.json"}},
+            )
+        )
+        assert reply.body["ok"] is False
+        assert reply.body["error"]["code"] == "E_CONFIG"
+    finally:
+        await session.close()
+
+
 async def test_bad_token_is_rejected_and_never_retried():
     proc = Agent("--token", "right")
     try:

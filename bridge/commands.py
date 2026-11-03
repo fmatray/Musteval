@@ -14,7 +14,14 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
-from .protocol import COMMAND_NAMES, Frame, new_id
+from .protocol import (
+    COMMAND_NAMES,
+    SANDBOX_ROOT,
+    Frame,
+    SandboxPathError,
+    new_id,
+    sandbox_normalise,
+)
 
 #: `05-bridge.md` §7 marks these `(Local)`: no frame leaves the host.
 LOCAL_COMMANDS = frozenset(
@@ -29,6 +36,7 @@ LOCAL_COMMANDS = frozenset(
         "quit",
         "logs",
         "help",
+        "files",
     }
 )
 
@@ -160,9 +168,35 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         if len(rest) < 2 or rest[0] != "put":
             raise CommandError("usage: /fs put <path>")
         return _fs_put(rest[1], state)
+    if head == "sandbox":
+        return _sandbox(rest)
     if head == "tasks":
         return _tasks(rest, state)
     raise CommandError(f"unknown command: /{head}")
+
+
+def _sandbox_path(path: str) -> str:
+    """Refuse a path outside the sandbox here, so it costs no round trip."""
+    try:
+        return sandbox_normalise(path)
+    except SandboxPathError as exc:
+        raise CommandError(str(exc)) from exc
+
+
+def _sandbox(rest: list[str]) -> list[Frame]:
+    """`/sandbox list|read|delete <path>` — the Files screen's non-interactive form."""
+    if not rest:
+        return [_command("sandbox.list", {"path": SANDBOX_ROOT})]
+    sub, args = rest[0], rest[1:]
+    if sub == "list":
+        return [_command("sandbox.list", {"path": _sandbox_path(args[0] if args else SANDBOX_ROOT)})]
+    if sub == "read":
+        _require(args, 1, "/sandbox read <path>")
+        return [_command("sandbox.read", {"path": _sandbox_path(args[0])})]
+    if sub == "delete":
+        _require(args, 1, "/sandbox delete <path>")
+        return [_command("sandbox.delete", {"path": _sandbox_path(args[0])})]
+    raise CommandError("usage: /sandbox list|read|delete <path>")
 
 
 def _tasks(rest: list[str], state: CommandState) -> list[Frame]:

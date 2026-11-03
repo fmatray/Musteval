@@ -136,6 +136,11 @@ Goal: Enable asynchronous external triggers and agent-managed task persistence.
   - Task Bound: `task.set` beyond `tools.task_max` returns `E_TOOL` and `tasks.json` remains unchanged.
   - Deletion: `fs.delete` removes a `/workspace/` file and frees quota; `/fs/config.json` and a non-existent path are both refused with `E_TOOL` and change nothing.
   - Host Bound: `tasks.set` on a full file (16 entries) returns `E_CONFIG`, and lowering `tools.task_max` does not block `tasks.set`.
+  - Sandbox browse: `sandbox.list` on `/workspace/` returns its entries directories-first, and on `/skills/` returns `E_CONFIG`.
+  - Sandbox round-trip: `sandbox.write` then `sandbox.read` returns the same text and `sandbox.delete` removes it, leaving the quota where it started.
+  - Sandbox confinement: `sandbox.list`, `sandbox.read` and `sandbox.delete` on `/workspace/../config.json`, on `workspace/x.txt` and on `/fs/config.json` each return `E_CONFIG` and change nothing.
+  - Sandbox delete bound: `sandbox.delete` on a non-empty directory returns `E_CONFIG` and the directory keeps its entries.
+  - Sandbox oversized read: `sandbox.read` of a file above the read cap returns `truncated:true`, and the bridge refuses to open it for editing.
 - **Non-goals**: MQTT 5 properties, QoS 2, automatic LLM ingestion of broker payloads.
 
 ## 2. Requirement Traceability
@@ -157,6 +162,7 @@ Goal: Enable asynchronous external triggers and agent-managed task persistence.
 | Geolocation | M6 | BSSID fix + IP fallback |
 | Agent task authoring | M6 | `task.set` persistence / `tools.task_max` bound |
 | User task authoring and deletion | M6 | `tasks.set` / `tasks.delete` round-trip, delete unreachable from any tool |
+| Sandbox file manager in the TUI | M6 | `sandbox.list` / `sandbox.read` / `sandbox.write` / `sandbox.delete` round-trip, path-confinement refusals |
 | LLM spend cap | M3 | Third call with `max_calls_per_hour: 2` returns `E_LLM_RATE`; fallback chain cannot exceed the cap |
 | Boot guard / safe mode | M0 | Three failed boots enter safe mode; `reload` clears it |
 | Durable key/value memory | M4 | `memory.*` round-trip across reboot, cap enforced, no path into it |

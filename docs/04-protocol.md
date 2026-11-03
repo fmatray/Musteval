@@ -569,6 +569,10 @@ reads are never refused.
 | `mqtt.publish` | `{server_id, topic, payload, qos?, retain?}` | `{published, server_id, topic}` | `E_MQTT` (unknown server/topic, disconnected) | yes |
 | `mqtt.status` | `{}` | `{servers:[{id,connected,subscriptions,last_error}]}` | `E_INTERNAL` | yes |
 | `fs.put` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created}` | `E_CONFIG` (bad path, bad extension, or a built-in target), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
+| `sandbox.list` | `{path?}` | `{path, entries:[{name,dir,bytes}]}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing directory) | yes |
+| `sandbox.read` | `{path}` | `{path, bytes, text, truncated}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing file) | yes |
+| `sandbox.delete` | `{path}` | `{path, deleted}` | `E_CONFIG` (path outside `/workspace/` or a non-empty directory), `E_STORAGE` (missing) | yes |
+| `sandbox.write` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
 
 ### 4.1 `status`
 
@@ -857,6 +861,102 @@ concurrent transfers serialise on the same mutex `store_task_write()` uses, and
 two interleaved transfers to one path fail the offset check rather than corrupting
 the file.
 
+### 4.17 `sandbox.list`
+
+Lists one directory of the agent sandbox, `/workspace/`, which is the `wsfs`
+partition. This is the browse half of the file manager in `05-bridge.md` §5.8. It
+is **host-only** like `fs.put`: no tool wraps it, so the model cannot widen its own
+reach with it, and `fs.list` remains the model's only listing tool.
+
+`path` is absolute and defaults to `/workspace/`. It MUST resolve inside
+`/workspace/` by the same canonicalisation `docs/06-security.md` §6.1 defines for
+`fs.*`, and a path that resolves elsewhere is `E_CONFIG`, never a silent fallback
+to the root.
+
+```json
+{"v":1,"type":"command","id":"b-31","ts":1730572400,"name":"sandbox.list","args":{"path":"/workspace/"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-41","ts":1730572400,"reply_to":"b-31","name":"sandbox.list","ok":true,"result":{"path":"/workspace/","entries":[{"name":"notes.md","dir":false,"bytes":412},{"name":"runs","dir":true,"bytes":0}]},"duration_ms":9}
+```
+
+| Arg | Type | Required | Notes |
+|---|---|---|---|
+| `path` | string | no | Absolute, resolved under `/workspace/`; default `/workspace/` |
+
+Entries are sorted by `dir` first, then `name`, both ascending, and are not
+recursive. `bytes` is the file length, and `0` for a directory. A directory
+holding more entries than the listing cap is `E_STORAGE` rather than a truncated
+list, because a browser that silently hides files is worse than one that says the
+directory is too large.
+
+### 4.18 `sandbox.read`
+
+Returns one file from the sandbox as UTF-8 text for viewing and editing.
+
+```json
+{"v":1,"type":"command","id":"b-32","ts":1730572410,"name":"sandbox.read","args":{"path":"/workspace/notes.md"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-42","ts":1730572410,"reply_to":"b-32","name":"sandbox.read","ok":true,"result":{"path":"/workspace/notes.md","bytes":412,"text":"# Notes\n","truncated":false},"duration_ms":6}
+```
+
+| Arg | Type | Required | Notes |
+|---|---|---|---|
+| `path` | string | yes | Absolute file path under `/workspace/` |
+
+`truncated` is `true` when the file exceeded the read cap and only its first part
+is returned; the bridge renders a banner rather than editing a partial file. A
+file that is not valid UTF-8 is `E_STORAGE`, so the bridge never shows mojibake.
+The read cap is fixed at 32 KiB, which keeps the whole `command.result` inside the
+16 KiB TX limit only because the device answers in one frame under the
+`04-protocol.md` §1 line caps: a longer file MUST be `truncated`, never a second
+frame.
+
+### 4.19 `sandbox.delete`
+
+Deletes one sandbox file, or one **empty** directory.
+
+```json
+{"v":1,"type":"command","id":"b-33","ts":1730572420,"name":"sandbox.delete","args":{"path":"/workspace/notes.md"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-43","ts":1730572420,"reply_to":"b-33","name":"sandbox.delete","ok":true,"result":{"path":"/workspace/notes.md","deleted":true},"duration_ms":11}
+```
+
+A directory that still holds entries is `E_CONFIG` with `detail` naming the
+offending path, so deletion is never recursive and a mis-keyed confirmation cannot
+take a subtree with it. `tools.allow_dangerous` does not gate this command: it is
+host-only, and the gate exists to stop the model, which cannot reach it.
+
+### 4.20 `sandbox.write`
+
+Replaces one sandbox file, or creates it. The chunking, staging and commit rules
+are exactly `fs.put` §4.16's, and the only differences are the target mount and
+that no extension allowlist applies.
+
+```json
+{"v":1,"type":"command","id":"b-34","ts":1730572430,"name":"sandbox.write","args":{"path":"/workspace/notes.md","data":"IyBOb3Rlcwo=","encoding":"base64","offset":0,"final":true}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-44","ts":1730572430,"reply_to":"b-34","name":"sandbox.write","ok":true,"result":{"path":"/workspace/notes.md","bytes":9,"created":false},"duration_ms":22}
+```
+
+| Arg | Type | Required | Notes |
+|---|---|---|---|
+| `path` | string | yes | Absolute file path under `/workspace/` |
+| `data` | string | yes | One chunk, at most 2048 raw bytes |
+| `encoding` | string | no | `base64` or `utf8`; default `utf8` |
+| `offset` | int | no | Byte offset; default `0`. A mismatch is `E_PROTOCOL` |
+| `final` | bool | no | `true` commits the staged file; default `false` |
+
+A write that would exceed the workspace quota is `E_STORAGE` and leaves the
+previous file intact, because the staged file is renamed only on `final:true`.
+
 ## 5. Error codes
 
 | Code | Meaning | Retryable | Typical source |
@@ -947,8 +1047,8 @@ the same `run_id` as `E_PROTOCOL`.
 | New error code | no — codes are frozen |
 | New `command.name` | no — needs `v:2` |
 
-One amendment has been applied while `v` stayed `1`, and it is recorded here rather
-than left implicit: the error catalog gained `E_LLM_RATE` and `E_SAFE_MODE`, and
+Two amendments have been applied while `v` stayed `1`, and they are recorded here
+rather than left implicit. The first: the error catalog gained `E_LLM_RATE` and `E_SAFE_MODE`, and
 `status` gained the `llm.calls_*`, `llm.limit_*` and `sys.*` members. It is
 admissible because no firmware has shipped and therefore no receiver exists that
 could be surprised; the freeze binds published versions, not a contract still being
@@ -956,6 +1056,14 @@ written. The rule above applies unchanged from the first tagged release, at whic
 point this paragraph stops being true and a further change of this kind does need
 `v:2`. The two new codes are additive in practice: a bridge that does not know them
 still renders `error.code` as an opaque string.
+
+The second amendment adds four `command.name` values, `sandbox.list`,
+`sandbox.read`, `sandbox.delete` and `sandbox.write` (§4.17 to §4.20), which the
+table above otherwise forbids. It is admissible on the same ground as the first:
+the firmware does not exist, so no receiver can be surprised by a name it does not
+know, and an older bridge that meets one renders it as an unknown command exactly
+as §4 already requires. This is the last such amendment the `v:1` paragraph can
+carry: once a build is published, another name is `v:2`.
 
 `v` is a single integer. A receiver that sees a higher `v` MUST refuse the session
 with `E_PROTOCOL` rather than guess. The bridge surfaces that as a hard banner, not

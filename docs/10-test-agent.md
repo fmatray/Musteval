@@ -145,6 +145,7 @@ Two failure paths, both straight from `04` §1.2. There is no third.
 | `hello` | `hello_ack` with `reply_to`. Canned: `device` = `test-agent`, `fw_version` = `test-1.0.0`, `protocol` = 1, fixed `boot_id`, `time_synced` = true, `limits` = `{rx_max:4096,tx_max:16384}`, `capabilities` with a short canned `tools` array, empty `mcp`, `dangerous_tools` false, `streaming` false. With `--token` set and `token` absent or wrong → `event` with `kind:"link.rejected"` instead. |
 | `ping` | `pong` with `reply_to`. |
 | `command` | `command.result` echoing `name`, `ok:true`, `duration_ms`, and `result` per §6.1: the canonical status object for `name:"status"`, `{"echo": <args>}` for every other name. |
+| `sandbox.list`, `sandbox.read` | `command.result` with the canned workspace described in §6.2, so the Files screen (`05` §5.8) has something to show. Echoing `args` would leave it empty. `sandbox.write` and `sandbox.delete` echo, because the reply a client reads is `path` plus `created`/`deleted`, which the tool cannot invent. |
 | `secret.set` | `command.result` with `name:"secret.set"` and `result:{key, stored:true, length}`. The value MUST NOT appear in any reply, log line or diagnostic — `04` §3.6 and `06-security.md` forbid it. Only its length comes back. |
 | `prompt` | `agent.start` first, then `agent.final`. `agent.start` carries `reply_to`, a fresh `run_id`, `trigger:"manual"`, `source:"prompt"`, fixed `provider`/`model`, `input_bytes`, `queue_depth:0`. `agent.final` has the same `run_id` and `reply_to`, `text` = the echoed prompt text, a fixed `usage`, `rounds:1`, `truncated:false`, `todo_open:false`, plus fixed `provider`, `model` and `duration_ms`. |
 | `cancel` | With a run in flight: `agent.error` with `code:"E_CANCELLED"`, that `run_id`, `retryable:false`. With nothing in flight: `event` with `kind:"cancel.noop"`. This mirrors `04` §3.4, which says `cancel` has no dedicated ack. |
@@ -176,6 +177,27 @@ Status-screen layout needs every member present, not every member meaningful.
 The echo is the point. A `command` comes back with its own `args` inside
 `result.echo`, and a `prompt` comes back as its own text in `agent.final.text`, so a
 round-trip is verifiable by inspection rather than by trusting the tool.
+
+### 6.2 The canned workspace
+
+`sandbox.list` and `sandbox.read` answer from a fixed tree, the third name class that
+does not echo. Every path is inside `/workspace/`; a path outside it is answered with
+the addressable `E_CONFIG` error that `04` §4.17 names, so the tool exercises the
+refusal the device performs rather than pretending the mount is unbounded.
+
+```text
+/workspace/          runs/  notes.md
+/workspace/runs/     run_7.json
+```
+
+`notes.md` holds `# notes\n\nplain text, no markup.\n` and `run_7.json` holds
+`{"run":"r-7","ok":true}`. A directory carries `bytes:0`, as `04` §4.17 requires, and a file carries its
+real length, so a screen asserting on the size column reads a number that matches the
+body it would have read.
+
+A mutation (`sandbox.write`, `sandbox.delete`) does not change this tree. The tool
+reports what it was asked to do and forgets it, because a checker that accumulates
+state stops being deterministic on the second run.
 
 ## 7. Scenarios
 

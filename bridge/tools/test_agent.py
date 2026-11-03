@@ -30,11 +30,14 @@ from typing import Any, Iterable
 from bridge.protocol import (
     COMMAND_NAMES,
     MAX_RX_BYTES,
+    SANDBOX_ROOT,
     Frame,
     ProtocolError,
+    SandboxPathError,
     decode_line,
     encode,
     new_id,
+    sandbox_normalise,
 )
 
 DEVICE_NAME = "test-agent"
@@ -42,6 +45,16 @@ FW_VERSION = "test-1.0.0"
 BOOT_ID = "00000001"
 PROTOCOL_VERSION = 1
 CANNED_TOOLS = ["time.now", "sys.diagnostics", "todo"]
+
+#: `10-test-agent.md` §6.2. Two files, one nested directory, fixed bytes.
+WORKSPACE_FILES = {
+    "/workspace/notes.md": "# notes\n\nplain text, no markup.\n",
+    "/workspace/runs/run_7.json": '{"run":"r-7","ok":true}',
+}
+WORKSPACE_DIRS = {
+    "/workspace/": ["runs", "notes.md"],
+    "/workspace/runs/": ["run_7.json"],
+}
 
 #: `10-test-agent.md` §6.1. Constant, schema-valid against `04` §3.9.
 STATUS = {
@@ -436,10 +449,61 @@ class TestAgent:
             },
         }
 
+    def _sandbox_result(self, name: str, args: dict) -> dict | str:
+        """Answer `sandbox.list|read` from `10` §6.2, or name the error to send."""
+        path = str(args.get("path", SANDBOX_ROOT))
+        if path not in WORKSPACE_DIRS and path not in WORKSPACE_FILES:
+            # Normalise before refusing: `/workspace/runs/../notes.md` is legal.
+            try:
+                path = sandbox_normalise(path)
+            except SandboxPathError:
+                return "E_CONFIG"
+        if name == "sandbox.list":
+            directory = path if path.endswith("/") else path + "/"
+            if directory not in WORKSPACE_DIRS:
+                return "E_STORAGE"
+            entries = []
+            for entry in WORKSPACE_DIRS[directory]:
+                child = directory + entry
+                if child + "/" in WORKSPACE_DIRS:
+                    entries.append({"name": entry, "dir": True, "bytes": 0})
+                else:
+                    body = WORKSPACE_FILES.get(child, "")
+                    entries.append({"name": entry, "dir": False, "bytes": len(body)})
+            return {"path": directory, "entries": entries}
+        if path not in WORKSPACE_FILES:
+            return "E_STORAGE"
+        body = WORKSPACE_FILES[path]
+        return {"path": path, "text": body, "bytes": len(body), "truncated": False}
+
     def _answer_command(self, frame: Frame) -> None:
         name = frame.body["name"]
         args = frame.body.get("args") or {}
-        result = dict(STATUS) if name == "status" else {"echo": args}
+        if name in ("sandbox.list", "sandbox.read"):
+            result = self._sandbox_result(name, args)
+            if isinstance(result, str):
+                self.reply(
+                    "command.result",
+                    {"name": name, "ok": False,
+                     "error": {"code": result, "message": "outside the sandbox"
+                               if result == "E_CONFIG" else "no such entry"},
+                     "duration_ms": 0},
+                    reply_to=frame.id,
+                )
+                return
+            self.reply(
+                "command.result",
+                {"name": name, "ok": True, "result": result, "duration_ms": 0},
+                reply_to=frame.id,
+            )
+            return
+        if name == "sandbox.delete":
+            result = {"path": args.get("path"), "deleted": True}
+        elif name == "sandbox.write":
+            result = {"path": args.get("path"), "created": args.get("offset", 0) == 0,
+                      "bytes": len(str(args.get("data", "")).encode("utf-8"))}
+        else:
+            result = dict(STATUS) if name == "status" else {"echo": args}
         self.reply(
             "command.result",
             {"name": name, "ok": True, "result": result, "duration_ms": 0},

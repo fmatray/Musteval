@@ -66,6 +66,12 @@ COMMANDS: tuple[CommandHelp, ...] = (
         "upload a local file to userfs in 2 KiB chunks",
         False,
     ),
+    CommandHelp(
+        "sandbox",
+        "/sandbox list|read|delete <path>",
+        "browse the agent sandbox from chat",
+        False,
+    ),
     CommandHelp("retry", "/retry", "resend the last prompt", False),
     CommandHelp("ping", "/ping", "test link latency", False),
     CommandHelp("cancel", "/cancel", "cancel the current run", False),
@@ -77,6 +83,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("todo", "/todo", "re-render todo phases and tasks", True),
     CommandHelp("export", "/export", "write the chat log to a markdown file", True),
     CommandHelp("settings", "/settings", "browse and edit device config", True),
+    CommandHelp("files", "/files [path]", "browse and edit the agent sandbox", True),
     CommandHelp("logs", "/logs", "switch to the Logs screen", True),
     CommandHelp("help", "/help", "show the command reference", True),
     CommandHelp("quit", "/quit", "exit the bridge", True),
@@ -88,6 +95,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "config": ("get", "set"),
     "mqtt": ("publish",),
     "fs": ("put",),
+    "sandbox": ("list", "read", "delete"),
     "secret": ("set",),
 }
 

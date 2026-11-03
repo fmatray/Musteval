@@ -279,6 +279,7 @@ is host-originated.
 | Config holds WiFi, provider, NTP URL | `03-config.md` §config.json |
 | NTP clock discipline | `02-firmware.md` §3.1 Boot Sequence step 6, `03-config.md` §ntp |
 | USB Serial to computer | `04-protocol.md`, `05-bridge.md`, `09-bridge-architecture.md` |
+| Browse and edit the agent sandbox from the terminal | `05-bridge.md` §5.8, `04-protocol.md` §4.17 to §4.20 |
 | Secured provider (URL + API key) | `03-config.md` §llm, `06-security.md` |
 | Provider/model fallback | `02-firmware.md` §Request body, §4.2 Fallback & Error Handling |
 | Extensible skills | `03-config.md` §skills, `tools/skills.md` |

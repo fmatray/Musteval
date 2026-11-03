@@ -28,6 +28,8 @@ def test_every_produced_name_is_a_frozen_command():
         "/status", "/reload", "/reboot", "/templates", "/template t1", "/geo",
         "/tasks", "/run t1", "/config get a.b", "/config set a.b c", "/mqtt",
         "/mqtt publish s1 t p", "/fs put /x",
+        "/sandbox", "/sandbox list /workspace/runs", "/sandbox read /workspace/a.txt",
+        "/sandbox delete /workspace/a.txt",
     ]
     state = CommandState(tasks=[{"id": "t1", "enabled": True}], upload_bytes=b"a")
     for text in texts:
@@ -215,3 +217,46 @@ def test_fs_put_of_an_empty_file_still_sends_one_final_chunk():
     (frame,) = parse("/fs put /empty", CommandState(upload_bytes=b""))
     assert frame.body["args"]["final"] is True
     assert frame.body["args"]["data"] == ""
+
+
+# -- sandbox (`04` §4.17-§4.20, `05` §5.8) ------------------------------
+
+
+def test_bare_sandbox_lists_the_root():
+    (frame,) = parse("/sandbox")
+    assert frame.body["name"] == "sandbox.list"
+    assert frame.body["args"] == {"path": "/workspace/"}
+
+
+def test_sandbox_subcommands_map_to_their_frames():
+    (listing,) = parse("/sandbox list /workspace/runs")
+    assert listing.body["name"] == "sandbox.list"
+    assert listing.body["args"] == {"path": "/workspace/runs"}
+
+    (body,) = parse("/sandbox read /workspace/a.txt")
+    assert body.body["name"] == "sandbox.read"
+    assert body.body["args"] == {"path": "/workspace/a.txt"}
+
+    (deleted,) = parse("/sandbox delete /workspace/a.txt")
+    assert deleted.body["name"] == "sandbox.delete"
+    assert deleted.body["args"] == {"path": "/workspace/a.txt"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/sandbox read /etc/passwd",
+        "/sandbox delete /workspace/../config.json",
+        "/sandbox list /fs/config.json",
+        "/sandbox read relative.txt",
+    ],
+)
+def test_a_sandbox_path_outside_the_mount_is_refused_before_sending(text):
+    """The device is the authority, but a refused path should cost no round trip."""
+    with pytest.raises(CommandError):
+        parse(text)
+
+
+def test_an_unknown_sandbox_subcommand_is_an_error():
+    with pytest.raises(CommandError):
+        parse("/sandbox execute /workspace/a.txt")

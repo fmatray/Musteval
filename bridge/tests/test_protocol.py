@@ -59,8 +59,10 @@ def test_error_codes_are_the_frozen_sixteen():
     assert all(code.startswith("E_") for code in ERROR_CODES)
 
 
-def test_command_names_are_the_frozen_sixteen():
-    assert len(COMMAND_NAMES) == 16
+def test_command_names_are_the_sixteen_plus_the_recorded_sandbox_four():
+    """16 frozen names plus the four `04` §7 records as this release's amendment."""
+    assert len(COMMAND_NAMES) == 20
+    assert {"sandbox.list", "sandbox.read", "sandbox.delete", "sandbox.write"} <= COMMAND_NAMES
 
 
 # -- encode -------------------------------------------------------------

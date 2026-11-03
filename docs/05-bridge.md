@@ -256,7 +256,7 @@ each form moves to its own line with the summary indented beneath it. The result
 never exceeds 78 columns, so no line wraps on a narrow terminal.
 
 ```text
-F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT
+F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files
 Ctrl+R Reconnect | Ctrl+Q Quit
 Esc Closes a modal and cancels a run
 
@@ -316,6 +316,51 @@ shows what the device actually holds.
 +-----------------------------------------------------------------------+
 ```
 
+### 5.8 Files Screen (`/files`, F7)
+
+The agent sandbox, `/workspace/`, browsed from the TUI. The screen is deliberately
+scoped to that one mount: it is the only location the device exposes for browsing,
+and it is where the agent writes, so a user debugging what the agent produced looks
+here and not in `userfs`. Content outside it is `E_CONFIG` from the device and is
+never reachable from this screen (`04` §4.17).
+
+The pane is a three-column table, matching the mockup below: the type column holds
+`d` for a directory and `f` for a file, the name column the entry as the device
+reported it, and the size column the byte count or `-` for a directory. At any path
+below the root an extra `..` row sits at the top so `Enter` can climb without a
+separate key. The current path is the screen title. Entries sort as the device
+returns them, directories first, so the browser never re-orders what it was given.
+
+Opening the screen sends `sandbox.list` for `/workspace/` once. `Enter` on a
+directory descends into it; `Enter` on a file opens it for viewing.
+
+Editing happens in one modal holding a `TextArea`, pre-filled from `sandbox.read`.
+`Ctrl+S` sends `sandbox.write` for the whole buffer, which fits because a sandbox
+file above the read cap is reported `truncated` and refused for editing rather than
+half-saved over the original. `Esc` discards. Nothing is written on navigation, so
+leaving the screen with an open modal cannot silently save.
+
+Deleting asks `y`/`n` first, naming the path, and sends `sandbox.delete`. A
+non-empty directory is refused by the device, so there is no recursive delete and
+no confirmation that could take a subtree. `N` creates a new empty file through
+`sandbox.write` with an empty body, then opens it for editing.
+
+```text
++-----------------------------------------------------------------------+
+| /workspace/runs                                                       |
+|Type  Name                              Bytes                          |
+| d     ..                               -                              |
+| d     2026-11-02                       -                              |
+| f     notes.md                         412                            |
+| f     run_7.json                       1834                           |
++-----------------------------------------------------------------------+
+| [Enter] Open [E] Edit [D] Delete [N] New [U] Up [R] Refresh           |
++-----------------------------------------------------------------------+
+```
+
+`U` goes up one directory, and stops at `/workspace/`, which is the root this
+screen can see. `R` re-requests the listing for the current path.
+
 ## 6. Keybindings
 
 Focus follows the screen: entering a screen puts focus on the widget that consumes
@@ -333,6 +378,7 @@ conversation log is never focusable, so `Tab` cannot land on it. `PageUp`,
 | `F4` | Switch to Tasks screen |
 | `F5` | Switch to Logs screen |
 | `F6` | Switch to MQTT screen |
+| `F7` | Switch to Files screen |
 | `Esc` | Close the top modal; otherwise leave a non-Chat screen for Chat; on Chat, cancel the current run |
 | `Ctrl+R` | Force reconnect (close port, clear state, re-handshake) |
 | `Ctrl+Q` | Exit bridge |
@@ -374,6 +420,13 @@ future that is never resolved.
 | Settings | `Enter` | Edit the selected row in a pre-filled prompt, then send `config.set` |
 | Settings | `R` | Re-request `config.get` |
 | Settings | `Esc` | Cancel the edit prompt; on no prompt, back to Chat |
+| Files | `Up`/`Down` | Move between entries |
+| Files | `Enter` | Open the selected directory, or view the selected file |
+| Files | `E` | Edit the selected file in a `TextArea` modal, send `sandbox.write` on `Ctrl+S` |
+| Files | `D` | Delete the selected entry after `y`/`n`, send `sandbox.delete` |
+| Files | `N` | Create an empty file at a prompted name, send `sandbox.write`, then edit it |
+| Files | `U` | Go up one directory, stopping at `/workspace/` |
+| Files | `R` | Re-request `sandbox.list` for the current path |
 
 ## 7. Slash Commands
 
@@ -398,6 +451,8 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/template <n>` | `command {name:"template.get"}` | `name` | Dumps template text |
 | `/mqtt` | `command {name:"mqtt.status"}` | none | Lists brokers and state; also switches to the MQTT screen |
 | `/fs put <p>` | `command {name:"fs.put"}` | `path, data, offset, final` | Uploads a local file to `userfs` in 2 KiB chunks; refuses a path outside the allowlist before sending |
+| `/files` | `command {name:"sandbox.list"}` | `path?` | Opens the Files screen at `/workspace/` |
+| `/files <p>` | `command {name:"sandbox.list"}` | `path` | Opens the Files screen at that sandbox directory |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
 | `/tools` | (Local) | none | Lists `capabilities.tools` (every tool currently callable, declarative ones included) and `capabilities.mcp` |

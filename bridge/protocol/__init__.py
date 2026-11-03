@@ -89,6 +89,10 @@ COMMAND_NAMES = frozenset(
         "mqtt.publish",
         "mqtt.status",
         "fs.put",
+        "sandbox.list",
+        "sandbox.read",
+        "sandbox.delete",
+        "sandbox.write",
     }
 )
 
@@ -248,3 +252,11 @@ def redact_line(line: bytes) -> bytes:
     if not changed:
         return line
     return _dumps(obj) + (b"\n" if line.endswith(b"\n") else b"")
+
+
+from .sandbox import ROOT as SANDBOX_ROOT  # noqa: E402
+from .sandbox import SandboxPathError  # noqa: E402
+from .sandbox import display as sandbox_display  # noqa: E402
+from .sandbox import join as sandbox_join  # noqa: E402
+from .sandbox import normalise as sandbox_normalise  # noqa: E402
+from .sandbox import parent as sandbox_parent  # noqa: E402

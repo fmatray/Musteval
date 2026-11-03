@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, TextArea
 
 _T = TypeVar("_T")
 
@@ -159,3 +159,41 @@ class ValuePrompt(PromptBox[str | None]):
 
     def action_submit(self) -> None:
         self.dismiss(self.query_one("#value-input", Input).value.strip() or None)
+
+
+class FilePrompt(PromptBox[str | None]):
+    """Text editor for one sandbox file (`05` §5.8).
+
+    `Ctrl+S` commits the whole buffer and `Esc` discards it, so a modal left open
+    by mistake cannot save by itself.
+    """
+
+    BINDINGS = [Binding("ctrl+s", "save", "Save", show=False)]
+    CSS = (
+        _CSS
+        + """
+.prompt-box.file-box {
+    width: 90;
+    height: 80%;
+}
+"""
+    )
+    AUTO_FOCUS = "#file-body"
+
+    def __init__(self, path: str, text: str) -> None:
+        super().__init__()
+        self.path = path
+        self.text = text
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="prompt-box file-box"):
+            yield Static(self.path, classes="prompt-title")
+            area = TextArea(self.text, id="file-body")
+            area.show_line_numbers = False
+            yield area
+            yield Static("Ctrl+S: save | Esc: discard", classes="prompt-hint")
+
+    def action_save(self) -> None:
+        # The body is the return value; `Esc` reaching `PromptBox`'s cancel
+        # yields `None`, so a discarded edit is distinguishable from saving.
+        self.dismiss(self.query_one("#file-body", TextArea).text)
