@@ -117,7 +117,7 @@ The primary interaction pane.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.2 Status Screen (F3)
+### 5.2 Status Screen (`/status`, F3)
 Displays real-time device health.
 
 - **Source**: `status` message (periodic or commanded).
@@ -140,7 +140,7 @@ Displays real-time device health.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.3 Tasks Screen (F4)
+### 5.3 Tasks Screen (`/tasks`, F4)
 Lists scheduled and triggered tasks.
 
 - **Source**: `tasks.list` command.
@@ -164,7 +164,7 @@ Lists scheduled and triggered tasks.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.4 Logs Screen (F5)
+### 5.4 Logs Screen (`/logs`, F5)
 Streams firmware logs.
 
 - **Source**: `log` messages.
@@ -195,7 +195,7 @@ while lines keep arriving.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.5 MQTT Screen (F6)
+### 5.5 MQTT Screen (`/mqtt`, F6)
 Read-only view of broker state and inbound traffic. Publishing is done from the
 Chat input (`/mqtt publish`) or by the agent; the screen has no composer.
 
@@ -222,7 +222,7 @@ Chat input (`/mqtt publish`) or by the agent; the screen has no composer.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.6 Help Screen (F1)
+### 5.6 Help Screen (`/help`, F1)
 
 The help body is generated from one table, `COMMANDS` in `bridge/ui/help.py`: every
 head `commands.py` accepts and every `LOCAL_COMMANDS` entry appears exactly once, so
@@ -319,11 +319,12 @@ conversation log is never focusable, so `Tab` cannot land on it. `PageUp`,
 The slash commands are the primary route to every screen; the function keys above
 remain as aliases for them.
 
-`Esc` on a modal is bound by the modal, not by the App: `ModalScreen` sets `_modal`,
-which suppresses app-level bindings, so an app-level `Esc` never fires while one is
-open. Every prompt therefore extends `PromptBox` in `bridge/ui/modals.py`, which owns
-that binding and dismisses with a result. Popping the screen instead would leave the
-`push_screen_wait` worker awaiting a future that is never resolved.
+`Esc` on a modal is bound by the modal, not by the App: `ModalScreen` sets
+`_modal`, which suppresses app-level bindings, so an app-level `Esc` never fires
+while one is open. Every prompt therefore extends `PromptBox` in
+`bridge/ui/modals.py`, which owns that binding and dismisses with a result.
+Popping the screen instead would leave the `push_screen_wait` worker awaiting a
+future that is never resolved.
 
 ### 6.2 Screen-Specific Bindings
 
@@ -394,10 +395,10 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/quit` | (Local) | none | Exits TUI |
 
 Commands marked `(Local)` render from state the bridge already holds from
-`hello_ack`, `status` and `agent.final`, and send no frame at all. The four rows that
+`hello_ack`, `status` and `agent.final`, and send no frame at all. The five rows that
 are neither `command` nor `(Local)` send the frame named in their mapping instead:
-`/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping` sends `ping`, and
-`/cancel` sends `cancel`.
+`/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping` sends `ping`,
+`/diag` sends `status`, and `/cancel` sends `cancel`.
 
 4. **Link token**: the value sent as `hello.token` is a bridge-side config value that the user sets when provisioning the device (`06-security.md` §9); it is not a slash command and the bridge never prints it.
 `/fs put <p>` is the one command that sends more than one frame per invocation: it

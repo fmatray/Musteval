@@ -58,7 +58,7 @@ a temp file then renaming; this is held under a mutex and refused during `reload
 
 | name | type | required | bounds |
 |---|---|---|---|
- | `task` | object | yes | one `/tasks.json` entry; closed schema, `id` `[a-z0-9_-]{1,15}` |
+| `task` | object | yes | one `/tasks.json` entry; closed schema, `id` `[a-z0-9_-]{1,15}` |
 
 **Result**
 
@@ -89,8 +89,7 @@ mirrors `/tasks.json` verbatim (`../02-firmware.md` §7.1).
 | `mqtt_message` | `server_id`, `topic`, `payload_contains`, `cooldown_s` | topic MUST be covered by server's `topics[]` allowlist |
 | `schedule` | `kind` `at`\|`every`, `interval_s`, `first_at` | see below |
 | `manual` | none | only via `tasks.run` command (`../04-protocol.md` §4.5) |
-
- | `event` | `name` string | fires when `event.emit` names it (§5.5 of `../02-firmware.md`) |
+| `event` | `name` string | fires when `event.emit` names it (§5.5 of `../02-firmware.md`) |
 `schedule` triggers use `trigger.kind` as a selector:
 
 - `kind=at`: requires `at` (ISO-8601 instant or 'HH:MM:SS' daily). Requires NTP.
