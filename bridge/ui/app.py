@@ -146,6 +146,11 @@ class StatusScreen(VerticalScroll):
     # keeps focus and swallows the key.
     can_focus = True
 
+    def on_show(self) -> None:
+        # Focusable so its own bindings fire: the hidden Chat composer would
+        # otherwise keep focus and swallow the key.
+        self.focus()
+
     def compose(self) -> ComposeResult:
         yield Static("no status yet", id="status-body")
 
@@ -236,6 +241,9 @@ class LogsScreen(Vertical):
         Binding("s", "toggle_follow", "Follow", show=False),
     ]
     can_focus = True
+
+    def on_show(self) -> None:
+        self.focus()
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -368,6 +376,9 @@ class MqttScreen(Vertical):
     ]
     can_focus = True
 
+    def on_show(self) -> None:
+        self.focus()
+
     def compose(self) -> ComposeResult:
         self.selected = 0
         self._brokers: list[dict[str, Any]] = []
@@ -487,16 +498,6 @@ class BridgeApp(App):
         for screen in ("chat", "status", "tasks", "logs", "settings", "mqtt", "help"):
             self.query_one(f"#{screen}").display = screen == name
         self.title = name.capitalize()
-        # `on_show` does not fire for a container whose `display` is toggled, so
-        # the key widget is focused here; without it the hidden Chat composer
-        # keeps focus and swallows the screen's bindings.
-        # Keyed by screen id; the table screens hand focus to their table.
-        target = {
-            "tasks": "#task-table",
-            "settings": "#settings-table",
-        }.get(name, f"#{name}")
-        if name != "chat":
-            self.query_one(target).focus()
         if name == "status":
             self._render_status()
         if name == "tasks":

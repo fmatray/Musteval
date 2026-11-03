@@ -446,6 +446,7 @@ async def test_clear_empties_the_log_buffer():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("logs")
+        await pilot.pause(0.1)
         for level in ("warn", "info"):
             app._on_log(Frame(type="log", id="d-1", ts=0,
                               body={"level": level, "tag": "net", "msg": "x"}))
@@ -461,6 +462,7 @@ async def test_follow_toggles_and_the_header_says_so():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("logs")
+        await pilot.pause(0.1)
         await pilot.press("s")
         await pilot.pause(0.1)
         assert "OFF" in str(app.query_one("#log-header").content)
@@ -477,6 +479,7 @@ async def test_r_on_status_reissues_the_status_request():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("status")
+        await pilot.pause(0.1)
         before = sum(b'"name":"status"' in line for line in transport.written)
         await pilot.press("r")
         await pilot.pause(0.3)
@@ -491,16 +494,19 @@ async def test_mqtt_arrows_move_the_broker_cursor():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("mqtt")
+        await pilot.pause(0.1)
         mqtt = app.query_one("#mqtt")
         mqtt.render_brokers([{"id": "home", "connected": True, "subscriptions": []},
                              {"id": "lab", "connected": False, "subscriptions": []}])
+        await pilot.pause(0.1)
         await pilot.press("down")
         await pilot.pause(0.1)
-        body = str(app.query_one("#mqtt-brokers").content)
-        assert body.splitlines()[1].lstrip().startswith("> lab")
+        body = str(app.query_one("#mqtt-brokers").content).splitlines()
+        assert body[1].startswith("> lab"), body
         await pilot.press("up")
         await pilot.pause(0.1)
-        assert str(app.query_one("#mqtt-brokers").content).splitlines()[0].lstrip().startswith("> home")
+        body = str(app.query_one("#mqtt-brokers").content).splitlines()
+        assert body[0].startswith("> home"), body
         await session.close()
 
 
@@ -657,6 +663,7 @@ async def test_follow_off_stops_the_view_chasing_new_lines():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("logs")
+        await pilot.pause(0.1)
         await pilot.press("s")
         await pilot.pause(0.1)
         body = app.query_one("#log-body")
@@ -677,6 +684,7 @@ async def test_the_log_filter_hides_lines_whose_level_is_below_it():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("logs")
+        await pilot.pause(0.1)
         for level, msg in (("info", "quiet"), ("error", "loud"), ("warn", "medium")):
             app._on_log(Frame(type="log", id="d-1", ts=0,
                               body={"level": level, "tag": "llm", "msg": msg}))
@@ -697,6 +705,7 @@ async def test_an_unknown_level_in_the_filter_is_reported_not_sent():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("logs")
+        await pilot.pause(0.1)
         app.run_worker(app.edit_log_filter())
         for _ in range(60):
             if isinstance(app.screen, FilterPrompt):
@@ -721,4 +730,30 @@ async def test_a_task_mutation_reissues_tasks_list():
         await pilot.press("space")
         await pilot.pause(0.4)
         assert len(_sent(transport, "tasks.list")) == before + 1
+        await session.close()
+
+
+async def test_every_screen_claims_focus_when_shown():
+    """`05` §6: focus follows the screen, so its bindings can fire at all.
+
+    This is the contract the §6.2 keys rely on; without it a screen appears with
+    focus left on the hidden composer and every key is swallowed.
+    """
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        expected = {
+            "chat": "#chat-input",
+            "status": "#status",
+            "tasks": "#task-table",
+            "logs": "#logs",
+            "settings": "#settings-table",
+            "mqtt": "#mqtt",
+        }
+        for name, widget in expected.items():
+            app.action_show(name)
+            await pilot.pause(0.1)
+            assert (app.focused is not None
+                    and f"#{app.focused.id}" == widget), (name, app.focused)
         await session.close()
