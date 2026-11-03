@@ -255,10 +255,15 @@ section; the keys whose value is a nested object or an object array
 (`wifi.networks[]`, `llm.providers[]`, `mcp.servers[]`, `geo.providers[]` and their
 children) are not rows, because they need a form rather than a line.
 
-Opening the screen sends `config.get` with no `path` once per session and renders
+Opening the screen sends `config.get` with no `path` once and renders
 the reply through `flatten`, which indexes arrays so a dotted row finds its value
 (`04` §4.8). Until a config has been fetched the value column reads `-` and a note
 says so; nothing here invents a default and presents it as the device's answer.
+
+Fetched is recorded separately from what came back, because an empty config and a
+config never asked for are both an empty mapping. A device that reports no config
+must therefore be fetched once, not on every return to the screen; `R` is the only
+thing that asks again.
 
 `Enter` on a row opens a pre-filled prompt. The typed text is coerced to the row's
 kind and checked against the bounds column before sending, so an out-of-range value

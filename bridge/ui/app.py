@@ -167,9 +167,7 @@ class SettingsScreen(Vertical):
 
     def on_mount(self) -> None:
         table = self.query_one("#settings-table", DataTable)
-        # `add_columns` takes only (label, key); the width needs `add_column`.
-        table.add_columns("Key", "Value", "Default")
-        table.add_column("Bounds", width=BOUNDS_CLIP)
+        table.add_columns("Key", "Value", "Default", "Bounds")
 
     def render_rows(self, values: dict[str, Any] | None) -> None:
         """Show every row, with the device value where the config carries one."""
@@ -184,7 +182,7 @@ class SettingsScreen(Vertical):
                 row.path,
                 render_value(row, current) if values else "-",
                 render_value(row, row.default),
-                row.bound,
+                clip(row.bound, BOUNDS_CLIP),
                 key=row.path,
             )
 
@@ -204,6 +202,7 @@ class SettingsScreen(Vertical):
         self.app.run_worker(self.app.edit_setting(str(event.row_key.value)))  # type: ignore[attr-defined]
 
     def action_refetch(self) -> None:
+        self.app._config_fetched = False  # type: ignore[attr-defined]
         self.app.run_worker(self.app._request("config.get"))  # type: ignore[attr-defined]
 
 
@@ -267,6 +266,9 @@ class BridgeApp(App):
         self._state: dict[str, Any] = {}
         self._last_status: dict[str, Any] = {}
         self._config: dict[str, Any] = {}
+        #: `_config` is empty both before the first fetch and when the device
+        #: reports nothing, so a flag decides whether a fetch already happened.
+        self._config_fetched = False
         self._tasks: list[dict[str, Any]] = []
         self._last_prompt: str | None = None
         self._usage_total = 0
@@ -318,7 +320,7 @@ class BridgeApp(App):
             self._render_tasks()
         if name == "logs":
             self._flush_logs()
-        if name == "settings" and not self._config:
+        if name == "settings" and not self._config_fetched:
             self.run_worker(self._request("config.get"))
 
     async def edit_setting(self, path: str) -> None:
@@ -493,8 +495,9 @@ class BridgeApp(App):
             return
         if name == "config.get" and isinstance(result, dict):
             # No `path` was sent, so this is the whole config (`04` §4.8).
-            raw = result.get("config", result) if "config" in result else result
+            raw = result.get("config", result)
             self._config = flatten(raw)
+            self._config_fetched = True
             self.query_one("#settings", SettingsScreen).render_rows(self._config)
             self.action_show("settings")
             return

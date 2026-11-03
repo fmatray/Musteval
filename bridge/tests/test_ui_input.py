@@ -16,6 +16,7 @@ from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
 from bridge.ui.app import BOUNDS_CLIP, ChatScreen
+from bridge.ui.render import clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory
 from bridge.ui.modals import ValuePrompt
 from bridge.ui.settings import ROWS, coerce, flatten, lookup, render_value
@@ -188,6 +189,48 @@ def test_flatten_resolves_a_dotted_path_and_an_array_key():
     assert lookup(flat, "wifi.retry_backoff_ms") == [1000, 2000]
 
 
+async def test_an_empty_config_reply_is_fetched_once_not_in_a_loop():
+    """Regression: `action_show("settings")` refetched whenever `_config` was empty,
+    so a device that reports no config spun forever."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "command" and frame["name"] == "config.get":
+            return [
+                encode(
+                    Frame(
+                        type="command.result",
+                        id="d-empty",
+                        ts=0,
+                        body={"name": "config.get", "ok": True,
+                              "result": {"echo": {}}, "duration_ms": 0},
+                        reply_to=frame["id"],
+                    )
+                )
+            ]
+        return _reply(line)
+
+    transport = FakeTransport(on_write=reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("settings")
+        await pilot.pause(0.6)
+        fetches = sum(1 for line in transport.written if b'"name":"config.get"' in line)
+        assert fetches == 1, f"{fetches} config.get frames: the screen loops"
+        assert app.query_one("#settings-table").row_count == len(ROWS)
+        # `R` is the documented way to ask again.
+        app.query_one("#settings").action_refetch()
+        for _ in range(80):
+            if sum(1 for line in transport.written
+                   if b'"name":"config.get"' in line) == 2:
+                break
+            await pilot.pause(0.02)
+        assert sum(1 for line in transport.written if b'"name":"config.get"' in line) == 2
+        await session.close()
+
+
 async def test_the_settings_hint_and_bounds_survive_a_real_render():
     """Regression: `[Enter]` was eaten as markup and a 132-char bound blew the table."""
     transport = FakeTransport(on_write=_reply_with_config)
@@ -207,9 +250,13 @@ async def test_the_settings_hint_and_bounds_survive_a_real_render():
         assert "Enter" in str(hint)
         table = app.query_one("#settings-table")
         widest = max(len(row.bound) for row in ROWS)
-        assert widest > BOUNDS_CLIP, "the width test is pointless if no bound is long"
-        bounds_column = table.columns[list(table.columns)[-1]]
-        assert bounds_column.width == BOUNDS_CLIP
+        assert widest > BOUNDS_CLIP, "the clip test is pointless if no bound is long"
+        # Assert the rendered cells, not the constant: a column `width` clips the
+        # display but leaves the cell text at 132 characters.
+        cells = [str(table.get_row_at(index)[3]) for index in range(table.row_count)]
+        assert max(len(cell) for cell in cells) <= BOUNDS_CLIP
+        for row in ROWS:
+            assert clip(row.bound, BOUNDS_CLIP) in cells
         await session.close()
 
 

@@ -239,6 +239,28 @@ def test_the_bounds_map_covers_exactly_the_documented_rows():
     assert encoded - rows == set(), f"rows that no longer exist: {sorted(encoded - rows)}"
 
 
+#: The schema array rows the `/settings` screen cannot show as one line: each is a
+#: nested object, so editing it needs a form rather than a text field
+#: (`05-bridge.md` §5.7).
+OBJECT_ARRAY_PREFIXES = ("wifi.networks[]", "llm.providers[]", "mcp.servers[]",
+                         "mqtt.servers[]", "geo.providers[]")
+
+
+def test_the_settings_rows_cover_exactly_the_editable_schema_rows():
+    """`05` §5.7: a schema key with no row is a setting the user cannot reach."""
+    from bridge.ui.settings import ROWS
+
+    # Not `KEY_ALIASES`: that map turns one row's key into its per-entry bound
+    # form for `BOUNDS`, it does not rename the schema path.
+    documented = set(_schema_rows())
+    editable = {
+        path
+        for path in documented
+        if not any(path == prefix or path.startswith(prefix + ".") for prefix in OBJECT_ARRAY_PREFIXES)
+    }
+    assert {row.path for row in ROWS} == editable
+
+
 def test_a_length_bound_is_not_mistaken_for_a_value_bound():
     """`wifi.retry_backoff_ms` bounds its entries, not the list length."""
     assert BOUNDS["wifi.retry_backoff_ms[]"] == (100, 60000)
