@@ -1,0 +1,13 @@
+# Flash: 8 MiB quad SPI part on the R8 module (docs/01-hardware.md §4, notes table)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# PSRAM: 8 MiB octal on the R8 module (docs/01-hardware.md §2, §4 notes table)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+# PSRAM is not general heap without this (docs/01-hardware.md §2)
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# Custom partition table (docs/01-hardware.md §4)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
