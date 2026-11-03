@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
+
+_T = TypeVar("_T")
 
 _CSS = """
 Screen {
@@ -30,14 +34,27 @@ Screen {
 """
 
 
-class SecretPrompt(ModalScreen[str | None]):
+class PromptBox(ModalScreen[_T]):
+    """A modal that can always be left with Esc.
+
+    `ModalScreen` sets `_modal`, which suppresses app-level bindings, so a modal
+    without its own Esc binding traps the user and leaves the `push_screen_wait`
+    worker running forever. Inheriting this class is what makes that impossible:
+    a subclass's `BINDINGS` extend it rather than replace the guarantee.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = _CSS
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class SecretPrompt(PromptBox[str | None]):
     """Masked one-value prompt for `05-bridge.md` §8 masked input."""
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("enter", "submit", "Store", show=False),
-    ]
-
+    BINDINGS = [Binding("enter", "submit", "Store", show=False)]
     CSS = _CSS
 
     def __init__(self, key: str) -> None:
@@ -64,15 +81,13 @@ class SecretPrompt(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class ConfirmPrompt(ModalScreen[bool]):
+class ConfirmPrompt(PromptBox[bool]):
     """Yes/no gate for `05-bridge.md` §7 `/tasks delete` confirmation."""
 
     BINDINGS = [
         Binding("y", "confirm", "Confirm"),
-        Binding("n", "cancel", "Cancel"),
-        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("n", "cancel", "Cancel", show=False),
     ]
-
     CSS = _CSS
 
     def __init__(self, question: str) -> None:

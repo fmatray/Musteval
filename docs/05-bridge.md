@@ -252,6 +252,12 @@ Local commands
 | `F5` | Switch to Logs screen |
 | `F6` | Switch to MQTT screen |
 | `Esc` | Close the top modal; otherwise leave a non-Chat screen for Chat; on Chat, cancel the current run |
+
+`Esc` on a modal is bound by the modal, not by the App: `ModalScreen` sets `_modal`,
+which suppresses app-level bindings, so an app-level `Esc` never fires while one is
+open. Every prompt therefore extends `PromptBox` in `bridge/ui/modals.py`, which owns
+that binding and dismisses with a result. Popping the screen instead would leave the
+`push_screen_wait` worker awaiting a future that is never resolved.
 | `Ctrl+R` | Force reconnect (close port, clear state, re-handshake) |
 | `Ctrl+Q` | Exit bridge |
 

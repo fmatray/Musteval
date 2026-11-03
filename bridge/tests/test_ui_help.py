@@ -166,6 +166,48 @@ async def test_secret_modal_masks_and_never_echoes():
         await session.close()
 
 
+def test_every_modal_can_be_left_with_escape():
+    """`ModalScreen` suppresses app bindings, so Esc must come from the modal.
+
+    This is the invariant a bare `ModalScreen` subclass would silently break: the
+    user is trapped and the awaiting `push_screen_wait` worker never resolves.
+    """
+    from bridge.ui.modals import ConfirmPrompt, PromptBox, SecretPrompt
+
+    # Subclass `BINDINGS` replace rather than extend at class level; Textual
+    # merges over the MRO at runtime, which the pilot test below observes.
+    assert "escape" in {binding.key for binding in PromptBox.BINDINGS}
+    for modal in (SecretPrompt, ConfirmPrompt):
+        assert issubclass(modal, PromptBox)
+
+
+@pytest.mark.parametrize(("screen_name", "expected"), [("secret", None), ("confirm", False)])
+async def test_escape_resolves_the_awaiting_worker(screen_name, expected):
+    from bridge.ui.modals import ConfirmPrompt, SecretPrompt
+
+    modal = SecretPrompt("wifi") if screen_name == "secret" else ConfirmPrompt("delete t1?")
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    result: dict[str, object] = {}
+    async with app.run_test() as pilot:
+        await _app(pilot)
+
+        def wait_modal() -> None:
+            async def inner() -> None:
+                result["value"] = await app.push_screen_wait(modal)
+
+            app.run_worker(inner())
+
+        # `pop_screen` leaves this future unresolved on Textual 8.2.8, which is
+        # why the modal owns the binding instead of the app.
+        wait_modal()
+        await pilot.pause(0.2)
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        assert result.get("value", "<hung>") == expected
+        await session.close()
+
+
 async def test_escape_cancels_the_secret_prompt_without_sending():
     transport = FakeTransport(on_write=_reply)
     session = Session(transport, ack_timeout=1, ping_interval=99)

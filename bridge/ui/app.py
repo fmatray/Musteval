@@ -227,6 +227,8 @@ class BridgeApp(App):
         device state rather than local navigation.
         """
         if len(self.screen_stack) > 1:
+            # A modal never reaches this binding: `ModalScreen` sets `_modal`,
+            # which suppresses app bindings, so `PromptBox` owns its own Esc.
             self.pop_screen()
             return
         if self.query_one("#chat").display is False:
