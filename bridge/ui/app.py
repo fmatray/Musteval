@@ -56,8 +56,12 @@ class ChatScreen(Vertical):
         Binding("up", "history_back", "Previous prompt", show=False),
         Binding("down", "history_forward", "Next prompt", show=False),
         Binding("tab", "accept_completion", "Complete", show=False),
-        Binding("right", "cursor_right", "Accept", show=False),
+        # `priority` because the focused `Input` binds Right for line editing and
+        # would otherwise shadow this; the action still falls through mid-line.
+        Binding("right", "cursor_right", "Accept", show=False, priority=True),
         Binding("pageup", "page_back", "Earlier", show=False),
+        # Home/End are listed on `Input`, which is focused, so they are matched
+        # in `on_key` rather than here: a container binding never sees them.
         # Esc closes the list first; the App's binding handles the rest.
         Binding("escape", "dismiss_completion", "Close list", show=False),
         Binding("pagedown", "page_forward", "Later", show=False),
@@ -76,8 +80,6 @@ class ChatScreen(Vertical):
         self._total = 0
         #: Index the arrows sit on. OMP opens the list with the top row chosen.
         self._cursor = 0
-        #: True once an arrow moved the cursor, so Enter accepts instead of submits.
-        self._enter_accepts = False
 
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
@@ -88,6 +90,23 @@ class ChatScreen(Vertical):
             suggester=CommandSuggester(),
             highlighter=SlashHighlighter(frozenset(c.name for c in COMMANDS)),
         )
+
+    def on_key(self, event: Any) -> None:
+        """Home/End jump to the list's edges, as OMP's picker does.
+
+        They are intercepted here because the focused `Input` claims both keys
+        for line editing before a container binding can run.
+        """
+        if not self._candidates:
+            return
+        if event.key == "home":
+            self.action_first_candidate()
+        elif event.key == "end":
+            self.action_last_candidate()
+        else:
+            return
+        event.stop()
+        event.prevent_default()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """`05-bridge.md` §5.1: list the candidates for the token being typed.
@@ -102,10 +121,7 @@ class ChatScreen(Vertical):
         self._total = len(candidates)
         self._candidates = candidates[:COMPLETION_ROWS]
         # A refresh is a new list, so the arrow's choice does not carry over.
-        if not self._candidates:
-            self._cursor = 0
-        self._enter_accepts = False
-        self._cursor = min(self._cursor, max(0, len(self._candidates) - 1))
+        self._cursor = 0
         self._render_options()
 
     def _render_options(self) -> None:
@@ -134,7 +150,6 @@ class ChatScreen(Vertical):
         if not count:
             return
         self._cursor = (self._cursor + delta) % count
-        self._enter_accepts = True
         self._render_options()
 
     def on_mount(self) -> None:
@@ -154,15 +169,14 @@ class ChatScreen(Vertical):
         self.query_one("#chat-log", RichLog).write(text)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # OMP rule: Enter accepts the row an arrow chose, but a list the user
-        # never navigated submits the typed text instead.
-        if self._candidates and self._enter_accepts:
-            self._apply(self._candidates[self._cursor])
-            return
+        # OMP applies the selected row and then submits the applied value, which
+        # is why `/tasks a` + Enter runs `/tasks add` rather than the fragment.
+        text = event.value.strip()
+        if self._candidates:
+            text = self._candidates[self._cursor]
         event.input.value = ""
         self._show_options("")
         self._fit_composer()
-        text = event.value.strip()
         if text:
             self._history.add(text)
             self.app.submit(text)  # type: ignore[attr-defined]
@@ -191,6 +205,16 @@ class ChatScreen(Vertical):
             self._move_cursor(1)
             return
         self._recall(self._history.next(self._input().value))
+
+    def action_first_candidate(self) -> None:
+        if self._candidates:
+            self._cursor = 0
+            self._render_options()
+
+    def action_last_candidate(self) -> None:
+        if self._candidates:
+            self._cursor = len(self._candidates) - 1
+            self._render_options()
 
     def action_page_back(self) -> None:
         if self._candidates:

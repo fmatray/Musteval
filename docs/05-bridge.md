@@ -101,18 +101,21 @@ The primary interaction pane.
     most eight rows and ends with a `+N more` row when the list is longer, so it
     never pushes the conversation off the screen. The list disappears when the
     composer is empty and when the typed text stops being a command prefix.
-  - The list is navigated the way OMP navigates a picker. The top row is
+  - The list is navigated the way OMP navigates a picker. Its top row is
     selected when the list opens and a `>` marks it, so the selection is never
-    carried by colour. `Up` and `Down` walk the rows and wrap at the edges;
-    `Page Up` and `Page Down` move by a whole window. While the list is open
-    these keys drive it and the history ring is left alone; when it is closed
-    they recall history as usual, so `Up` never does both.
+    carried by colour. `Up` and `Down` walk the rows and wrap at the edges,
+    `Home` and `End` jump to them, and `Page Up` and `Page Down` move by a whole
+    window. While the list is open these keys drive it and the history ring is
+    left alone; when it is closed they recall history as usual, so `Up` never
+    does both.
   - `Tab` and a `Right` at the end of the line apply the selected row and move
-    the cursor to its end. `Enter` applies the selected row only when an arrow
-    moved the cursor first: a list the user never navigated submits the typed
-    text, so `/` followed by `Enter` sends a bare `/` instead of silently
-    becoming `/status`. `Esc` closes the list and does nothing else; with no
-    list open it backs out of the screen as before.
+    the cursor to its end; a `Right` before the end keeps its cursor role.
+    `Enter` applies the selected row and then submits the applied value, which
+    is what makes `/tasks a` run `/tasks add` rather than the half-typed
+    fragment. The marked row is always one the user can see, never the `+N more`
+    counter, so a keypress cannot apply a command that was not on screen. `Esc`
+    closes the list and does nothing else; with no list open it backs out of the
+    screen as before.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer.

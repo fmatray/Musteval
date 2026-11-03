@@ -976,9 +976,12 @@ async def test_tab_accepts_the_highlighted_row_not_the_ghost():
         await session.close()
 
 
-async def test_enter_accepts_a_row_the_user_navigated_to():
+async def test_enter_applies_the_selected_row_and_submits_it():
+    """OMP applies the selection, then falls through to submission."""
+    sent: list[Frame] = []
     session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
+    app.submit = lambda text: sent.append(text)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _open_list(pilot, app)
@@ -986,21 +989,23 @@ async def test_enter_accepts_a_row_the_user_navigated_to():
         await pilot.pause(0.1)
         await pilot.press("enter")
         await pilot.pause(0.2)
-        # Enter filled the composer and did not submit the command.
-        assert app.query_one("#chat-input").value == "/reload"
+        # `/tasks a` runs `/tasks add`, not the half-typed fragment.
+        assert sent == ["/reload"]
         await session.close()
 
 
-async def test_enter_submits_the_typed_text_when_the_list_was_never_navigated():
+async def test_enter_on_an_untouched_list_takes_the_top_row():
+    """The first row is selected on open, so Enter needs no arrow press first."""
+    sent: list[str] = []
     session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
+    app.submit = lambda text: sent.append(text)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _open_list(pilot, app)
         await pilot.press("enter")
         await pilot.pause(0.2)
-        # `/` on its own is submitted as typed, not turned into `/status`.
-        assert app.query_one("#chat-input").value == ""
+        assert sent == ["/status"]
         await session.close()
 
 
@@ -1016,4 +1021,92 @@ async def test_escape_closes_the_list_without_leaving_the_screen():
         assert panel.display is False
         # Esc closed the list, so it did not also leave the screen.
         assert app.screen is app.query_one("#chat-log").screen
+        await session.close()
+
+
+async def test_home_and_end_jump_to_the_edges():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = await _open_list(pilot, app)
+        await pilot.press("end")
+        await pilot.pause(0.1)
+        assert str(panel.content).splitlines()[COMPLETION_ROWS - 1].startswith("> ")
+        await pilot.press("home")
+        await pilot.pause(0.1)
+        assert str(panel.content).splitlines()[0] == "> /status"
+        await session.close()
+
+
+async def test_right_at_the_end_of_the_line_accepts_the_selected_row():
+    """`Input` binds Right itself, so the Chat binding needs priority to win."""
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _open_list(pilot, app)
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        await pilot.press("right")
+        await pilot.pause(0.2)
+        assert app.query_one("#chat-input").value == "/reload"
+        await session.close()
+
+
+async def test_right_before_the_end_of_the_line_still_moves_the_cursor():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.value = "/ta"
+        field.cursor_position = 1
+        await pilot.pause(0.1)
+        await pilot.press("right")
+        await pilot.pause(0.1)
+        # Mid-line the key keeps its cursor role and the text is untouched.
+        assert field.value == "/ta"
+        assert field.cursor_position == 2
+        await session.close()
+
+
+async def test_a_new_list_starts_on_the_top_row_again():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = await _open_list(pilot, app)
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        assert str(panel.content).splitlines()[0] != "> /status"
+        await pilot.press("backspace")
+        await pilot.pause(0.1)
+        app.query_one("#chat-input").value = "/"
+        await pilot.pause(0.2)
+        assert str(panel.content).splitlines()[0] == "> /status"
+        await session.close()
+
+
+async def test_the_selection_never_lands_on_a_row_that_is_not_drawn():
+    """The cap and the render must agree, or Tab applies an invisible row."""
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = await _open_list(pilot, app)
+        for _ in range(COMPLETION_ROWS + 3):
+            await pilot.press("down")
+            await pilot.pause(0.02)
+            drawn = str(panel.content).splitlines()
+            marked = [line[2:] for line in drawn if line.startswith("> ")]
+            assert len(marked) == 1, drawn
+            # The marked row is a real candidate, never the `+N more` counter.
+            assert not marked[0].startswith("+"), marked
+            # And it is one the user can see: Tab applies exactly this text.
+            await pilot.press("tab")
+            await pilot.pause(0.1)
+            assert app.query_one("#chat-input").value == marked[0]
+            app.query_one("#chat-input").value = "/"
+            await pilot.pause(0.1)
         await session.close()
