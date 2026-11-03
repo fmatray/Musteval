@@ -57,6 +57,11 @@ class SecretPrompt(PromptBox[str | None]):
     BINDINGS = [Binding("enter", "submit", "Store", show=False)]
     CSS = _CSS
 
+    #: Textual focuses this after `_compose` has mounted the children, using a
+    #: non-raising `query`. Focusing from `on_mount` instead races the mount and
+    #: raises `NoMatches` when the Input is not queryable yet.
+    AUTO_FOCUS = "#secret-input"
+
     def __init__(self, key: str) -> None:
         super().__init__()
         self.key = key
@@ -66,9 +71,6 @@ class SecretPrompt(PromptBox[str | None]):
             yield Static(f"secret: {self.key}", classes="prompt-title")
             yield Input(password=True, id="secret-input")
             yield Static("Enter: store | Esc: cancel", classes="prompt-hint")
-
-    def on_mount(self) -> None:
-        self.query_one("#secret-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
