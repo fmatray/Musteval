@@ -884,3 +884,20 @@ async def test_submitting_clears_the_list():
         await pilot.pause(0.2)
         assert app.query_one("#completion").display is False
         await session.close()
+
+
+async def test_the_rendered_list_is_never_taller_than_its_own_box():
+    """`05` §5.1: the `+N more` row must be visible, not clipped by the box."""
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _connected(pilot)
+        app.query_one("#chat-input").value = "/"
+        await pilot.pause(0.2)
+        panel = app.query_one("#completion")
+        lines = str(panel.content).splitlines()
+        assert lines[-1].endswith("more")
+        # A `Static` has no border and no vertical padding, so the box must be
+        # exactly as tall as its content; a shorter region clips the last row.
+        assert panel.region.height == len(lines), (panel.region, lines)
+        await session.close()

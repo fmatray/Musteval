@@ -98,7 +98,11 @@ class ChatScreen(Vertical):
         panel.display = True
 
     def on_mount(self) -> None:
-        self.query_one("#completion", Static).display = False
+        panel = self.query_one("#completion", Static)
+        # Derived, not a second hand-tuned constant: a `Static` has no border and
+        # no vertical padding, so one row per candidate keeps `+N more` visible.
+        panel.styles.max_height = COMPLETION_ROWS + 1
+        panel.display = False
         self.query_one("#chat-input", Input).focus()
 
     def on_show(self) -> None:
@@ -453,7 +457,7 @@ class BridgeApp(App):
     CSS = """
     Screen { layout: vertical; }
     #status-body, #help-body { padding: 1 2; }
-    #completion { padding: 0 2; height: auto; max-height: 10; color: $text-muted; }
+    #completion { padding: 0 2; height: auto; color: $text-muted; }
     #mqtt-brokers { padding: 0 2; }
     #task-hint { padding: 0 2; }
     """
