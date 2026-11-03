@@ -157,6 +157,58 @@ async def test_tab_accepts_the_completion_instead_of_moving_focus():
         await session.close()
 
 
+async def test_tab_leaves_the_composer_where_it_is():
+    """Regression: Tab bounced focus to the log, where typing is silently lost."""
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.focus()
+        for _ in range(4):
+            await pilot.press("tab")
+            await pilot.pause(0.05)
+            assert app.focused is field
+        # A prompt typed after Tab still reaches the composer.
+        await pilot.press("h", "i")
+        await pilot.pause(0.1)
+        assert field.value == "hi"
+        await session.close()
+
+
+async def test_a_screen_takes_focus_where_its_keys_are_needed():
+    """Regression: `/settings` appeared with focus on the chat log and ignored Enter."""
+    session = Session(FakeTransport(on_write=_reply_with_config), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _connected(pilot)
+        app.query_one("#chat-input").focus()
+        await pilot.press(*"/settings")
+        await pilot.press("enter")
+        for _ in range(80):
+            if app.query_one("#settings-table").row_count:
+                break
+            await pilot.pause(0.02)
+        table = app.query_one("#settings-table")
+        assert app.focused is table
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        assert table.cursor_row == 1
+        await pilot.press("enter")
+        for _ in range(80):
+            if isinstance(app.screen, ValuePrompt):
+                break
+            await pilot.pause(0.02)
+        assert isinstance(app.screen, ValuePrompt)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        # Back on Chat, focus returns to the composer, not the log.
+        app.action_show("chat")
+        await pilot.pause(0.2)
+        assert app.focused is app.query_one("#chat-input")
+        await session.close()
+
+
 def test_tab_is_bound_on_the_chat_screen_not_the_app():
     """Tab must stay scoped to the composer, or every screen loses focus traversal."""
     assert "tab" in {binding.key for binding in ChatScreen.BINDINGS}

@@ -287,6 +287,11 @@ shows what the device actually holds.
 
 ## 6. Keybindings
 
+Focus follows the screen: entering a screen puts focus on the widget that consumes
+keys there — the composer on Chat, the table on Tasks and Settings — and the
+conversation log is never focusable, so `Tab` cannot land on it. `PageUp`,
+`PageDown` and the wheel scroll it without focus.
+
 ### 6.1 Global Bindings
 
 | Key | Action |
@@ -313,7 +318,7 @@ that binding and dismisses with a result. Popping the screen instead would leave
 |---|---|---|
 | Chat | `Enter` | Send prompt |
 | Chat | `Ctrl+J` | Insert newline in input |
-| Chat | `Right`/`Tab` | Accept the autocomplete suggestion in the composer |
+| Chat | `Right`/`Tab` | Accept the autocomplete suggestion in the composer. With no suggestion pending, `Tab` does nothing: it never moves focus, because a keystroke landing in the conversation log is silently lost |
 | Chat | `Up`/`Down` | Recall a submitted prompt; `Down` past the newest returns to the draft |
 | Chat | `Esc` | No modal and no other screen on top: cancel the current agent run (`cancel` message) |
 | Chat | `Ctrl+L` | Clear current session scrollback |

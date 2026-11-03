@@ -29,6 +29,16 @@ from .render import (
     sanitize,
 )
 
+class ChatLog(RichLog):
+    """The conversation pane, deliberately not focusable.
+
+    Tab traverses focusable widgets, and a keystroke landing here is silently
+    lost. Scrolling survives: `PageUp` and the wheel work without focus.
+    """
+
+    can_focus = False
+
+
 class ChatScreen(Vertical):
     """`05-bridge.md` §5.1: the conversation pane, composer at the bottom."""
 
@@ -46,7 +56,7 @@ class ChatScreen(Vertical):
         self._history = PromptHistory()
 
     def compose(self) -> ComposeResult:
-        yield RichLog(id="chat-log", wrap=True, markup=False, highlight=False)
+        yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
         yield Input(
             placeholder="Type a prompt, or / for a command",
             id="chat-input",
@@ -55,6 +65,11 @@ class ChatScreen(Vertical):
         )
 
     def on_mount(self) -> None:
+        self.query_one("#chat-input", Input).focus()
+
+    def on_show(self) -> None:
+        # Coming back to Chat must land in the composer, or a prompt typed after
+        # switching screens goes to whichever view held focus.
         self.query_one("#chat-input", Input).focus()
 
     def write(self, text: str) -> None:
@@ -112,6 +127,9 @@ class TasksScreen(Vertical):
     def on_mount(self) -> None:
         table = self.query_one("#task-table", DataTable)
         table.add_columns("ID", "Description", "Trigger", "Status", "Next Fire")
+
+    def on_show(self) -> None:
+        self.query_one("#task-table", DataTable).focus()
 
     def render_tasks(self, tasks: list[dict[str, Any]]) -> None:
         table = self.query_one("#task-table", DataTable)
@@ -185,6 +203,11 @@ class SettingsScreen(Vertical):
                 clip(row.bound, BOUNDS_CLIP),
                 key=row.path,
             )
+
+    def on_show(self) -> None:
+        # The table is the only thing here that takes keys; without this the
+        # screen appears with focus left on the previous view and ignores Enter.
+        self.query_one("#settings-table", DataTable).focus()
 
     def selected_path(self) -> str | None:
         table = self.query_one("#settings-table", DataTable)
