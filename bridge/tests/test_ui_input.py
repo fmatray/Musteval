@@ -18,7 +18,8 @@ from bridge.ui import BridgeApp
 from bridge.ui.app import BOUNDS_CLIP, ChatScreen
 from bridge.ui.render import clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory
-from bridge.ui.modals import ValuePrompt
+from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
+from bridge.ui.task_prompt import TaskPrompt
 from bridge.ui.settings import ROWS, coerce, flatten, lookup, render_value
 
 from .test_ui import _reply
@@ -414,4 +415,310 @@ async def test_settings_escape_cancels_the_value_prompt():
         await pilot.press("escape")
         await pilot.pause(0.3)
         assert not any(b'"name":"config.set"' in line for line in transport.written)
+        await session.close()
+
+
+# -- log lines: the shape the filter reads ------------------------------
+
+
+async def test_a_log_frame_reaches_the_buffer_with_its_level_visible_to_the_filter():
+    """`05` §5.4: level drives colour and filtering, so it must survive to the screen."""
+    from bridge.ui.logs import LogFilter
+
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app._on_log(
+            Frame(type="log", id="d-1", ts=0,
+                  body={"level": "warn", "tag": "llm", "msg": "slow"})
+        )
+        buffered = app.query_one("#logs").buffer.visible()
+        assert len(buffered) == 1
+        assert LogFilter("llm", "warn").matches(buffered[0])
+        assert not LogFilter("net", "warn").matches(buffered[0])
+        await session.close()
+
+
+async def test_clear_empties_the_log_buffer():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("logs")
+        for level in ("warn", "info"):
+            app._on_log(Frame(type="log", id="d-1", ts=0,
+                              body={"level": level, "tag": "net", "msg": "x"}))
+        await pilot.press("c")
+        await pilot.pause(0.1)
+        assert len(app.query_one("#logs").buffer) == 0
+        await session.close()
+
+
+async def test_follow_toggles_and_the_header_says_so():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("logs")
+        await pilot.press("s")
+        await pilot.pause(0.1)
+        assert "OFF" in str(app.query_one("#log-header").content)
+        await session.close()
+
+
+# -- Status and MQTT refresh -------------------------------------------
+
+
+async def test_r_on_status_reissues_the_status_request():
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("status")
+        before = sum(b'"name":"status"' in line for line in transport.written)
+        await pilot.press("r")
+        await pilot.pause(0.3)
+        after = sum(b'"name":"status"' in line for line in transport.written)
+        assert after == before + 1
+        await session.close()
+
+
+async def test_mqtt_arrows_move_the_broker_cursor():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("mqtt")
+        mqtt = app.query_one("#mqtt")
+        mqtt.render_brokers([{"id": "home", "connected": True, "subscriptions": []},
+                             {"id": "lab", "connected": False, "subscriptions": []}])
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        body = str(app.query_one("#mqtt-brokers").content)
+        assert body.splitlines()[1].lstrip().startswith("> lab")
+        await pilot.press("up")
+        await pilot.pause(0.1)
+        assert str(app.query_one("#mqtt-brokers").content).splitlines()[0].lstrip().startswith("> home")
+        await session.close()
+
+
+# -- Tasks screen: the §5.3 keys ---------------------------------------
+
+TASKS = [
+    {"id": "morning", "name": "Morning brief", "enabled": True, "trigger": {"type": "cron"}},
+    {"id": "lab", "name": "Lab", "enabled": False, "trigger": {"type": "cron"}},
+]
+
+
+def _reply_with_tasks(line: bytes) -> list[bytes]:
+    frame = json.loads(line)
+    if frame["type"] == "command" and frame["name"].startswith("tasks."):
+        result = {"tasks": TASKS} if frame["name"] == "tasks.list" else {"id": "morning"}
+        return [
+            encode(
+                Frame(
+                    type="command.result",
+                    id="d-t",
+                    ts=0,
+                    body={"name": frame["name"], "ok": True, "result": result,
+                          "duration_ms": 1},
+                    reply_to=frame["id"],
+                )
+            )
+        ]
+    return _reply(line)
+
+
+def _sent(transport, name: str) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in transport.written
+        if b'"type":"command"' in line and json.loads(line)["name"] == name
+    ]
+
+
+async def _tasks_screen(app, pilot):
+    app.action_show("tasks")
+    await pilot.pause(0.1)
+    app._tasks = TASKS
+    app._render_tasks()
+    await pilot.pause(0.1)
+    return app.query_one("#task-table")
+
+
+async def test_enter_on_a_task_runs_it():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert _sent(transport, "tasks.run")[0]["args"] == {"id": "morning"}
+        await session.close()
+
+
+async def test_space_toggles_the_selected_task_only():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        await pilot.press("space")
+        await pilot.pause(0.3)
+        task = _sent(transport, "tasks.set")[0]["args"]["task"]
+        assert task["id"] == "morning"
+        assert task["enabled"] is False
+        await session.close()
+
+
+async def test_d_asks_before_deleting_and_a_refusal_sends_nothing():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        await pilot.press("d")
+        for _ in range(60):
+            if isinstance(app.screen, ConfirmPrompt):
+                break
+            await pilot.pause(0.02)
+        await pilot.press("n")
+        await pilot.pause(0.3)
+        assert _sent(transport, "tasks.delete") == []
+        await session.close()
+
+
+async def test_d_confirmed_sends_the_delete():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        await pilot.press("d")
+        for _ in range(60):
+            if isinstance(app.screen, ConfirmPrompt):
+                break
+            await pilot.pause(0.02)
+        await pilot.press("y")
+        await pilot.pause(0.3)
+        assert _sent(transport, "tasks.delete")[0]["args"] == {"id": "morning"}
+        await session.close()
+
+
+async def test_e_edits_the_selected_task_through_the_json_modal():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        await pilot.press("e")
+        for _ in range(60):
+            if isinstance(app.screen, TaskPrompt):
+                break
+            await pilot.pause(0.02)
+        field = app.screen.query_one("#task-input")
+        assert json.loads(field.value)["id"] == "morning"
+        field.value = '{"id": "morning", "name": "renamed"}'
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert _sent(transport, "tasks.set")[0]["args"]["task"]["name"] == "renamed"
+        await session.close()
+
+
+async def test_n_starts_from_an_empty_task():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        await pilot.press("n")
+        for _ in range(60):
+            if isinstance(app.screen, TaskPrompt):
+                break
+            await pilot.pause(0.02)
+        assert app.screen.query_one("#task-input").value == "{}"
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        await session.close()
+
+
+async def test_follow_off_stops_the_view_chasing_new_lines():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("logs")
+        await pilot.press("s")
+        await pilot.pause(0.1)
+        body = app.query_one("#log-body")
+        assert body.auto_scroll is False
+        app._on_log(Frame(type="log", id="d-1", ts=0,
+                          body={"level": "info", "tag": "net", "msg": "still buffered"}))
+        await pilot.pause(0.1)
+        assert body.auto_scroll is False
+        assert len(app.query_one("#logs").buffer) == 1
+        await session.close()
+
+
+async def test_the_log_filter_hides_lines_whose_level_is_below_it():
+    from bridge.ui.logs import LogFilter
+
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("logs")
+        for level, msg in (("info", "quiet"), ("error", "loud"), ("warn", "medium")):
+            app._on_log(Frame(type="log", id="d-1", ts=0,
+                              body={"level": level, "tag": "llm", "msg": msg}))
+        await pilot.pause(0.1)
+        app.query_one("#logs").apply_filter("llm", "warn")
+        await pilot.pause(0.1)
+        shown = app.query_one("#log-body")
+        text = "\n".join(str(line.text) for line in shown.lines)
+        assert "loud" in text and "medium" in text
+        assert "quiet" not in text
+        assert LogFilter("llm", "warn").active
+        await session.close()
+
+
+async def test_an_unknown_level_in_the_filter_is_reported_not_sent():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.action_show("logs")
+        app.run_worker(app.edit_log_filter())
+        for _ in range(60):
+            if isinstance(app.screen, FilterPrompt):
+                break
+            await pilot.pause(0.02)
+        app.screen.query_one("#filter-input").value = "llm:loud"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert "unknown log level" in _log(app)
+        assert app.query_one("#logs").buffer.log_filter.min_level == "debug"
+        await session.close()
+
+
+async def test_a_task_mutation_reissues_tasks_list():
+    transport = FakeTransport(on_write=_reply_with_tasks)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _tasks_screen(app, pilot)
+        before = len(_sent(transport, "tasks.list"))
+        await pilot.press("space")
+        await pilot.pause(0.4)
+        assert len(_sent(transport, "tasks.list")) == before + 1
         await session.close()

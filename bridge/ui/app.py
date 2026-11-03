@@ -16,7 +16,9 @@ from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
 from ..protocol import Frame, new_id
 from .help import COMMANDS, HELP_TEXT, CommandSuggester
 from .history import PromptHistory
-from .modals import ConfirmPrompt, SecretPrompt, ValuePrompt
+from .logs import LogBuffer, LogFilter, render_log_line
+from .modals import ConfirmPrompt, FilterPrompt, SecretPrompt, ValuePrompt
+from .task_prompt import TaskPrompt
 from .settings import ROWS, coerce, flatten, lookup, render_value
 from .render import (
     SlashHighlighter,
@@ -28,6 +30,9 @@ from .render import (
     render_tool_result,
     sanitize,
 )
+
+COMPOSER_MAX_ROWS = 6
+
 
 class ChatLog(RichLog):
     """The conversation pane, deliberately not focusable.
@@ -49,6 +54,11 @@ class ChatScreen(Vertical):
         Binding("up", "history_back", "Previous prompt", show=False),
         Binding("down", "history_forward", "Next prompt", show=False),
         Binding("tab", "accept_completion", "Complete", show=False),
+        Binding("ctrl+j", "newline", "Newline", show=False),
+        Binding("ctrl+l", "clear_log", "Clear", show=False),
+        # `Input` accepts this key itself when it is multiline; the binding is
+        # what makes it reachable once the composer has focus.
+        Binding("shift+enter", "newline", "Newline", show=False),
     ]
 
     def __init__(self, **kwargs: Any) -> None:
@@ -77,10 +87,15 @@ class ChatScreen(Vertical):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.input.value = ""
+        self._fit_composer()
         text = event.value.strip()
         if text:
             self._history.add(text)
             self.app.submit(text)  # type: ignore[attr-defined]
+
+    def action_clear_log(self) -> None:
+        """`05` §6.2: clear this session's scrollback, which is local only."""
+        self.query_one("#chat-log", RichLog).clear()
 
     def _input(self) -> Input:
         return self.query_one("#chat-input", Input)
@@ -97,26 +112,60 @@ class ChatScreen(Vertical):
         self._recall(self._history.next(self._input().value))
 
     def action_accept_completion(self) -> None:
-        """Accept the ghost completion; with none, Tab falls back to focus move."""
+        """Accept the ghost completion, and nothing else.
+
+        No suggestion is a no-op on purpose: moving focus would send the next
+        keystroke to the conversation log, where it is silently lost.
+        """
         field = self._input()
         if field._suggestion and field.cursor_at_end:
             field.action_cursor_right()
-            return
-        self.app.action_focus_next()
+
+    def action_newline(self) -> None:
+        field = self._input()
+        field.insert_text_at_cursor("\n")
+        self._fit_composer()
+
+    def _fit_composer(self) -> None:
+        """`05` §5.1 asks for a multi-line box: grow to fit, up to a ceiling.
+
+        `Input` renders embedded newlines but reports a height of one line, so
+        the height is set here rather than by the widget.
+        """
+        field = self._input()
+        # +2 for the tall border `Input` draws above and below its content.
+        rows = min(field.value.count("\n") + 1, COMPOSER_MAX_ROWS)
+        field.styles.height = rows + 2
 
 
 class StatusScreen(VerticalScroll):
     """`05-bridge.md` §5.2: the health grid, refreshed from `status`."""
 
+    BINDINGS = [Binding("r", "refetch", "Refresh", show=False)]
+    # Focusable so its own bindings fire: otherwise the hidden Chat composer
+    # keeps focus and swallows the key.
+    can_focus = True
+
     def compose(self) -> ComposeResult:
         yield Static("no status yet", id="status-body")
+
+    def action_refetch(self) -> None:
+        self.app.run_worker(self.app._request("status"))  # type: ignore[attr-defined]
 
     def render_status(self, status: dict[str, Any]) -> None:
         self.query_one("#status-body", Static).update("\n".join(render_status(status)))
 
 
 class TasksScreen(Vertical):
-    """`05-bridge.md` §5.3."""
+    """`05-bridge.md` §5.3. Every mutation re-issues `tasks.list`."""
+
+    BINDINGS = [
+        Binding("space", "toggle_enabled", "Enable", show=False),
+        Binding("e", "edit_task", "Edit", show=False),
+        Binding("d", "delete_task", "Delete", show=False),
+        Binding("n", "new_task", "New", show=False),
+        Binding("r", "refetch", "Refresh", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="task-table", cursor_type="row")
@@ -145,6 +194,25 @@ class TasksScreen(Vertical):
                 key=task.get("id"),
             )
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.app.run_worker(self.app.run_task(str(event.row_key.value)))  # type: ignore[attr-defined]
+
+    def action_toggle_enabled(self) -> None:
+        self.app.run_worker(self.app.toggle_task())  # type: ignore[attr-defined]
+
+    def action_edit_task(self) -> None:
+        self.app.run_worker(self.app.edit_task())  # type: ignore[attr-defined]
+
+    def action_delete_task(self) -> None:
+        self.app.run_worker(self.app.delete_task())  # type: ignore[attr-defined]
+
+    def action_new_task(self) -> None:
+        self.app.run_worker(self.app.edit_task(new=True))  # type: ignore[attr-defined]
+
+    def action_refetch(self) -> None:
+        self.app.run_worker(self.app._request("tasks.list"))  # type: ignore[attr-defined]
+
     def selected_task_id(self) -> str | None:
         table = self.query_one("#task-table", DataTable)
         if table.row_count == 0 or table.cursor_row is None:
@@ -156,14 +224,75 @@ class TasksScreen(Vertical):
 
 
 class LogsScreen(Vertical):
-    """`05-bridge.md` §5.4."""
+    """`05-bridge.md` §5.4: filter by tag and level, follow mode, clear.
+
+    Every line is buffered whether or not it passes the filter, so widening the
+    filter shows what already arrived rather than only what arrives next.
+    """
+
+    BINDINGS = [
+        Binding("slash", "edit_filter", "Filter", show=False),
+        Binding("c", "clear", "Clear", show=False),
+        Binding("s", "toggle_follow", "Follow", show=False),
+    ]
+    can_focus = True
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.buffer = LogBuffer()
+        self.follow = True
 
     def compose(self) -> ComposeResult:
-        yield Static("Follow: ON", id="log-header")
+        yield Static("Follow: ON  Filter: -", id="log-header")
         yield RichLog(id="log-body", wrap=True, markup=False, highlight=False, max_lines=2000)
 
     def write(self, line: str) -> None:
-        self.query_one("#log-body", RichLog).write(line)
+        self.buffer.add(line)
+        if self.buffer.log_filter.matches(line):
+            self._append(line)
+
+    def _append(self, line: str) -> None:
+        # Follow mode is `RichLog.auto_scroll`: off, the view stays where the
+        # reader put it while lines keep arriving.
+        body = self.query_one("#log-body", RichLog)
+        body.auto_scroll = self.follow
+        body.write(render_log_line(line))
+
+    def refresh_view(self) -> None:
+        """Redraw from the buffer; the filter is the only thing that changes it."""
+        body = self.query_one("#log-body", RichLog)
+        body.clear()
+        for line in self.buffer.visible():
+            body.write(render_log_line(line))
+        self.query_one("#log-header", Static).update(self._header())
+
+    def _header(self) -> str:
+        log_filter = self.buffer.log_filter
+        return (
+            f"Follow: {'ON' if self.follow else 'OFF'}  "
+            f"Filter: {log_filter.tag or '-'}  Level: {log_filter.min_level}"
+        )
+
+    def action_clear(self) -> None:
+        self.buffer.clear()
+        self.query_one("#log-body", RichLog).clear()
+
+    def action_toggle_follow(self) -> None:
+        self.follow = not self.follow
+        body = self.query_one("#log-body", RichLog)
+        body.auto_scroll = self.follow
+        if self.follow:
+            body.scroll_end(animate=False)
+        self.query_one("#log-header", Static).update(self._header())
+
+    def action_edit_filter(self) -> None:
+        self.app.run_worker(self.app.edit_log_filter())  # type: ignore[attr-defined]
+
+    def apply_filter(self, tag: str, min_level: str | None = None) -> None:
+        self.buffer.set_filter(
+            LogFilter(tag, min_level or self.buffer.log_filter.min_level)
+        )
+        self.refresh_view()
 
 
 BOUNDS_CLIP = 44
@@ -232,18 +361,38 @@ class SettingsScreen(Vertical):
 class MqttScreen(Vertical):
     """`05-bridge.md` §5.5: read-only broker state and traffic."""
 
+    BINDINGS = [
+        Binding("r", "refetch", "Refresh", show=False),
+        Binding("up", "move(-1)", "Up", show=False),
+        Binding("down", "move(1)", "Down", show=False),
+    ]
+    can_focus = True
+
     def compose(self) -> ComposeResult:
+        self.selected = 0
+        self._brokers: list[dict[str, Any]] = []
         yield Static("no brokers reported", id="mqtt-brokers")
         yield RichLog(id="mqtt-traffic", wrap=True, markup=False, highlight=False)
 
+    def action_refetch(self) -> None:
+        self.app.run_worker(self.app._request("mqtt.status"))  # type: ignore[attr-defined]
+
+    def action_move(self, delta: int) -> None:
+        if not self._brokers:
+            return
+        self.selected = max(0, min(len(self._brokers) - 1, self.selected + delta))
+        self.render_brokers(self._brokers)
+
     def render_brokers(self, servers: list[dict[str, Any]]) -> None:
+        self._brokers = servers
         if not servers:
             self.query_one("#mqtt-brokers", Static).update("no brokers reported")
             return
         lines = [
-            f"{s.get('id')}  {'connected' if s.get('connected') else 'disconnected'}  "
+            f"{'>' if index == self.selected else ' '} {s.get('id')}  "
+            f"{'connected' if s.get('connected') else 'disconnected'}  "
             f"{len(s.get('subscriptions') or [])} subs"
-            for s in servers
+            for index, s in enumerate(servers)
         ]
         self.query_one("#mqtt-brokers", Static).update("\n".join(lines))
 
@@ -292,12 +441,13 @@ class BridgeApp(App):
         #: `_config` is empty both before the first fetch and when the device
         #: reports nothing, so a flag decides whether a fetch already happened.
         self._config_fetched = False
+        # A silent refresh after a mutation should not narrate its count.
+        self._tasks_quiet = False
         self._tasks: list[dict[str, Any]] = []
         self._last_prompt: str | None = None
         self._usage_total = 0
         self._last_input_bytes = 0
         self._todo_open = False
-        self._log_backlog: list[str] = []
         self._seen_lines: set[str] = set()
 
     # -- lifecycle ------------------------------------------------------
@@ -337,12 +487,22 @@ class BridgeApp(App):
         for screen in ("chat", "status", "tasks", "logs", "settings", "mqtt", "help"):
             self.query_one(f"#{screen}").display = screen == name
         self.title = name.capitalize()
+        # `on_show` does not fire for a container whose `display` is toggled, so
+        # the key widget is focused here; without it the hidden Chat composer
+        # keeps focus and swallows the screen's bindings.
+        # Keyed by screen id; the table screens hand focus to their table.
+        target = {
+            "tasks": "#task-table",
+            "settings": "#settings-table",
+        }.get(name, f"#{name}")
+        if name != "chat":
+            self.query_one(target).focus()
         if name == "status":
             self._render_status()
         if name == "tasks":
             self._render_tasks()
         if name == "logs":
-            self._flush_logs()
+            self._logs().refresh_view()
         if name == "settings" and not self._config_fetched:
             self.run_worker(self._request("config.get"))
 
@@ -366,6 +526,61 @@ class BridgeApp(App):
             self._chat().write(f"✗ {exc}")
             return
         await self._request("config.set", {"path": row.path, "value": value})
+
+    # -- Tasks screen actions (`05` §5.3) --------------------------------
+
+    def _tasks_screen(self) -> TasksScreen:
+        return self.query_one("#tasks", TasksScreen)
+
+    async def run_task(self, task_id: str) -> None:
+        await self._request("tasks.run", {"id": task_id})
+
+    async def toggle_task(self) -> None:
+        task = self._task_by_id(self._tasks_screen().selected_task_id())
+        if task is None:
+            self._chat().write("no task selected")
+            return
+        await self._request(
+            "tasks.set", {"task": {**task, "enabled": not task.get("enabled")}}
+        )
+
+    async def delete_task(self) -> None:
+        task_id = self._tasks_screen().selected_task_id()
+        if task_id is None:
+            self._chat().write("no task selected")
+            return
+        # `05` §7: delete is the one irreversible command.
+        if not await self.push_screen_wait(ConfirmPrompt(f"Delete task {task_id}?")):
+            self._chat().write("delete cancelled")
+            return
+        await self._request("tasks.delete", {"id": task_id})
+
+    async def edit_task(self, new: bool = False) -> None:
+        """`E`/`N`: edit the selected task as JSON and send `tasks.set`."""
+        task = None if new else self._task_by_id(self._tasks_screen().selected_task_id())
+        if not new and task is None:
+            self._chat().write("no task selected")
+            return
+        edited = await self.push_screen_wait(TaskPrompt(task))
+        if edited is None:
+            return
+        await self._request("tasks.set", {"task": edited})
+
+    def _task_by_id(self, task_id: str | None) -> dict[str, Any] | None:
+        if task_id is None:
+            return None
+        return next((task for task in self._tasks if task.get("id") == task_id), None)
+
+    async def edit_log_filter(self) -> None:
+        """`/` on Logs: one line, `tag` or `tag:level`."""
+        typed = await self.push_screen_wait(FilterPrompt(self._logs().buffer.log_filter))
+        if typed is None:
+            return
+        tag, _, level = typed.partition(":")
+        try:
+            self._logs().apply_filter(tag.strip(), level.strip() or None)
+        except ValueError as exc:
+            self._chat().write(f"✗ {exc}")
 
     def action_back(self) -> None:
         """`05-bridge.md` §6: Esc closes the top modal, then leaves a screen.
@@ -411,12 +626,6 @@ class BridgeApp(App):
         if handler is not None:
             handler(frame)
 
-    def _flush_logs(self) -> None:
-        log = self._logs()
-        for line in self._log_backlog:
-            log.write(line)
-        self._log_backlog.clear()
-
     def _chat(self) -> ChatScreen:
         return self.query_one("#chat", ChatScreen)
 
@@ -442,15 +651,14 @@ class BridgeApp(App):
         self.query_one("#tasks", TasksScreen).render_tasks(self._tasks)
 
     def _on_log(self, frame: Frame) -> None:
+        # Bracketed so `LogBuffer` can recover the level for filtering and colour;
+        # `05` §5.4's mockup prints it the same way.
         line = (
-            f"{frame.body.get('level')} {frame.body.get('tag')}: "
+            f"[{frame.body.get('level')}] {frame.body.get('tag')}: "
             f"{sanitize(str(frame.body.get('msg')))}"
         )
-        # `RichLog` discards writes while its screen is hidden, so the line is
-        # buffered here and flushed when Logs is opened.
-        self._log_backlog.append(line)
-        if self.query_one("#logs").display:
-            self._logs().write(line)
+        # The logs screen buffers whether or not it is on screen.
+        self._logs().write(line)
 
     def _on_agent_start(self, frame: Frame) -> None:
         self._last_input_bytes = frame.body.get("input_bytes", 0)
@@ -509,7 +717,15 @@ class BridgeApp(App):
         if name == "tasks.list" and isinstance(result, dict):
             self._tasks = result.get("tasks") or []
             self._render_tasks()
-            self._chat().write(f"{len(self._tasks)} task(s)")
+            if not self._tasks_quiet:
+                self._chat().write(f"{len(self._tasks)} task(s)")
+            self._tasks_quiet = False
+            return
+        if name in ("tasks.set", "tasks.delete"):
+            # `05` §5.3: a mutation re-issues `tasks.list`, so no row goes stale.
+            self._chat().write(f"{name} {result.get('id') or result.get('task_id')}")
+            self._tasks_quiet = True
+            self.run_worker(self._request("tasks.list"))
             return
         if name == "mqtt.status":
             servers = result if isinstance(result, list) else (result or {}).get("servers", [])

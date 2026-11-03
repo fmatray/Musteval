@@ -108,6 +108,33 @@ class ConfirmPrompt(PromptBox[bool]):
         self.dismiss(False)
 
 
+class FilterPrompt(PromptBox[str | None]):
+    """`/` on the Logs screen: a tag, or `tag:level`, as one line."""
+
+    BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
+    CSS = _CSS
+    AUTO_FOCUS = "#filter-input"
+
+    def __init__(self, current: object = None) -> None:
+        super().__init__()
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        tag = getattr(self.current, "tag", "") or ""
+        level = getattr(self.current, "min_level", "debug")
+        seeded = f"{tag}:{level}" if level != "debug" else tag
+        with Vertical(classes="prompt-box"):
+            yield Static("log filter", classes="prompt-title")
+            yield Input(value=seeded, placeholder="tag[:level]", id="filter-input")
+            yield Static("Enter: apply | Esc: cancel", classes="prompt-hint")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_submit()
+
+    def action_submit(self) -> None:
+        self.dismiss(self.query_one("#filter-input", Input).value.strip() or None)
+
+
 class ValuePrompt(PromptBox[str | None]):
     """Pre-filled editor for one `05-bridge.md` §5.7 config row."""
 
