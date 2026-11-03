@@ -836,7 +836,7 @@ async def test_typing_a_slash_lists_the_commands_above_the_composer():
         await pilot.pause(0.1)
         assert panel.display is True
         listed = str(panel.content).splitlines()
-        assert listed[0] == "/status"
+        assert listed[0] == "> /status"
         assert len(listed) == COMPLETION_ROWS + 1  # eight rows, then the overflow
         assert listed[-1].startswith("+") and listed[-1].endswith("more")
         await session.close()
@@ -849,11 +849,11 @@ async def test_the_list_filters_to_the_typed_prefix():
         await _connected(pilot)
         app.query_one("#chat-input").value = "/ta"
         await pilot.pause(0.1)
-        assert str(app.query_one("#completion").content).splitlines() == ["/tasks"]
+        assert str(app.query_one("#completion").content).splitlines() == ["> /tasks"]
         app.query_one("#chat-input").value = "/tasks "
         await pilot.pause(0.1)
         assert "+" not in str(app.query_one("#completion").content)
-        assert str(app.query_one("#completion").content).splitlines()[0] == "/tasks add"
+        assert str(app.query_one("#completion").content).splitlines()[0] == "> /tasks add"
         await session.close()
 
 
@@ -900,4 +900,120 @@ async def test_the_rendered_list_is_never_taller_than_its_own_box():
         # A `Static` has no border and no vertical padding, so the box must be
         # exactly as tall as its content; a shorter region clips the last row.
         assert panel.region.height == len(lines), (panel.region, lines)
+        await session.close()
+
+
+# -- OMP navigation semantics (`05` §5.1) --------------------------------
+
+
+async def _open_list(pilot, app, value="/"):
+    app.query_one("#chat-input").value = value
+    await pilot.pause(0.1)
+    return app.query_one("#completion")
+
+
+async def test_the_list_opens_with_its_top_row_selected():
+    """OMP's SelectList starts on index 0 rather than on nothing."""
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = await _open_list(pilot, app)
+        first = str(panel.content).splitlines()[0]
+        assert first == "> /status"
+        await session.close()
+
+
+async def test_the_arrows_walk_the_list_and_wrap_at_the_edges():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = await _open_list(pilot, app)
+
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        assert str(panel.content).splitlines()[1] == "> /reload"
+
+        # Down past the last row wraps to the first.
+        for _ in range(COMPLETION_ROWS - 1):
+            await pilot.press("down")
+        await pilot.pause(0.1)
+        assert str(panel.content).splitlines()[0] == "> /status"
+
+        # Up from the top wraps to the last.
+        await pilot.press("up")
+        await pilot.pause(0.1)
+        assert str(panel.content).splitlines()[COMPLETION_ROWS - 1].startswith("> ")
+        await session.close()
+
+
+async def test_an_arrow_key_does_not_recall_history_while_the_list_is_open():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.submit("first prompt")
+        await pilot.pause(0.2)
+        await _open_list(pilot, app)
+        await pilot.press("up")
+        await pilot.pause(0.1)
+        assert app.query_one("#chat-input").value == "/"
+        await session.close()
+
+
+async def test_tab_accepts_the_highlighted_row_not_the_ghost():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _open_list(pilot, app)
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        await pilot.press("tab")
+        await pilot.pause(0.1)
+        assert app.query_one("#chat-input").value == "/reload"
+        await session.close()
+
+
+async def test_enter_accepts_a_row_the_user_navigated_to():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _open_list(pilot, app)
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        # Enter filled the composer and did not submit the command.
+        assert app.query_one("#chat-input").value == "/reload"
+        await session.close()
+
+
+async def test_enter_submits_the_typed_text_when_the_list_was_never_navigated():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        await _open_list(pilot, app)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        # `/` on its own is submitted as typed, not turned into `/status`.
+        assert app.query_one("#chat-input").value == ""
+        await session.close()
+
+
+async def test_escape_closes_the_list_without_leaving_the_screen():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = await _open_list(pilot, app)
+        assert panel.display is True
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert panel.display is False
+        # Esc closed the list, so it did not also leave the screen.
+        assert app.screen is app.query_one("#chat-log").screen
         await session.close()

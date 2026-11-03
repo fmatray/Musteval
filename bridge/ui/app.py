@@ -56,6 +56,11 @@ class ChatScreen(Vertical):
         Binding("up", "history_back", "Previous prompt", show=False),
         Binding("down", "history_forward", "Next prompt", show=False),
         Binding("tab", "accept_completion", "Complete", show=False),
+        Binding("right", "cursor_right", "Accept", show=False),
+        Binding("pageup", "page_back", "Earlier", show=False),
+        # Esc closes the list first; the App's binding handles the rest.
+        Binding("escape", "dismiss_completion", "Close list", show=False),
+        Binding("pagedown", "page_forward", "Later", show=False),
         Binding("ctrl+j", "newline", "Newline", show=False),
         Binding("ctrl+l", "clear_log", "Clear", show=False),
         # `Input` accepts this key itself when it is multiline; the binding is
@@ -66,6 +71,13 @@ class ChatScreen(Vertical):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._history = PromptHistory()
+        #: Candidates currently listed, and the index the arrows sit on.
+        self._candidates: list[str] = []
+        self._total = 0
+        #: Index the arrows sit on. OMP opens the list with the top row chosen.
+        self._cursor = 0
+        #: True once an arrow moved the cursor, so Enter accepts instead of submits.
+        self._enter_accepts = False
 
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
@@ -86,16 +98,44 @@ class ChatScreen(Vertical):
         self._show_options(event.value)
 
     def _show_options(self, value: str) -> None:
-        panel = self.query_one("#completion", Static)
         candidates = options(value)
-        if not candidates:
+        self._total = len(candidates)
+        self._candidates = candidates[:COMPLETION_ROWS]
+        # A refresh is a new list, so the arrow's choice does not carry over.
+        if not self._candidates:
+            self._cursor = 0
+        self._enter_accepts = False
+        self._cursor = min(self._cursor, max(0, len(self._candidates) - 1))
+        self._render_options()
+
+    def _render_options(self) -> None:
+        panel = self.query_one("#completion", Static)
+        if not self._candidates:
             panel.display = False
             return
-        shown = candidates[:COMPLETION_ROWS]
-        if len(candidates) > len(shown):
-            shown.append(f"+{len(candidates) - len(shown)} more")
-        panel.update("\n".join(shown))
+        # A marker, not a colour: colour never carries meaning on its own.
+        lines = [
+            f"{'> ' if index == self._cursor else '  '}{candidate}"
+            for index, candidate in enumerate(self._candidates)
+        ]
+        hidden = self._total - len(self._candidates)
+        if hidden > 0:
+            lines.append(f"+{hidden} more")
+        panel.update("\n".join(lines))
         panel.display = True
+
+    def _move_cursor(self, delta: int) -> None:
+        """Move by `delta` rows, wrapping at the edges — OMP's list behaviour.
+
+        Wrapping is what makes Down from the last row reach the first, so a
+        short list never needs Home/End to get back to the top.
+        """
+        count = len(self._candidates)
+        if not count:
+            return
+        self._cursor = (self._cursor + delta) % count
+        self._enter_accepts = True
+        self._render_options()
 
     def on_mount(self) -> None:
         panel = self.query_one("#completion", Static)
@@ -114,6 +154,11 @@ class ChatScreen(Vertical):
         self.query_one("#chat-log", RichLog).write(text)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # OMP rule: Enter accepts the row an arrow chose, but a list the user
+        # never navigated submits the typed text instead.
+        if self._candidates and self._enter_accepts:
+            self._apply(self._candidates[self._cursor])
+            return
         event.input.value = ""
         self._show_options("")
         self._fit_composer()
@@ -136,20 +181,59 @@ class ChatScreen(Vertical):
         self._show_options(recalled)
 
     def action_history_back(self) -> None:
+        if self._candidates:
+            self._move_cursor(-1)
+            return
         self._recall(self._history.previous(self._input().value))
 
     def action_history_forward(self) -> None:
+        if self._candidates:
+            self._move_cursor(1)
+            return
         self._recall(self._history.next(self._input().value))
 
-    def action_accept_completion(self) -> None:
-        """Accept the ghost completion, and nothing else.
+    def action_page_back(self) -> None:
+        if self._candidates:
+            self._move_cursor(-COMPLETION_ROWS)
 
-        No suggestion is a no-op on purpose: moving focus would send the next
-        keystroke to the conversation log, where it is silently lost.
+    def action_page_forward(self) -> None:
+        if self._candidates:
+            self._move_cursor(COMPLETION_ROWS)
+
+    def action_accept_completion(self) -> None:
+        """Tab and Right-at-end: apply the listed choice, never move focus.
+
+        Moving focus would send the next keystroke to the conversation log,
+        where it is silently lost.
         """
+        if self._candidates:
+            self._apply(self._candidates[self._cursor])
+            return
         field = self._input()
         if field._suggestion and field.cursor_at_end:
             field.action_cursor_right()
+
+    def _apply(self, chosen: str) -> None:
+        field = self._input()
+        field.value = chosen
+        field.cursor_position = len(chosen)
+        self._show_options(chosen)
+
+    def action_cursor_right(self) -> None:
+        """OMP accepts the selection from a Right at the end of the line."""
+        field = self._input()
+        if self._candidates and field.cursor_at_end:
+            self.action_accept_completion()
+            return
+        field.action_cursor_right()
+
+    def action_dismiss_completion(self) -> None:
+        """Esc closes the list and does nothing else; it falls back to Back."""
+        if self._candidates:
+            self._candidates = []
+            self._render_options()
+            return
+        self.app.action_back()  # type: ignore[attr-defined]
 
     def action_newline(self) -> None:
         field = self._input()
