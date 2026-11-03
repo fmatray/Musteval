@@ -13,7 +13,15 @@ import pytest
 from bridge.client import Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode, reset_ids
-from bridge.ui.render import clip, render_diag, render_status, render_tool_call, render_tool_result, sanitize
+from bridge.ui.render import (
+    clip,
+    render_diag,
+    render_prompt_bar,
+    render_status,
+    render_tool_call,
+    render_tool_result,
+    sanitize,
+)
 
 ACK = {
     "device": "test-agent",
@@ -334,4 +342,68 @@ async def test_ui_help_screen_reachable():
         await pilot.pause(0.1)
         assert app.query_one("#help").display is True
         assert app.query_one("#chat").display is False
+        await session.close()
+
+
+# -- prompt bar (`05` §5.1) ---------------------------------------------
+
+
+def test_the_prompt_bar_names_the_link_and_costs_a_live_status():
+    line = render_prompt_bar("connected", {"device": "musteval-01"}, STATUS, 1234)
+    segments = line.split(" | ")
+    assert segments[0] == "linked"
+    assert "openai/gpt" in segments
+    assert "idle" in segments
+    assert "-55dBm" in segments
+    assert "workspace 0/20" in segments
+    assert "1234 tok" in segments
+    assert segments[-1] == "musteval-01"
+
+
+def test_the_bar_omits_what_it_does_not_know_rather_than_inventing_it():
+    """A down link with no status must not blame the provider."""
+    assert render_prompt_bar("down", {}, {}, 0) == "down"
+
+
+def test_the_bar_reports_the_facts_that_explain_a_trouble():
+    status = {
+        "llm": {"provider": "openai", "model": "m", "available": False},
+        "agent": {"busy": True, "run_id": "r-7", "queue_depth": 2, "max_queue": 2},
+        "sys": {"safe_mode": True},
+    }
+    segments = render_prompt_bar("degraded", {"device": "x"}, status, 5).split(" | ")
+    assert segments[0] == "flaky"
+    assert "llm down" in segments
+    assert "busy r-7" in segments
+    assert "queue 2/2" in segments
+    assert "SAFE MODE" in segments
+
+
+def test_a_queue_of_zero_is_not_a_segment():
+    status = {"agent": {"busy": False, "run_id": None, "queue_depth": 0, "max_queue": 2}}
+    assert "queue" not in render_prompt_bar("connected", {}, status, 0)
+
+
+async def test_the_prompt_bar_is_visible_and_refreshes_with_the_status():
+    from bridge.ui import BridgeApp
+
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.1)
+        chat = app.query_one("#chat")
+        first = chat.bar_line
+        assert first.startswith("linked")
+        assert "test-agent" in first
+
+        # A status arriving changes the bar without any keystroke: `/status` is
+        # an ordinary command and its reply is what feeds the bar.
+        app.submit("/status")
+        await pilot.pause(0.3)
+        after = app.query_one("#chat").bar_line
+        assert "openai/gpt" in after and "-55dBm" in after
         await session.close()

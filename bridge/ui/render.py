@@ -82,6 +82,87 @@ def render_status(status: dict[str, Any]) -> list[str]:
     ]
 
 
+#: `05-bridge.md` §5.1: the prompt bar's segment separators. A plain `|` rather
+#: than a powerline glyph, because a codepoint a terminal cannot draw would take
+#: the fact with it.
+PROMPT_SEPARATOR = " | "
+
+#: Short forms for the bar, which has one line and many facts. The Status screen
+#: keeps the long words; this is the same value, said in less.
+_LINK_WORDS = {
+    "connected": "linked",
+    "connecting": "linking",
+    "wait_ack": "linking",
+    "degraded": "flaky",
+    "rejected": "refused",
+    "down": "down",
+}
+
+
+def render_prompt_bar(
+    link: str,
+    ack: dict[str, Any],
+    status: dict[str, Any],
+    tokens: int,
+) -> str:
+    """The prompt bar above the composer, per `05-bridge.md` §5.1.
+
+    Every segment is a fact the bridge already holds: the link state it is
+    tracking, the `hello_ack` fields it stored, the last `status` frame and the
+    running token total. Nothing here costs a frame, so the bar never turns a
+    keystroke into a round trip.
+    """
+    llm = status.get("llm") or {}
+    agent = status.get("agent") or {}
+    wifi = status.get("wifi") or {}
+    storage = status.get("storage") or {}
+    wsfs = storage.get("wsfs") or {}
+    sysinfo = status.get("sys") or {}
+
+    segments = [_LINK_WORDS.get(link, link)]
+
+    # Nothing is claimed before the device has said it: an empty `status` leaves
+    # the bar with the link state alone rather than "no model", which would blame
+    # the provider for a bridge that has simply not heard back yet.
+    model = llm.get("model")
+    if model:
+        provider = llm.get("provider") or "?"
+        segments.append(f"{provider}/{model}")
+        # A provider that is down is a fact worth the space; a working one is not.
+        if not llm.get("available", True):
+            segments.append("llm down")
+
+    if agent:
+        if agent.get("busy"):
+            segments.append(f"busy {agent.get('run_id')}")
+        else:
+            segments.append("idle")
+        queue = agent.get("queue_depth") or 0
+        if queue:
+            segments.append(f"queue {queue}/{agent.get('max_queue')}")
+
+    rssi = wifi.get("rssi")
+    if rssi is not None:
+        segments.append(f"{rssi}dBm")
+
+    quota = storage.get("workspace_quota_bytes")
+    if quota:
+        used = wsfs.get("used_bytes") or 0
+        segments.append(f"workspace {used}/{quota}")
+
+    if sysinfo.get("safe_mode"):
+        segments.append("SAFE MODE")
+
+    if tokens:
+        segments.append(f"{tokens} tok")
+
+    device = ack.get("device")
+    if device:
+        segments.append(str(device))
+
+    return PROMPT_SEPARATOR.join(str(segment) for segment in segments)
+
+
 def render_diag(status: dict[str, Any]) -> list[str]:
     """`/diag`: the diagnostic half of `status`, per `05-bridge.md` §7."""
     mem = status.get("mem") or {}

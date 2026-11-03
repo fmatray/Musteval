@@ -83,7 +83,8 @@ periodically and expects a `pong` within 5 s.
 ### 5.1 Chat Screen (F2)
 The primary interaction pane.
 
-- **Input**: A multi-line input box at the bottom.
+- **Input**: A multi-line input box at the bottom, with a one-row prompt bar
+  directly above it.
 - **Output**: A scrollable log of the conversation.
 - **Behavior**:
   - `prompt` is sent on Enter.
@@ -116,6 +117,23 @@ The primary interaction pane.
     counter, so a keypress cannot apply a command that was not on screen. `Esc`
     closes the list and does nothing else; with no list open it backs out of the
     screen as before.
+  - The prompt bar above the composer is one row of facts about the link and the
+    agent, in the manner of a shell's prompt line. Segments are joined by ` | `
+    and each is a value the bridge already holds, so the bar never costs a
+    frame: the link state (`down`, `linking`, `linked`, `flaky`, `refused`), the
+    provider and model while a `status` has named one, the agent's `idle` or
+    `busy <run_id>`, a queue segment only while the queue is non-empty, RSSI in
+    `dBm`, workspace use against its quota, `SAFE MODE` while safe mode is
+    active, the running token total once a call has been charged, and the
+    `device` from `hello_ack`. A segment whose fact is unknown is omitted rather
+    than rendered as `none`: a bar that blamed the provider before the first
+    `status` arrived would send the reader after the wrong thing.
+  - The bar is redrawn when a fact changes: `hello_ack`, a `status` frame, the
+    `status` command's own reply (a `/status` is a command, not a push, and a bar
+    that ignored it would stay empty until the device volunteered one), a usage
+    frame, mount and a resize. Never on a keystroke. It is one row and truncates
+    at the terminal's width, so a narrow window loses the tail of the facts
+    rather than the composer.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer.
@@ -134,6 +152,7 @@ The primary interaction pane.
 |                                                                       |
 | User: [ /tasks list ]                                                 |
 +-----------------------------------------------------------------------+
+| linked | openai/gpt-4o-mini | idle | -58dBm | workspace 2048/65536    |
 | > Hello agent!                                                        |
 +-----------------------------------------------------------------------+
 ```

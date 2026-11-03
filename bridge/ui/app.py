@@ -41,6 +41,7 @@ from .render import (
     clip,
     render_diag,
     render_json_block,
+    render_prompt_bar,
     render_status,
     render_tool_call,
     render_tool_result,
@@ -100,6 +101,7 @@ class ChatScreen(Vertical):
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
         yield Static("", id="completion", markup=False)
+        yield Static("", id="prompt-bar", markup=False)
         yield Input(
             placeholder="Type a prompt, or / for a command",
             id="chat-input",
@@ -183,6 +185,15 @@ class ChatScreen(Vertical):
 
     def write(self, text: str) -> None:
         self.query_one("#chat-log", RichLog).write(text)
+
+    def render_bar(self, line: str) -> None:
+        """`05` §5.1: the fact line above the composer.
+
+        The text is held here as well: textual 8's `Static` keeps no readable
+        renderable, and a test needs the line, not the widget.
+        """
+        self.bar_line = line
+        self.query_one("#prompt-bar", Static).update(line)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # OMP applies the selected row and then submits the applied value, which
@@ -663,6 +674,9 @@ class BridgeApp(App):
     Screen { layout: vertical; }
     #status-body, #help-body { padding: 1 2; }
     #completion { padding: 0 2; height: auto; color: $text-muted; }
+    /* One row, never wrapped: a bar that grows with the facts would push the
+       composer off a short terminal. Truncated by `clip` at the call site. */
+    #prompt-bar { padding: 0 2; height: 1; color: $text-muted; }
     #mqtt-brokers { padding: 0 2; }
     #task-hint { padding: 0 2; }
     """
@@ -722,6 +736,7 @@ class BridgeApp(App):
         for name in ("status", "tasks", "logs", "settings", "mqtt", "files", "help"):
             self.query_one(f"#{name}").display = False
         self.query_one("#chat").display = True
+        self._refresh_bar()
         # Run in a worker: mounting must not block the loop that pumps the
         # transport, or the handshake can never complete.
         self.run_worker(self._start(), exclusive=False)
@@ -731,6 +746,7 @@ class BridgeApp(App):
         if self.session.state is not LinkState.CONNECTED:
             self._chat().write(f"[{self.session.state.value}]")
             return
+        self._refresh_bar()
         ack = self.session.hello_ack
         if ack is not None:
             self._on_hello_ack(ack)
@@ -989,8 +1005,32 @@ class BridgeApp(App):
     def _logs(self) -> LogsScreen:
         return self.query_one("#logs", LogsScreen)
 
+    def _refresh_bar(self) -> None:
+        """Redraw the prompt bar from state already in hand (`05` §5.1).
+
+        Called on every fact that changes, never on a keystroke, so the bar
+        costs no frames.
+        """
+        if not self.is_mounted:
+            return
+        bar = render_prompt_bar(
+            self.session.state.value,
+            self._state,
+            self._last_status,
+            self._usage_total,
+        )
+        # One row: the bar truncates rather than wraps, so a narrow terminal
+        # loses the tail of the facts, never the composer.
+        self._chat().render_bar(clip(bar, max(self.size.width - 4, 20)))
+
+    def on_resize(self) -> None:
+        # The bar truncates to the width in force when it was drawn, so a narrow
+        # window would keep a tail that no longer fits.
+        self._refresh_bar()
+
     def _on_hello_ack(self, frame: Frame) -> None:
         self._state = frame.body
+        self._refresh_bar()
         self._chat().write(
             f"connected: {frame.body.get('device')} fw {frame.body.get('fw_version')} "
             f"boot {frame.body.get('boot_id')}"
@@ -999,6 +1039,7 @@ class BridgeApp(App):
     def _on_status(self, frame: Frame) -> None:
         self._last_status = frame.body
         self._render_status()
+        self._refresh_bar()
 
     def _render_status(self) -> None:
         if self._last_status:
@@ -1030,6 +1071,7 @@ class BridgeApp(App):
     def _on_agent_final(self, frame: Frame) -> None:
         usage = frame.body.get("usage") or {}
         self._usage_total += usage.get("total_tokens", 0)
+        self._refresh_bar()
         self._todo_open = bool(frame.body.get("todo_open"))
         self._chat().write(str(frame.body.get("text", "")))
 
@@ -1070,6 +1112,7 @@ class BridgeApp(App):
         if name == "status" and isinstance(result, dict):
             self._last_status = result
             self._render_status()
+            self._refresh_bar()
             return
         if name == "tasks.list" and isinstance(result, dict):
             self._tasks = result.get("tasks") or []
