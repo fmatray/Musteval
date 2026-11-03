@@ -15,7 +15,7 @@ from bridge.client import Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
-from bridge.ui.app import BOUNDS_CLIP, ChatScreen
+from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, ChatScreen
 from bridge.ui.render import clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory
 from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
@@ -819,4 +819,68 @@ async def test_a_sub_command_reports_in_chat_without_moving_the_reader():
         assert app.query_one("#chat").display is True
         assert app.query_one("#mqtt").display is False
         assert _sent(transport, "mqtt.publish")
+        await session.close()
+
+
+# -- completion list (`05` §5.1) ----------------------------------------
+
+
+async def test_typing_a_slash_lists_the_commands_above_the_composer():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        panel = app.query_one("#completion")
+        assert panel.display is False
+        app.query_one("#chat-input").value = "/"
+        await pilot.pause(0.1)
+        assert panel.display is True
+        listed = str(panel.content).splitlines()
+        assert listed[0] == "/status"
+        assert len(listed) == COMPLETION_ROWS + 1  # eight rows, then the overflow
+        assert listed[-1].startswith("+") and listed[-1].endswith("more")
+        await session.close()
+
+
+async def test_the_list_filters_to_the_typed_prefix():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.query_one("#chat-input").value = "/ta"
+        await pilot.pause(0.1)
+        assert str(app.query_one("#completion").content).splitlines() == ["/tasks"]
+        app.query_one("#chat-input").value = "/tasks "
+        await pilot.pause(0.1)
+        assert "+" not in str(app.query_one("#completion").content)
+        assert str(app.query_one("#completion").content).splitlines()[0] == "/tasks add"
+        await session.close()
+
+
+async def test_the_list_disappears_when_the_text_is_not_a_command():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.query_one("#chat-input").value = "/"
+        await pilot.pause(0.1)
+        panel = app.query_one("#completion")
+        assert panel.display is True
+        app.query_one("#chat-input").value = "hello"
+        await pilot.pause(0.1)
+        assert panel.display is False
+        await session.close()
+
+
+async def test_submitting_clears_the_list():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.query_one("#chat-input").value = "/us"
+        await pilot.pause(0.1)
+        assert app.query_one("#completion").display is True
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert app.query_one("#completion").display is False
         await session.close()

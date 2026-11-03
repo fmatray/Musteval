@@ -14,7 +14,7 @@ from ..client import LinkState, Session
 from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
 from ..protocol import Frame, new_id
-from .help import COMMANDS, HELP_TEXT, CommandSuggester
+from .help import COMMANDS, HELP_TEXT, CommandSuggester, options
 from .history import PromptHistory
 from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import ConfirmPrompt, FilterPrompt, SecretPrompt, ValuePrompt
@@ -32,6 +32,8 @@ from .render import (
 )
 
 COMPOSER_MAX_ROWS = 6
+#: `05-bridge.md` §5.1: the candidate list never pushes the conversation away.
+COMPLETION_ROWS = 8
 
 
 class ChatLog(RichLog):
@@ -67,6 +69,7 @@ class ChatScreen(Vertical):
 
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
+        yield Static("", id="completion", markup=False)
         yield Input(
             placeholder="Type a prompt, or / for a command",
             id="chat-input",
@@ -74,7 +77,28 @@ class ChatScreen(Vertical):
             highlighter=SlashHighlighter(frozenset(c.name for c in COMMANDS)),
         )
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """`05-bridge.md` §5.1: list the candidates for the token being typed.
+
+        A hint, not a menu: `Tab` still accepts the ghost completion and Enter
+        still submits whatever has been typed.
+        """
+        self._show_options(event.value)
+
+    def _show_options(self, value: str) -> None:
+        panel = self.query_one("#completion", Static)
+        candidates = options(value)
+        if not candidates:
+            panel.display = False
+            return
+        shown = candidates[:COMPLETION_ROWS]
+        if len(candidates) > len(shown):
+            shown.append(f"+{len(candidates) - len(shown)} more")
+        panel.update("\n".join(shown))
+        panel.display = True
+
     def on_mount(self) -> None:
+        self.query_one("#completion", Static).display = False
         self.query_one("#chat-input", Input).focus()
 
     def on_show(self) -> None:
@@ -87,6 +111,7 @@ class ChatScreen(Vertical):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.input.value = ""
+        self._show_options("")
         self._fit_composer()
         text = event.value.strip()
         if text:
@@ -104,6 +129,7 @@ class ChatScreen(Vertical):
         field = self._input()
         field.value = recalled
         field.cursor_position = len(recalled)
+        self._show_options(recalled)
 
     def action_history_back(self) -> None:
         self._recall(self._history.previous(self._input().value))
@@ -427,6 +453,7 @@ class BridgeApp(App):
     CSS = """
     Screen { layout: vertical; }
     #status-body, #help-body { padding: 1 2; }
+    #completion { padding: 0 2; height: auto; max-height: 10; color: $text-muted; }
     #mqtt-brokers { padding: 0 2; }
     #task-hint { padding: 0 2; }
     """

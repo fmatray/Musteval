@@ -165,6 +165,19 @@ def suggest(value: str) -> str | None:
     return _complete(partial, subcommands, f"/{head} ")
 
 
+def options(value: str) -> list[str]:
+    """Candidate completions for the token being typed, in catalogue order."""
+    if not value.startswith("/"):
+        return []
+    head, separator, partial = value[1:].partition(" ")
+    if not separator:
+        return [f"/{name}" for name in _NAMES if name.startswith(head)]
+    subcommands = _SUBCOMMANDS.get(head)
+    if subcommands is None:
+        return []
+    return [f"/{head} {subcommand}" for subcommand in subcommands if subcommand.startswith(partial)]
+
+
 class CommandSuggester(Suggester):
     """Composer completion: `Input` renders the tail of `suggest(value)`."""
 

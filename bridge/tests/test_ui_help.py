@@ -13,7 +13,7 @@ from bridge.client import Session
 from bridge.commands import LOCAL_COMMANDS
 from bridge.link import FakeTransport
 from bridge.ui import BridgeApp
-from bridge.ui.help import COMMANDS, HELP_TEXT, suggest
+from bridge.ui.help import COMMANDS, HELP_TEXT, _SUBCOMMANDS, options, suggest
 from bridge.ui.modals import ConfirmPrompt, SecretPrompt
 from bridge.ui.render import SlashHighlighter, json_payload, render_json_block, sanitize
 
@@ -98,6 +98,41 @@ def test_suggest_completes_a_unique_prefix(typed, expected):
 @pytest.mark.parametrize("typed", ["", "hello", "/", "/zzz", "/t", "/status", "/status ", "/tasks "])
 def test_suggest_declines_what_it_cannot_complete(typed):
     assert suggest(typed) is None
+
+
+# -- the completion list -------------------------------------------------
+
+
+def test_options_lists_every_command_for_a_bare_slash():
+    assert options("/") == [f"/{command.name}" for command in COMMANDS]
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ("/st", ["/status"]),
+        ("/tasks ad", ["/tasks add"]),
+    ],
+)
+def test_options_filters_a_unique_prefix(typed, expected):
+    assert options(typed) == expected
+
+
+def test_options_keeps_an_exact_match():
+    assert options("/logs") == ["/logs"]
+
+
+def test_options_lists_subcommands_after_a_head_and_a_space():
+    assert options("/tasks ") == [f"/tasks {name}" for name in _SUBCOMMANDS["tasks"]]
+
+
+def test_options_filters_a_partial_subcommand():
+    assert options("/config s") == ["/config set"]
+
+
+@pytest.mark.parametrize("typed", ["hello", "/zzz", "/status ", "/tasks zz"])
+def test_options_declines_what_it_cannot_complete(typed):
+    assert options(typed) == []
 
 
 # -- modals and the Esc stack -------------------------------------------
