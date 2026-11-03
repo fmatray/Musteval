@@ -246,8 +246,15 @@ Public surface: `BridgeApp`, one screen class per `05-bridge.md` §5 surface, an
 widgets those screens compose. The App installs itself as the frame sink at start
 and routes each decoded frame to exactly one screen, per `05-bridge.md` §10.
 
+Two of its modules hold state a screen should not: `history.py` keeps the
+composer's prompt ring (bounded, in memory, no I/O) and `settings.py` holds the
+`03-config.md` schema as rows — one per scalar or simple-list key — with
+`coerce` and `render_value` as the only two ways across the text/value boundary.
+Both are pure, so the screen that uses them needs no terminal to be tested.
+
 Must not: open a serial port, decode bytes, maintain a second copy of protocol
-state, or build frame bodies except by calling `commands.parse`.
+state, write config values the device has not re-validated, or build frame bodies
+except by calling `commands.parse`.
 
 ### 4.6 `bridge/__main__.py` (L4)
 

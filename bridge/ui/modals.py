@@ -106,3 +106,29 @@ class ConfirmPrompt(PromptBox[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class ValuePrompt(PromptBox[str | None]):
+    """Pre-filled editor for one `05-bridge.md` §5.7 config row."""
+
+    BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
+    CSS = _CSS
+    AUTO_FOCUS = "#value-input"
+
+    def __init__(self, path: str, current: str) -> None:
+        super().__init__()
+        self.path = path
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="prompt-box"):
+            yield Static(self.path, classes="prompt-title")
+            yield Input(value=self.current, id="value-input")
+            yield Static("Enter: apply | Esc: cancel", classes="prompt-hint")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # An emptied field is a cancel, not a request to blank the setting.
+        self.dismiss(self.query_one("#value-input", Input).value.strip() or None)
+
+    def action_submit(self) -> None:
+        self.dismiss(self.query_one("#value-input", Input).value.strip() or None)

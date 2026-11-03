@@ -87,6 +87,14 @@ The primary interaction pane.
 - **Output**: A scrollable log of the conversation.
 - **Behavior**:
   - `prompt` is sent on Enter.
+  - Every submitted line is kept in a bounded in-memory ring (100 entries,
+    adjacent duplicates collapsed, blank lines ignored). `Up` walks back through
+    it, `Down` walks forward and returns to the line being typed, so a draft is
+    never lost. The ring dies with the process: the bridge still stores no
+    conversation (`00-overview.md` §RQ-1).
+  - `Tab` accepts the completion instead of moving focus, because completing a
+    half-typed command is what the composer's suggestion is for. `Shift+Tab`
+    keeps its platform meaning.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer.
@@ -239,6 +247,39 @@ Local commands
   /mcp      list MCP servers from the last status
 ```
 
+### 5.7 Settings Screen (`/settings`)
+
+The device config, browsable without memorising dotted paths. One row per scalar
+or simple-list key of `03-config.md` §Full schema, in table order and grouped by
+section; the keys whose value is a nested object or an object array
+(`wifi.networks[]`, `llm.providers[]`, `mcp.servers[]`, `geo.providers[]` and their
+children) are not rows, because they need a form rather than a line.
+
+Opening the screen sends `config.get` with no `path` once per session and renders
+the reply through `flatten`, which indexes arrays so a dotted row finds its value
+(`04` §4.8). Until a config has been fetched the value column reads `-` and a note
+says so; nothing here invents a default and presents it as the device's answer.
+
+`Enter` on a row opens a pre-filled prompt. The typed text is coerced to the row's
+kind and checked against the bounds column before sending, so an out-of-range value
+costs no round trip and names its own path in the error. The device re-validates:
+this check is for latency and clarity, never the authority. A successful
+`config.set` reports `applied` and `requires_reboot`, then re-fetches so the screen
+shows what the device actually holds.
+
+```text
++-----------------------------------------------------------------------+
+| Key                          Value              Default    Bounds    |
+| version                      1                  1          must be 1 |
+| device.name                  musteval           musteval   1..32     |
+| device.log_level             info               info       enum      |
+| wifi.connect_timeout_ms      15000              15000      1000..    |
+| llm.max_calls_per_hour       100                100        0..100000 |
++-----------------------------------------------------------------------+
+| [Enter] Edit [R] Fetch from device                                    |
++-----------------------------------------------------------------------+
+```
+
 ## 6. Keybindings
 
 ### 6.1 Global Bindings
@@ -268,6 +309,7 @@ that binding and dismisses with a result. Popping the screen instead would leave
 | Chat | `Enter` | Send prompt |
 | Chat | `Ctrl+J` | Insert newline in input |
 | Chat | `Right`/`Tab` | Accept the autocomplete suggestion in the composer |
+| Chat | `Up`/`Down` | Recall a submitted prompt; `Down` past the newest returns to the draft |
 | Chat | `Esc` | No modal and no other screen on top: cancel the current agent run (`cancel` message) |
 | Chat | `Ctrl+L` | Clear current session scrollback |
 | Status | `R` | Request `status` command |
@@ -283,6 +325,10 @@ that binding and dismisses with a result. Popping the screen instead would leave
 | Logs | `S` | Toggle follow-mode (auto-scroll) |
 | MQTT | `Up`/`Down` | Navigate broker/ message list |
 | MQTT | `R` | Request `mqtt.status` command |
+| Settings | `Up`/`Down` | Move between config rows |
+| Settings | `Enter` | Edit the selected row in a pre-filled prompt, then send `config.set` |
+| Settings | `R` | Re-request `config.get` |
+| Settings | `Esc` | Cancel the edit prompt; on no prompt, back to Chat |
 
 ## 7. Slash Commands
 
@@ -319,6 +365,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/ping` | `ping` | none | Tests link latency |
 | `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
 | `/cancel` | `cancel` | none | Cancels current run |
+| `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
 | `/quit` | (Local) | none | Exits TUI |
 
 Commands marked `(Local)` render from state the bridge already holds from

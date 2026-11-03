@@ -15,7 +15,9 @@ from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
 from ..protocol import Frame, new_id
 from .help import COMMANDS, HELP_TEXT, CommandSuggester
-from .modals import ConfirmPrompt, SecretPrompt
+from .history import PromptHistory
+from .modals import ConfirmPrompt, SecretPrompt, ValuePrompt
+from .settings import ROWS, coerce, flatten, lookup, render_value
 from .render import (
     SlashHighlighter,
     clip,
@@ -29,6 +31,19 @@ from .render import (
 
 class ChatScreen(Vertical):
     """`05-bridge.md` §5.1: the conversation pane, composer at the bottom."""
+
+    # Up/Down recall submitted lines; Tab accepts the completion rather than
+    # moving focus, which is what the composer's suggestion is for. Shift+Tab
+    # keeps the platform meaning so the Footer stays reachable.
+    BINDINGS = [
+        Binding("up", "history_back", "Previous prompt", show=False),
+        Binding("down", "history_forward", "Next prompt", show=False),
+        Binding("tab", "accept_completion", "Complete", show=False),
+    ]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._history = PromptHistory()
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="chat-log", wrap=True, markup=False, highlight=False)
@@ -49,7 +64,30 @@ class ChatScreen(Vertical):
         event.input.value = ""
         text = event.value.strip()
         if text:
+            self._history.add(text)
             self.app.submit(text)  # type: ignore[attr-defined]
+
+    def _input(self) -> Input:
+        return self.query_one("#chat-input", Input)
+
+    def _recall(self, recalled: str) -> None:
+        field = self._input()
+        field.value = recalled
+        field.cursor_position = len(recalled)
+
+    def action_history_back(self) -> None:
+        self._recall(self._history.previous(self._input().value))
+
+    def action_history_forward(self) -> None:
+        self._recall(self._history.next(self._input().value))
+
+    def action_accept_completion(self) -> None:
+        """Accept the ghost completion; with none, Tab falls back to focus move."""
+        field = self._input()
+        if field._suggestion and field.cursor_at_end:
+            field.action_cursor_right()
+            return
+        self.app.action_focus_next()
 
 
 class StatusScreen(VerticalScroll):
@@ -108,6 +146,65 @@ class LogsScreen(Vertical):
 
     def write(self, line: str) -> None:
         self.query_one("#log-body", RichLog).write(line)
+
+
+BOUNDS_CLIP = 44
+
+
+class SettingsScreen(Vertical):
+    """`05-bridge.md` §5.7: the device config, one editable row per scalar key."""
+
+    # `Enter` is not bound here: `DataTable` consumes it as `select_cursor`, so
+    # the edit is driven by `RowSelected` instead of a shadowed ancestor binding.
+    BINDINGS = [Binding("r", "refetch", "Fetch", show=False)]
+
+    def compose(self) -> ComposeResult:
+        yield Static("no config yet: press R to fetch", id="settings-header")
+        yield DataTable(id="settings-table", cursor_type="row")
+        yield Static(
+            "[Enter] Edit  [R] Fetch from device", id="settings-hint", markup=False
+        )
+
+    def on_mount(self) -> None:
+        table = self.query_one("#settings-table", DataTable)
+        # `add_columns` takes only (label, key); the width needs `add_column`.
+        table.add_columns("Key", "Value", "Default")
+        table.add_column("Bounds", width=BOUNDS_CLIP)
+
+    def render_rows(self, values: dict[str, Any] | None) -> None:
+        """Show every row, with the device value where the config carries one."""
+        table = self.query_one("#settings-table", DataTable)
+        table.clear()
+        self.query_one("#settings-header", Static).update(
+            "device config" if values else "no config yet: press R to fetch"
+        )
+        for row in ROWS:
+            current = lookup(values, row.path) if values else None
+            table.add_row(
+                row.path,
+                render_value(row, current) if values else "-",
+                render_value(row, row.default),
+                row.bound,
+                key=row.path,
+            )
+
+    def selected_path(self) -> str | None:
+        table = self.query_one("#settings-table", DataTable)
+        if table.row_count == 0:
+            return None
+        try:
+            return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+        except Exception:
+            return None
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # In a worker: `edit_setting` awaits `push_screen_wait`, which Textual
+        # only allows from a worker.
+        event.stop()
+        self.app.run_worker(self.app.edit_setting(str(event.row_key.value)))  # type: ignore[attr-defined]
+
+    def action_refetch(self) -> None:
+        self.app.run_worker(self.app._request("config.get"))  # type: ignore[attr-defined]
 
 
 class MqttScreen(Vertical):
@@ -169,6 +266,7 @@ class BridgeApp(App):
         self.session = session
         self._state: dict[str, Any] = {}
         self._last_status: dict[str, Any] = {}
+        self._config: dict[str, Any] = {}
         self._tasks: list[dict[str, Any]] = []
         self._last_prompt: str | None = None
         self._usage_total = 0
@@ -186,13 +284,14 @@ class BridgeApp(App):
             yield StatusScreen(id="status")
             yield TasksScreen(id="tasks")
             yield LogsScreen(id="logs")
+            yield SettingsScreen(id="settings")
             yield MqttScreen(id="mqtt")
             yield HelpScreen(id="help")
         yield Footer()
 
     async def on_mount(self) -> None:
         self.session.install_sink(self._on_frame)
-        for name in ("status", "tasks", "logs", "mqtt", "help"):
+        for name in ("status", "tasks", "logs", "settings", "mqtt", "help"):
             self.query_one(f"#{name}").display = False
         self.query_one("#chat").display = True
         # Run in a worker: mounting must not block the loop that pumps the
@@ -210,7 +309,7 @@ class BridgeApp(App):
         await self._request("status")
 
     def action_show(self, name: str) -> None:
-        for screen in ("chat", "status", "tasks", "logs", "mqtt", "help"):
+        for screen in ("chat", "status", "tasks", "logs", "settings", "mqtt", "help"):
             self.query_one(f"#{screen}").display = screen == name
         self.title = name.capitalize()
         if name == "status":
@@ -219,6 +318,29 @@ class BridgeApp(App):
             self._render_tasks()
         if name == "logs":
             self._flush_logs()
+        if name == "settings" and not self._config:
+            self.run_worker(self._request("config.get"))
+
+    async def edit_setting(self, path: str) -> None:
+        """Edit one config row: prompt, coerce, then send `config.set`.
+
+        The bound is checked here so a rejected value costs no round trip, but
+        the device re-validates (`03-config.md` §Full schema).
+        """
+        row = next((candidate for candidate in ROWS if candidate.path == path), None)
+        if row is None:
+            return
+        stored = lookup(self._config, path)
+        current = render_value(row, row.default if stored is None else stored)
+        typed = await self.push_screen_wait(ValuePrompt(path, current))
+        if typed is None:
+            return
+        try:
+            value = coerce(row, typed)
+        except ValueError as exc:
+            self._chat().write(f"✗ {exc}")
+            return
+        await self._request("config.set", {"path": row.path, "value": value})
 
     def action_back(self) -> None:
         """`05-bridge.md` §6: Esc closes the top modal, then leaves a screen.
@@ -369,6 +491,20 @@ class BridgeApp(App):
             self.query_one("#mqtt", MqttScreen).render_brokers(servers)
             self._chat().write(f"{len(servers)} broker(s)")
             return
+        if name == "config.get" and isinstance(result, dict):
+            # No `path` was sent, so this is the whole config (`04` §4.8).
+            raw = result.get("config", result) if "config" in result else result
+            self._config = flatten(raw)
+            self.query_one("#settings", SettingsScreen).render_rows(self._config)
+            self.action_show("settings")
+            return
+        if name == "config.set":
+            self._chat().write(
+                f"{result.get('path')} applied"
+                + (", requires reboot" if result.get("requires_reboot") else "")
+            )
+            self.run_worker(self._request("config.get"))
+            return
         if name == "secret.set":
             # Never render the value; `05-bridge.md` §8.
             line = f"secret {result.get('key')} stored ({result.get('length')} bytes)"
@@ -418,6 +554,9 @@ class BridgeApp(App):
 
     async def _run_command(self, text: str) -> None:
         head = text[1:].split()[0] if len(text) > 1 else ""
+        if head == "settings":
+            self.action_show("settings")
+            return
         if head in LOCAL_COMMANDS:
             self._run_local(head)
             return
