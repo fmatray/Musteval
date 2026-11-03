@@ -733,6 +733,9 @@ class BridgeApp(App):
 
     async def on_mount(self) -> None:
         self.session.install_sink(self._on_frame)
+        # A link drop sends no frame: without this the bar would sit at
+        # `linked` through an outage (`05` §5.1).
+        self.session.install_state_hook(lambda _state: self._refresh_bar())
         for name in ("status", "tasks", "logs", "settings", "mqtt", "files", "help"):
             self.query_one(f"#{name}").display = False
         self.query_one("#chat").display = True
@@ -1018,10 +1021,11 @@ class BridgeApp(App):
             self._state,
             self._last_status,
             self._usage_total,
+            width=max(self.size.width - 4, 20),
         )
-        # One row: the bar truncates rather than wraps, so a narrow terminal
-        # loses the tail of the facts, never the composer.
-        self._chat().render_bar(clip(bar, max(self.size.width - 4, 20)))
+        # One row: the bar drops whole trailing segments rather than wrapping, so
+        # a narrow terminal loses the rightmost facts, never the composer.
+        self._chat().render_bar(bar)
 
     def on_resize(self) -> None:
         # The bar truncates to the width in force when it was drawn, so a narrow

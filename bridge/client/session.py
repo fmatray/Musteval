@@ -95,6 +95,14 @@ class Session:
         """Install the frame sink. One consumer: `ui` (`09` §5)."""
         self._sink = cb
 
+    def install_state_hook(self, cb: Callable[[LinkState], None]) -> None:
+        """Install the state listener. One consumer: `ui` (`09` §5).
+
+        Separate from the constructor's `on_state`: `__main__` builds the
+        `Session` before the app exists, so that argument cannot reach it.
+        """
+        self._on_state = cb
+
     async def connect(self) -> LinkState:
         """Start the session and await the outcome of the first attempt."""
         if self._supervisor is not None:

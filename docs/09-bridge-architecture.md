@@ -208,7 +208,12 @@ to reconnect.
 
 Public surface: `Session` with `connect()`, `close()`, `request(frame)` (returns
 the correlated reply), `send(frame)` (fire-and-forget, for `ack`),
-`install_sink(cb)`, and a read-only `state` enum.
+`install_sink(cb)`, `install_state_hook(cb)`, and a read-only `state` enum.
+
+The hook is separate from the constructor's `on_state` because `__main__` builds
+the `Session` before the app exists, so that argument cannot reach the UI. A link
+drop emits no frame, so a view that renders the link state can only learn of it
+from the hook.
 
 `Session` owns the timings stated in `05-bridge.md` §4 (5 s `hello_ack` wait, ping
 interval, 5 s pong wait, backoff sequence) as constructor arguments. It owns

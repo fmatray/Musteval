@@ -407,3 +407,49 @@ async def test_the_prompt_bar_is_visible_and_refreshes_with_the_status():
         after = app.query_one("#chat").bar_line
         assert "openai/gpt" in after and "-55dBm" in after
         await session.close()
+
+
+async def test_the_prompt_bar_follows_a_link_drop_without_any_frame():
+    """A transport drop sends no frame, so only a state hook can redraw the bar.
+
+    `05` §5.1 lists the link state as a bar fact; a bar that only redraws on
+    frames would sit at `linked` through an outage.
+    """
+    from bridge.ui import BridgeApp
+
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99, backoff=(60,))
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.1)
+        assert app.query_one("#chat").bar_line.startswith("linked")
+
+        await transport.close()
+        for _ in range(50):
+            if app.session.state.value == "down":
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.1)
+        assert app.query_one("#chat").bar_line.startswith("down"), (
+            app.query_one("#chat").bar_line
+        )
+        await session.close()
+
+
+def test_a_narrow_bar_drops_whole_segments_and_never_half_a_fact():
+    status = {
+        "llm": {"provider": "openai", "model": "gpt-4o-mini", "available": True},
+        "agent": {"busy": False, "queue_depth": 0, "max_queue": 2},
+        "wifi": {"rssi": -58},
+    }
+    narrow = render_prompt_bar("connected", {"device": "m01"}, status, 1234, width=40)
+    assert narrow == "linked | openai/gpt-4o-mini | idle"
+    assert not narrow.endswith("…")
+
+
+def test_the_link_word_survives_any_width():
+    assert render_prompt_bar("connected", {}, {}, 0, width=1) == "linked"

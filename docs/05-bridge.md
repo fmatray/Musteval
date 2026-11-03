@@ -131,9 +131,11 @@ The primary interaction pane.
   - The bar is redrawn when a fact changes: `hello_ack`, a `status` frame, the
     `status` command's own reply (a `/status` is a command, not a push, and a bar
     that ignored it would stay empty until the device volunteered one), a usage
-    frame, mount and a resize. Never on a keystroke. It is one row and truncates
-    at the terminal's width, so a narrow window loses the tail of the facts
-    rather than the composer.
+    frame, a link-state transition (a drop emits no frame of its own), mount and
+    a resize. Never on a keystroke. It is one row and drops whole trailing
+    segments when the terminal is too narrow, so a narrow window loses the
+    rightmost facts rather than showing half a word or the composer. The link
+    word is never dropped: an empty bar would say less than a short one.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer.

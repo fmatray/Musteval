@@ -104,6 +104,7 @@ def render_prompt_bar(
     ack: dict[str, Any],
     status: dict[str, Any],
     tokens: int,
+    width: int | None = None,
 ) -> str:
     """The prompt bar above the composer, per `05-bridge.md` §5.1.
 
@@ -160,6 +161,15 @@ def render_prompt_bar(
     if device:
         segments.append(str(device))
 
+    line = PROMPT_SEPARATOR.join(str(segment) for segment in segments)
+    if width is None or len(line) <= width:
+        return line
+    # Drop whole trailing segments rather than clipping mid-word: a bar ending
+    # `-58dB…` reads as a broken fact. The link word is never dropped.
+    # At least one segment stays: an empty bar would say less than a clipped
+    # one, and the link word is the fact that explains the rest.
+    while len(segments) > 1 and len(PROMPT_SEPARATOR.join(segments)) > width:
+        segments.pop()
     return PROMPT_SEPARATOR.join(str(segment) for segment in segments)
 
 
