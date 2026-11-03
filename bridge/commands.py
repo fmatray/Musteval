@@ -18,7 +18,18 @@ from .protocol import COMMAND_NAMES, Frame, new_id
 
 #: `05-bridge.md` §7 marks these `(Local)`: no frame leaves the host.
 LOCAL_COMMANDS = frozenset(
-    {"tools", "mcp", "usage", "context", "todo", "settings", "export", "quit"}
+    {
+        "tools",
+        "mcp",
+        "usage",
+        "context",
+        "todo",
+        "settings",
+        "export",
+        "quit",
+        "logs",
+        "help",
+    }
 )
 
 #: A skill may be 8 KiB, so `/fs put` splits it under the 4 KiB RX cap.

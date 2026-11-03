@@ -86,6 +86,7 @@ def test_help_fits_an_eighty_column_terminal():
         ("/mqtt p", "/mqtt publish"),
         ("/fs p", "/fs put"),
         ("/secret s", "/secret set"),
+        ("/lo", "/logs"),
         ("/tasks de", "/tasks delete"),
         ("/tasks dis", "/tasks disable"),
     ],

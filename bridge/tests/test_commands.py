@@ -67,6 +67,10 @@ def test_every_local_command_sends_nothing():
         assert parse(f"/{name}") == []
 
 
+def test_logs_and_help_are_local_commands():
+    assert {"logs", "help"} <= LOCAL_COMMANDS
+
+
 def test_local_commands_do_not_collide_with_device_commands():
     assert not LOCAL_COMMANDS & {"/" + n.split(".")[0] for n in COMMAND_NAMES}
 

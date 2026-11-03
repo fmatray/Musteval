@@ -757,3 +757,66 @@ async def test_every_screen_claims_focus_when_shown():
             assert (app.focused is not None
                     and f"#{app.focused.id}" == widget), (name, app.focused)
         await session.close()
+
+
+async def test_slash_logs_opens_the_logs_screen_without_a_frame():
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        before = len(transport.written)
+        app.submit("/logs")
+        await pilot.pause(0.2)
+        assert app.query_one("#logs").display is True
+        assert app.query_one("#chat").display is False
+        assert not [line for line in transport.written[before:] if b'"type":"command"' in line]
+        await session.close()
+
+
+async def test_slash_help_opens_the_help_screen_without_a_frame():
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        before = len(transport.written)
+        app.submit("/help")
+        await pilot.pause(0.2)
+        assert app.query_one("#help").display is True
+        assert app.query_one("#chat").display is False
+        assert not [line for line in transport.written[before:] if b'"type":"command"' in line]
+        await session.close()
+
+
+async def test_slash_status_opens_the_status_screen_and_still_sends_the_command():
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        before = len(_sent(transport, "status"))
+        app.submit("/status")
+        await pilot.pause(0.2)
+        assert app.query_one("#status").display is True
+        assert app.query_one("#chat").display is False
+        assert len(_sent(transport, "status")) == before + 1
+        await session.close()
+
+
+async def test_a_sub_command_reports_in_chat_without_moving_the_reader():
+    """`05` §7: only the bare `/mqtt` opens the screen; publishing stays in chat."""
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.submit("/mqtt")
+        await pilot.pause(0.2)
+        assert app.query_one("#mqtt").display is True
+        app.submit("/mqtt publish lab t p")
+        await pilot.pause(0.2)
+        assert app.query_one("#chat").display is True
+        assert app.query_one("#mqtt").display is False
+        assert _sent(transport, "mqtt.publish")
+        await session.close()

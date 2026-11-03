@@ -77,6 +77,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("todo", "/todo", "re-render todo phases and tasks", True),
     CommandHelp("export", "/export", "write the chat log to a markdown file", True),
     CommandHelp("settings", "/settings", "browse and edit device config", True),
+    CommandHelp("logs", "/logs", "switch to the Logs screen", True),
+    CommandHelp("help", "/help", "show the command reference", True),
     CommandHelp("quit", "/quit", "exit the bridge", True),
 )
 

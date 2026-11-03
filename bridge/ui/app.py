@@ -797,6 +797,12 @@ class BridgeApp(App):
 
     async def _run_command(self, text: str) -> None:
         head = text[1:].split()[0] if len(text) > 1 else ""
+        words = text[1:].split()
+        # `05-bridge.md` §7: the bare form opens its screen; a sub-command such as
+        # `/mqtt publish` answers in chat, so it lands there rather than moving
+        # the reader to a screen that will not show the answer.
+        if head in ("status", "tasks", "mqtt"):
+            self.action_show(head if len(words) == 1 else "chat")
         if head == "settings":
             self.action_show("settings")
             return
@@ -877,7 +883,11 @@ class BridgeApp(App):
         return self._pending_secret or ""
 
     def _run_local(self, head: str) -> None:
-        if head == "tools":
+        if head == "logs":
+            self.action_show("logs")
+        elif head == "help":
+            self.action_show("help")
+        elif head == "tools":
             caps = self._state.get("capabilities") or {}
             self._chat().write("tools: " + ", ".join(caps.get("tools") or []))
             self._chat().write("mcp: " + ", ".join(caps.get("mcp") or []))
