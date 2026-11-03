@@ -246,11 +246,19 @@ Public surface: `BridgeApp`, one screen class per `05-bridge.md` §5 surface, an
 widgets those screens compose. The App installs itself as the frame sink at start
 and routes each decoded frame to exactly one screen, per `05-bridge.md` §10.
 
-Two of its modules hold state a screen should not: `history.py` keeps the
-composer's prompt ring (bounded, in memory, no I/O) and `settings.py` holds the
+Three of its modules hold state a screen should not: `history.py` keeps the
+composer's prompt ring (bounded, in memory, no I/O), `settings.py` holds the
 `03-config.md` schema as rows — one per scalar or simple-list key — with
-`coerce` and `render_value` as the only two ways across the text/value boundary.
-Both are pure, so the screen that uses them needs no terminal to be tested.
+`coerce` and `render_value` as the only two ways across the text/value boundary,
+and `logs.py` keeps the bounded log buffer, the tag/level `LogFilter` and the
+level colouring. All three are pure, so the screens that use them need no
+terminal to be tested.
+
+`modals.py` owns every prompt, because `ModalScreen` suppresses app bindings and
+an app-level `Esc` would never fire; `task_prompt.py` is the JSON editor for the
+Tasks screen's `E` and `N`. `testing.py` is test-only: it hosts a pilot that
+pushes one modal, because the `textual` law of §6 applies to `bridge/tests/` too
+and a test may not import Textual itself.
 
 Must not: open a serial port, decode bytes, maintain a second copy of protocol
 state, write config values the device has not re-validated, or build frame bodies

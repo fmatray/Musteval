@@ -170,8 +170,18 @@ Streams firmware logs.
 - **Source**: `log` messages.
 - **Features**:
   - Coloring by `level` (Error=Red, Warn=Yellow, Info=Green).
-  - Filtering by `tag` (e.g., only show `llm` logs).
+  - Filtering by `tag` (e.g., only show `llm` logs) and by minimum level.
   - Auto-scroll (follow mode).
+
+The buffer is bounded at 2000 lines and keeps a line whether or not the filter
+passes it, so widening the filter shows what already arrived instead of only what
+arrives next. A line carries its level in brackets (`[warn]`), which is what both
+the colouring and the level filter read; a line with no bracket counts as `info`,
+and an unrecognised token such as `[trace]` also counts as `info` so it is never
+mistaken for a warning. `/` opens a one-line prompt holding the current filter,
+`tag` or `tag:level`; an unknown level names itself and changes nothing. `C` clears
+the buffer, `S` turns follow mode off so the view stays where the reader scrolled
+while lines keep arriving.
 
 **Mockup:**
 ```text
@@ -274,12 +284,12 @@ shows what the device actually holds.
 
 ```text
 +-----------------------------------------------------------------------+
-| Key                          Value              Default    Bounds    |
-| version                      1                  1          must be 1 |
-| device.name                  musteval           musteval   1..32     |
-| device.log_level             info               info       enum      |
-| wifi.connect_timeout_ms      15000              15000      1000..    |
-| llm.max_calls_per_hour       100                100        0..100000 |
+| Key                          Value              Default    Bounds     |
+| version                      1                  1          must be 1  |
+| device.name                  musteval           musteval   1..32      |
+| device.log_level             info               info       enum       |
+| wifi.connect_timeout_ms      15000              15000      1000..     |
+| llm.max_calls_per_hour       100                100        0..100000  |
 +-----------------------------------------------------------------------+
 | [Enter] Edit [R] Fetch from device                                    |
 +-----------------------------------------------------------------------+
