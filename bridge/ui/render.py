@@ -99,8 +99,33 @@ LINK_WORDS = {
 }
 
 
+#: `04` §3.9 `wifi.state`, said in the bar's short words. Two characters for a
+#: working network, because the bar has one line and the 80-column layout has
+#: only a few spare columns; a failure that costs a word is a failure worth it.
+WIFI_WORDS = {
+    "connected": "up",
+    "up": "up",  # pre-§3.9 firmware and the test fixtures
+    "connecting": "wifi linking",
+    "failed": "wifi failed",
+    "off": "wifi off",
+}
+
 #: States in which no fact from the device can be current.
 UNREACHABLE = frozenset({"down", "connecting", "wait_ack", "rejected"})
+
+
+def format_uptime(seconds: int) -> str:
+    """One segment, in the unit that matters at that magnitude: `45s`, `12m05s`."""
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{rest:02d}s"
+    hours, rest = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h{rest:02d}m"
+    days, rest = divmod(hours, 24)
+    return f"{days}d{rest}h"
 
 
 def render_prompt_bar(
@@ -131,6 +156,17 @@ def render_prompt_bar(
         return word
     segments = [word]
 
+    # The bar drops from the right, so the leftmost segments are the ones that
+    # survive a narrow terminal. Safe mode explains a failure better than any
+    # other fact, so it goes first; uptime goes next because it is the fact that
+    # dates every other one.
+    if sysinfo.get("safe_mode"):
+        segments.append("SAFE MODE")
+
+    uptime = status.get("uptime_s")
+    if isinstance(uptime, int) and not isinstance(uptime, bool):
+        segments.append(format_uptime(max(uptime, 0)))
+
     # Nothing is claimed before the device has said it: an empty `status` leaves
     # the bar with the link state alone rather than "no model", which would blame
     # the provider for a bridge that has simply not heard back yet.
@@ -151,17 +187,24 @@ def render_prompt_bar(
         if queue:
             segments.append(f"queue {queue}/{agent.get('max_queue')}")
 
+    # Wifi: the state is its own segment, because a missing rssi used to be the
+    # whole report and silence is not a fault report. The connected word is two
+    # characters: the bar is one line and the 80-column layout is already full,
+    # where a longer word would push the device name off the end.
+    state = wifi.get("state")
+    if state:
+        segments.append(WIFI_WORDS.get(state, f"wifi {state}"))
     rssi = wifi.get("rssi")
     if rssi is not None:
         segments.append(f"{rssi}dBm")
+    failovers = wifi.get("failovers") or 0
+    if failovers:
+        segments.append(f"{failovers} failover" + ("s" if failovers > 1 else ""))
 
     quota = storage.get("workspace_quota_bytes")
     if quota:
         used = wsfs.get("used_bytes") or 0
         segments.append(f"workspace {used}/{quota}")
-
-    if sysinfo.get("safe_mode"):
-        segments.append("SAFE MODE")
 
     if tokens:
         segments.append(f"{tokens} tok")

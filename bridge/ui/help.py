@@ -29,6 +29,20 @@ class CommandHelp:
     """True when no frame leaves the host (`05-bridge.md` §7)."""
 
 
+#: Tab groupings for the help modal (`05-bridge.md` §5.6). A dict rather than a
+#: field on every entry so the catalogue stays one table and the grouping stays one
+#: statement; a name in no group, or in two, fails `test_ui_help.py` rather than
+#: vanishing from the modal.
+CATEGORIES: dict[str, tuple[str, ...]] = {
+    "Device": (
+        "status", "reload", "reboot", "tasks", "run", "config", "secret",
+        "templates", "template", "mqtt", "geo", "fs", "sandbox", "sys",
+    ),
+    "Chat": ("retry", "ping", "cancel", "diag", "export"),
+    "Info": ("tools", "mcp", "usage", "context", "todo"),
+    "Screens": ("settings", "onboard", "files", "logs", "help", "quit"),
+}
+
 #: `05-bridge.md` §7, device commands first, then local ones.
 COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("status", "/status", "force a status refresh", False),
@@ -68,8 +82,14 @@ COMMANDS: tuple[CommandHelp, ...] = (
     ),
     CommandHelp(
         "sandbox",
-        "/sandbox list|read|delete <path>",
-        "browse the agent sandbox from chat",
+        "/sandbox list|read|write <path> | mkdir|move | delete [-r] <path>",
+        "browse and edit the agent sandbox from chat",
+        False,
+    ),
+    CommandHelp(
+        "sys",
+        "/sys reset-counter",
+        "clear the boot-failure counter",
         False,
     ),
     CommandHelp("retry", "/retry", "resend the last prompt", False),
@@ -96,7 +116,8 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "config": ("get", "set"),
     "mqtt": ("publish",),
     "fs": ("put",),
-    "sandbox": ("list", "read", "delete"),
+    "sandbox": ("list", "read", "write", "mkdir", "move", "delete"),
+    "sys": ("reset-counter",),
     "secret": ("set",),
 }
 
@@ -122,24 +143,34 @@ def _table(group: tuple[CommandHelp, ...]) -> list[str]:
     return [f"  {command.usage.ljust(width)}  {command.summary}" for command in group]
 
 
+#: Above the tables in every tab: the keys that are not a slash command at all.
+KEYS_TEXT = (
+    "F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files\n"
+    "Ctrl+R Reconnect | Ctrl+Q Quit\n"
+    "Esc Closes a modal and cancels a run"
+)
+
+
+def render_help(category: str) -> str:
+    """One tab's body: the commands in that group, in catalogue order."""
+    names = CATEGORIES[category]
+    group = tuple(command for command in COMMANDS if command.name in names)
+    return "\n".join(_table(group)) + "\n"
+
+
 def _render_help() -> str:
-    device = tuple(command for command in COMMANDS if not command.local)
-    local = tuple(command for command in COMMANDS if command.local)
-    lines = [
-        "F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT",
-        "Ctrl+R Reconnect | Ctrl+Q Quit",
-        "Esc Closes a modal and cancels a run",
-        "",
-        "Device commands",
-        *_table(device),
-        "",
-        "Local commands",
-        *_table(local),
-    ]
+    lines = [KEYS_TEXT]
+    for category in CATEGORIES:
+        lines.extend(["", category, *render_help(category).splitlines()])
     return "\n".join(lines) + "\n"
 
 
 HELP_TEXT: str = _render_help()
+
+
+def help_tabs() -> dict[str, str]:
+    """The modal's tab bodies, in `CATEGORIES` order (`05` §5.6)."""
+    return {category: render_help(category) for category in CATEGORIES}
 
 
 def _longest_common_prefix(values: list[str]) -> str:

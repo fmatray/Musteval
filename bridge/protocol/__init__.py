@@ -98,6 +98,9 @@ COMMAND_NAMES = frozenset(
         "sandbox.read",
         "sandbox.delete",
         "sandbox.write",
+        "sandbox.mkdir",
+        "sandbox.move",
+        "sys.reset_counter",
     }
 )
 

@@ -13,7 +13,7 @@ from bridge.client import Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
-from bridge.ui.app import FilesScreen
+from bridge.ui.app import FilesScreen, SANDBOX_ROOT
 from bridge.ui.modals import FilePrompt
 
 from .test_ui import _reply
@@ -31,7 +31,10 @@ TREE = {
 
 BODIES = {"/workspace/notes.txt": "hello world"}
 
-SANDBOX_NAMES = ("sandbox.list", "sandbox.read", "sandbox.write", "sandbox.delete")
+SANDBOX_NAMES = (
+    "sandbox.list", "sandbox.read", "sandbox.write",
+    "sandbox.delete", "sandbox.mkdir", "sandbox.move",
+)
 
 
 def _device(line: bytes) -> list[bytes]:
@@ -81,14 +84,24 @@ def _device(line: bytes) -> list[bytes]:
         return result(
             {"result": {"path": args["path"], "created": True, "bytes": len(chunk)}}
         )
-    _device.deleted.append(args["path"])
-    return result({"result": {"path": args["path"], "deleted": True}})
+    if name == "sandbox.mkdir":
+        _device.mkdirs.append(args["path"])
+        return result({"result": {"path": args["path"], "created": True}})
+    if name == "sandbox.move":
+        _device.moves.append((args["from"], args["to"]))
+        return result(
+            {"result": {"from": args["from"], "to": args["to"], "moved": True}}
+        )
+    _device.deleted.append((args["path"], args.get("recursive", False)))
+    return result({"result": {"path": args["path"], "deleted": True, "entries": 0}})
 
 
 _device.writes = []  # type: ignore[attr-defined]
 _device.deleted = []  # type: ignore[attr-defined]
 _device.lists = []  # type: ignore[attr-defined]
 _device.buffers = {}  # type: ignore[attr-defined]
+_device.mkdirs = []  # type: ignore[attr-defined]
+_device.moves = []  # type: ignore[attr-defined]
 
 
 def _app() -> BridgeApp:
@@ -96,6 +109,8 @@ def _app() -> BridgeApp:
     _device.deleted = []  # type: ignore[attr-defined]
     _device.lists = []  # type: ignore[attr-defined]
     _device.buffers = {}  # type: ignore[attr-defined]
+    _device.mkdirs = []  # type: ignore[attr-defined]
+    _device.moves = []  # type: ignore[attr-defined]
     session = Session(FakeTransport(on_write=_device), ack_timeout=1, ping_interval=99)
     return BridgeApp(session)
 
@@ -201,10 +216,15 @@ async def test_d_then_y_deletes_one_entry_and_y_at_the_root_is_impossible():
         assert not _device.deleted  # asked first
         await pilot.press("y")
         await pilot.pause(0.2)
-        assert _device.deleted == ["/workspace/notes.txt"]  # type: ignore[attr-defined]
+        assert _device.deleted == [("/workspace/notes.txt", False)]  # type: ignore[attr-defined]
 
 
-async def test_d_on_a_directory_is_refused_without_a_prompt():
+async def test_d_on_a_populated_directory_names_the_count_before_deleting():
+    """`05` §5.8: the confirmation says what a recursive delete takes.
+
+    "Delete /workspace/runs?" and "delete /workspace/runs and the 1 entries under
+    it?" are different questions, and only the second is informed consent.
+    """
     app = _app()
     async with app.run_test() as pilot:
         screen = await _open_files(pilot, app)
@@ -214,9 +234,104 @@ async def test_d_on_a_directory_is_refused_without_a_prompt():
         await pilot.press("d")
         await pilot.pause(0.2)
         assert not _device.deleted  # type: ignore[attr-defined]
-        assert "device refuses" in "\n".join(
+        question = app.screen.question
+        assert "1 entries under it" in question
+        assert "/workspace/runs" in question
+        await pilot.press("y")
+        await pilot.pause(0.2)
+        # Recursive, because the directory is not empty.
+        assert _device.deleted == [("/workspace/runs", True)]  # type: ignore[attr-defined]
+
+
+async def test_an_empty_directory_deletes_without_recursive():
+    """Nothing to recurse into, so the frame does not ask for the destructive form."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        TREE_BACKUP = TREE["/workspace/runs"]
+        TREE["/workspace/runs"] = []
+        try:
+            table = screen.query_one("#files-table")
+            table.focus()
+            table.move_cursor(row=0)
+            await pilot.press("d")
+            await pilot.pause(0.2)
+            assert "empty directory" in app.screen.question
+            await pilot.press("y")
+            await pilot.pause(0.2)
+            assert _device.deleted == [("/workspace/runs", False)]  # type: ignore[attr-defined]
+        finally:
+            TREE["/workspace/runs"] = TREE_BACKUP
+
+
+async def test_d_then_n_at_the_confirmation_sends_nothing():
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        table = screen.query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.press("d")
+        await pilot.pause(0.2)
+        await pilot.press("n")
+        await pilot.pause(0.2)
+        assert not _device.deleted  # type: ignore[attr-defined]
+
+
+async def test_m_moves_the_selected_file_through_the_move_command():
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        table = screen.query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=1)  # notes.txt
+        await pilot.press("m")
+        await pilot.pause(0.2)
+        # The prompt starts at the current path, so a rename is an edit.
+        value = app.screen.query_one("#value-input").value
+        assert value == "/workspace/notes.txt"
+        for _ in range(len(value)):
+            await pilot.press("backspace")
+        await pilot.press(*"/workspace/renamed.txt")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert _device.moves == [  # type: ignore[attr-defined]
+            ("/workspace/notes.txt", "/workspace/renamed.txt")
+        ]
+
+
+async def test_m_refuses_a_target_outside_the_sandbox_locally():
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        table = screen.query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=1)
+        await pilot.press("m")
+        await pilot.pause(0.2)
+        value = app.screen.query_one("#value-input").value
+        for _ in range(len(value)):
+            await pilot.press("backspace")
+        await pilot.press(*"/etc/passwd")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert not _device.moves  # type: ignore[attr-defined]
+        assert "outside" in "\n".join(
             str(line.text) for line in app.query_one("#chat-log").lines
         )
+
+
+async def test_k_creates_a_directory_in_the_current_directory():
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        screen.query_one("#files-table").focus()
+        await pilot.press("k")
+        await pilot.pause(0.2)
+        await pilot.press(*"archive")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert _device.mkdirs == ["/workspace/archive"]  # type: ignore[attr-defined]
 
 
 async def test_n_creates_a_file_in_the_current_directory():

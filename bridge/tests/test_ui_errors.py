@@ -267,7 +267,7 @@ async def test_a_missing_file_is_reported_as_an_error():
     await _run(_scripted(), body)
 
 
-async def test_deleting_a_directory_is_refused_locally():
+async def test_deleting_a_directory_asks_before_sending_anything():
     sent: list[str] = []
 
     def reply(line: bytes) -> list[bytes]:
@@ -285,11 +285,16 @@ async def test_deleting_a_directory_is_refused_locally():
     async def body(app, pilot):
         await app.browse("/workspace/")
         await pilot.pause(0.1)
-        app._files().query_one("#files-table").move_cursor(row=0)
-        await app.delete_entry()
-        await pilot.pause(0.1)
+        table = app._files().query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=0)
+        # A directory is now listed and its count named before the confirmation;
+        # the delete is only sent after `y` (`05` §5.8). Driven by the key rather
+        # than the method because `push_screen_wait` needs the binding's worker.
+        await pilot.press("d")
+        await pilot.pause(0.2)
         assert "sandbox.delete" not in sent
-        assert "is a directory" in _text(app)
+        assert app.screen.question
 
     await _run(reply, body)
 

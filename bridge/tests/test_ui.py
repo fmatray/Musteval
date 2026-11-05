@@ -13,6 +13,9 @@ import pytest
 from bridge.client import Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode, reset_ids
+
+from bridge.ui.modals import HelpModal
+from bridge.ui.testing import chat_input
 from bridge.ui.render import (
     clip,
     render_diag,
@@ -328,7 +331,13 @@ async def test_ui_log_screen_accepts_device_logs():
         await session.close()
 
 
-async def test_ui_help_screen_reachable():
+async def test_ui_help_opens_as_a_modal_over_chat():
+    """`05` §5.6: help is a modal, so the screen under it keeps its state.
+
+    The old expectation was a `#help` screen reached by `action_show`. That is
+    the behaviour this replaces, not a regression: a screen swap discarded a
+    half-typed prompt, and `F1` is pressed mid-composition.
+    """
     from bridge.ui import BridgeApp
 
     session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
@@ -338,10 +347,16 @@ async def test_ui_help_screen_reachable():
             if app.session.state.value == "connected":
                 break
             await pilot.pause(0.02)
-        app.action_show("help")
+        chat_input(app).value = "half typed"
+        await pilot.press("f1")
         await pilot.pause(0.1)
-        assert app.query_one("#help").display is True
-        assert app.query_one("#chat").display is False
+        assert isinstance(app.screen, HelpModal)
+        # Chat is still mounted underneath and still holds the draft.
+        assert app.query_one("#chat").display is True
+        assert chat_input(app).value == "half typed"
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert chat_input(app).value == "half typed"
         await session.close()
 
 

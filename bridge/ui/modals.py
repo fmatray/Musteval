@@ -1,4 +1,4 @@
-"""Escapable modal prompts for secret entry and destructive confirmation."""
+"""Escapable modal prompts: secrets, confirmation, file editing and help."""
 
 from __future__ import annotations
 
@@ -8,12 +8,32 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static, TextArea
+from textual.widgets import Input, Static, TabbedContent, TabPane, TextArea
+from textual.widgets.text_area import Selection
 
 _T = TypeVar("_T")
 
+
+def _point_to_offset(text: str, row: int, column: int) -> int:
+    """Inverse of `_offset_to_point`: where a `(row, column)` pair starts."""
+    lines = text.split("\n")
+    return sum(len(line) + 1 for line in lines[:row]) + column
+
+
+def _offset_to_point(text: str, offset: int) -> tuple[int, int]:
+    """Line and column of a character offset. Pure, and the only place the
+    buffer's newline arithmetic lives."""
+    row = text.count("\n", 0, offset)
+    column = offset - (text.rfind("\n", 0, offset) + 1)
+    return row, column
+
+# `Screen` as a selector does NOT match a `ModalScreen` in Textual 8.2: the
+# subclass has its own DEFAULT_CSS (`layout: vertical`), and a type selector on the
+# base class loses to it. Every modal was therefore pinned to the top-left corner
+# despite the rule below reading correctly. `ModalScreen` matches the subclass, and
+# `*` covers the concrete class in case a future Textual changes that.
 _CSS = """
-Screen {
+ModalScreen, * {
     align: center middle;
 }
 
@@ -168,7 +188,13 @@ class FilePrompt(PromptBox[str | None]):
     by mistake cannot save by itself.
     """
 
-    BINDINGS = [Binding("ctrl+s", "save", "Save", show=False)]
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=False),
+        Binding("ctrl+f", "find", "Find", show=False),
+        Binding("f3", "find_next", "Next", show=False),
+        Binding("ctrl+z", "undo", "Undo", show=False),
+        Binding("ctrl+y", "redo", "Redo", show=False),
+    ]
     CSS = (
         _CSS
         + """
@@ -176,14 +202,27 @@ class FilePrompt(PromptBox[str | None]):
     width: 90;
     height: 80%;
 }
+#file-find { display: none; height: 3; }
+#file-find.active { display: block; }
 """
     )
     AUTO_FOCUS = "#file-body"
+
+    HINT = (
+        "Ctrl+S: save | Ctrl+F: find/replace | F3: next | "
+        "Ctrl+Z/Ctrl+Y: undo/redo | Esc: discard"
+    )
 
     def __init__(self, path: str, text: str) -> None:
         super().__init__()
         self.path = path
         self.text = text
+        #: The find bar is a two-step prompt: `finding` asks for the needle,
+        #: `replacing` asks what to put there. A dict avoids a second modal and
+        #: keeps the caret in the buffer while the query is typed.
+        self._query = ""
+        self._finding = False
+        self._replacing = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box file-box"):
@@ -191,9 +230,140 @@ class FilePrompt(PromptBox[str | None]):
             area = TextArea(self.text, id="file-body")
             area.show_line_numbers = False
             yield area
-            yield Static("Ctrl+S: save | Esc: discard", classes="prompt-hint")
+            yield Input(placeholder="find...", id="file-find")
+            yield Static(self.HINT, classes="prompt-hint")
+
+    # -- find and replace -------------------------------------------------
+    #
+    # `TextArea.replace` takes an insertion string, not a callable, so a global
+    # replace builds the joined result and applies it as one edit. That also
+    # makes the whole cascade a single undo step, which is what a reader
+    # expects from "replace all".
+
+    def _area(self) -> TextArea:
+        return self.query_one("#file-body", TextArea)
+
+    def _bar(self) -> Input:
+        return self.query_one("#file-find", Input)
+
+    def action_find(self) -> None:
+        self._finding = True
+        self._replacing = False
+        bar = self._bar()
+        bar.placeholder = "find..."
+        bar.add_class("active")
+        bar.focus()
+
+    def action_find_next(self) -> None:
+        area = self._area()
+        if not self._query:
+            self.action_find()
+            return
+        text = area.text
+        row, column = area.selection.end
+        start = _point_to_offset(text, row, column)
+        index = text.find(self._query, start)
+        if index < 0:
+            # Wrap: a search that stops at the end of the buffer reads as
+            # "not found" even when the match is above the caret.
+            index = text.find(self._query)
+        if index < 0:
+            return
+        row, column = _offset_to_point(text, index)
+        end_row, end_column = _offset_to_point(text, index + len(self._query))
+        area.move_cursor((row, column))
+        area.selection = Selection((row, column), (end_row, end_column))
+
+    def action_undo(self) -> None:
+        self._area().undo()
+
+    def action_redo(self) -> None:
+        self._area().redo()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "file-find":
+            return
+        event.stop()
+        if self._replacing:
+            needle, replacement = self._query, event.value
+            if needle:
+                self._replace_all(needle, replacement)
+            self._close_find()
+            return
+        self._query = event.value
+        self._finding = False
+        self._replacing = True
+        self._bar().value = ""
+        self._bar().placeholder = f"replace {self._query!r} with..."
+        if self._query:
+            self.action_find_next()
+
+    def on_key(self, event: Any) -> None:
+        if event.key == "escape" and self._bar().has_class("active"):
+            event.stop()
+            self._close_find()
+
+    def _close_find(self) -> None:
+        self._finding = False
+        self._replacing = False
+        bar = self._bar()
+        bar.remove_class("active")
+        bar.value = ""
+        self._area().focus()
+
+    def _replace_all(self, needle: str, replacement: str) -> None:
+        area = self._area()
+        text = area.text
+        if needle not in text:
+            return
+        end_row = text.count("\n")
+        end_column = len(text.rsplit("\n", 1)[-1])
+        area.replace(
+            text.replace(needle, replacement), (0, 0), (end_row, end_column)
+        )
 
     def action_save(self) -> None:
         # The body is the return value; `Esc` reaching `PromptBox`'s cancel
         # yields `None`, so a discarded edit is distinguishable from saving.
         self.dismiss(self.query_one("#file-body", TextArea).text)
+
+
+class HelpModal(ModalScreen[None]):
+    """`05` §5.6: the command catalogue, one tab per group.
+
+    A modal rather than a screen because help is consulted *while* composing: a
+    screen swap loses the half-typed prompt, and `F1` is pressed mid-sentence far
+    more often than it is pressed to browse.
+    """
+
+    CSS = _CSS + """
+.help-box {
+    width: 90%;
+    height: 80%;
+    border: thick $accent;
+    padding: 0 1;
+}
+#help-tabs { height: 1fr; }
+"""
+    BINDINGS = [Binding("escape", "cancel", "Close", show=False)]
+
+    def __init__(self, categories: dict[str, str]) -> None:
+        super().__init__()
+        self.categories = categories
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="help-box"):
+            yield Static("Commands", classes="prompt-title")
+            with TabbedContent(id="help-tabs"):
+                for name, text in self.categories.items():
+                    with TabPane(name, id=f"help-tab-{name.lower()}"):
+                        yield Static(text, classes="help-body")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_mount(self) -> None:
+        # The first tab is the device catalogue, which is what a reader pressing
+        # F1 is usually after.
+        first = next(iter(self.categories))
+        self.query_one("#help-tabs", TabbedContent).active = f"help-tab-{first.lower()}"

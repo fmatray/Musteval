@@ -260,3 +260,75 @@ def test_a_sandbox_path_outside_the_mount_is_refused_before_sending(text):
 def test_an_unknown_sandbox_subcommand_is_an_error():
     with pytest.raises(CommandError):
         parse("/sandbox execute /workspace/a.txt")
+
+def test_sandbox_mkdir_builds_a_command():
+    (frame,) = parse("/sandbox mkdir /workspace/newdir")
+    assert frame.body == {"name": "sandbox.mkdir", "args": {"path": "/workspace/newdir"}}
+
+def test_sandbox_move_builds_a_command():
+    (frame,) = parse("/sandbox move /workspace/a /workspace/b")
+    assert frame.body == {"name": "sandbox.move", "args": {"from": "/workspace/a", "to": "/workspace/b"}}
+
+def test_sandbox_delete_recursive_options():
+    # Default false
+    (frame,) = parse("/sandbox delete /workspace/a")
+    assert frame.body == {"name": "sandbox.delete", "args": {"path": "/workspace/a"}}
+
+    # Short flag
+    (frame,) = parse("/sandbox delete -r /workspace/a")
+    assert frame.body == {"name": "sandbox.delete", "args": {"path": "/workspace/a", "recursive": True}}
+
+    # Long flag
+    (frame,) = parse("/sandbox rm --recursive /workspace/a")
+    assert frame.body == {"name": "sandbox.delete", "args": {"path": "/workspace/a", "recursive": True}}
+
+    # Mix
+    (frame,) = parse("/sandbox rm /workspace/a -r")
+    assert frame.body == {"name": "sandbox.delete", "args": {"path": "/workspace/a", "recursive": True}}
+
+def test_sandbox_delete_refuses_unknown_flag():
+    with pytest.raises(CommandError, match="unknown option: -R"):
+        parse("/sandbox rm /workspace/a -R")
+
+def test_sandbox_mkdir_move_refuse_outside_sandbox():
+    with pytest.raises(CommandError):
+        parse("/sandbox mkdir /etc/passwd")
+    with pytest.raises(CommandError):
+        parse("/sandbox move /workspace/a /etc/passwd")
+
+def test_sandbox_mkdir_move_missing_args():
+    with pytest.raises(CommandError, match="usage: /sandbox mkdir <path>"):
+        parse("/sandbox mkdir")
+    with pytest.raises(CommandError, match="usage: /sandbox move <from> <to>"):
+        parse("/sandbox move /workspace/a")
+
+def test_sys_reset_counter_builds_a_command():
+    (frame,) = parse("/sys reset-counter")
+    assert frame.body == {"name": "sys.reset_counter", "args": {}}
+
+def test_sys_reset_counter_rejects_bad_sub():
+    with pytest.raises(CommandError, match="usage: /sys reset-counter"):
+        parse("/sys bogus")
+
+def test_new_slash_forms_send_zero_frames_on_refusal():
+    # Path refusal should raise CommandError and emit nothing.
+    # Since parse is pure and raises, result is naturally empty.
+    sent: list[Frame] = []
+    with pytest.raises(CommandError):
+        sent.extend(parse("/sandbox mkdir /outside"))
+    assert sent == []
+
+def test_every_produced_name_is_a_frozen_command_updated():
+    # Ensure new commands are in COMMAND_NAMES
+    texts = [
+        "/sandbox mkdir /workspace/a",
+        "/sandbox move /workspace/a /workspace/b",
+        "/sandbox delete -r /workspace/a",
+        "/sys reset-counter",
+    ]
+    state = CommandState()
+    for text in texts:
+        for frame in parse(text, state):
+            if frame.type == "command":
+                assert frame.body["name"] in COMMAND_NAMES
+

@@ -32,3 +32,18 @@ class ModalHost(App[Any]):
             self.dismissed["value"] = await self.push_screen_wait(self.modal)
 
         self.run_worker(wait())
+
+
+class ModalCanvas(App[Any]):
+    """A blank 100x40-ish screen a test pushes one modal onto to measure it.
+
+    Separate from `ModalHost` because centring is about geometry, not the
+    returned value, and a plain push is enough.
+    """
+
+
+def chat_input(app: Any) -> Any:
+    """The `#chat-input` widget, typed, without a test importing `textual`."""
+    from textual.widgets import Input
+
+    return app.query_one("#chat-input", Input)

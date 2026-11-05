@@ -173,6 +173,11 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         return _sandbox(rest)
     if head == "tasks":
         return _tasks(rest, state)
+    if head == "sys":
+        if rest[:1] != ["reset-counter"]:
+            raise CommandError("usage: /sys reset-counter")
+        return [_command("sys.reset_counter")]
+
     raise CommandError(f"unknown command: /{head}")
 
 
@@ -185,7 +190,7 @@ def _sandbox_path(path: str) -> str:
 
 
 def _sandbox(rest: list[str]) -> list[Frame]:
-    """`/sandbox list|read|delete <path>` — the Files screen's non-interactive form."""
+    """`/sandbox list|read|mkdir|move|delete <path> [-r]` — the Files screen's non-interactive form."""
     if not rest:
         return [_command("sandbox.list", {"path": SANDBOX_ROOT})]
     sub, args = rest[0], rest[1:]
@@ -194,10 +199,28 @@ def _sandbox(rest: list[str]) -> list[Frame]:
     if sub == "read":
         _require(args, 1, "/sandbox read <path>")
         return [_command("sandbox.read", {"path": _sandbox_path(args[0])})]
-    if sub == "delete":
-        _require(args, 1, "/sandbox delete <path>")
-        return [_command("sandbox.delete", {"path": _sandbox_path(args[0])})]
-    raise CommandError("usage: /sandbox list|read|delete <path>")
+    if sub in ("delete", "rm"):
+        recursive = False
+        positional = []
+        for a in args:
+            if a in ("-r", "--recursive"):
+                recursive = True
+            elif a.startswith("-"):
+                raise CommandError(f"unknown option: {a}")
+            else:
+                positional.append(a)
+        _require(positional, 1, "/sandbox delete [-r] <path>")
+        body = {"path": _sandbox_path(positional[0])}
+        if recursive:
+            body["recursive"] = True
+        return [_command("sandbox.delete", body)]
+    if sub == "mkdir":
+        _require(args, 1, "/sandbox mkdir <path>")
+        return [_command("sandbox.mkdir", {"path": _sandbox_path(args[0])})]
+    if sub == "move":
+        _require(args, 2, "/sandbox move <from> <to>")
+        return [_command("sandbox.move", {"from": _sandbox_path(args[0]), "to": _sandbox_path(args[1])})]
+    raise CommandError("usage: /sandbox list|read|mkdir|move|delete <path>")
 
 
 def _tasks(rest: list[str], state: CommandState) -> list[Frame]:

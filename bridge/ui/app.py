@@ -17,10 +17,11 @@ from ..client import LinkState, Session
 from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
 from ..protocol import Frame, new_id
-from .help import COMMANDS, HELP_TEXT, CommandSuggester, options
+from .help import COMMANDS, CommandSuggester, help_tabs, options
 from .history import PromptHistory
 from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import (
+    HelpModal,
     ConfirmPrompt,
     FilePrompt,
     FilterPrompt,
@@ -56,6 +57,14 @@ from .render import (
 COMPOSER_MAX_ROWS = 6
 #: `05-bridge.md` §5.1: the candidate list never pushes the conversation away.
 COMPLETION_ROWS = 8
+
+
+def _entries_note(result: dict[str, Any] | None) -> str:
+    """How many entries a delete took with it, when the device says so."""
+    if not isinstance(result, dict):
+        return ""
+    entries = result.get("entries")
+    return f" and {entries} entries" if entries else ""
 
 
 class ChatLog(RichLog):
@@ -543,6 +552,8 @@ class FilesScreen(Vertical):
         Binding("e", "edit_file", "Edit", show=False),
         Binding("d", "delete_entry", "Delete", show=False),
         Binding("n", "new_file", "New", show=False),
+        Binding("m", "move_entry", "Move", show=False),
+        Binding("k", "new_directory", "Mkdir", show=False),
         Binding("u", "go_up", "Up", show=False),
         Binding("r", "refetch", "Refresh", show=False),
     ]
@@ -551,7 +562,7 @@ class FilesScreen(Vertical):
         yield Static("/workspace/", id="files-path")
         yield DataTable(id="files-table", cursor_type="row")
         yield Static(
-            "[Enter] Open [E] Edit [D] Delete [N] New [U] Up [R] Refresh",
+            "[Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir [U] Up [R] Refresh",
             id="files-hint",
         )
 
@@ -610,6 +621,12 @@ class FilesScreen(Vertical):
     def action_new_file(self) -> None:
         self.app.run_worker(self.app.new_file())  # type: ignore[attr-defined]
 
+    def action_move_entry(self) -> None:
+        self.app.run_worker(self.app.move_entry())  # type: ignore[attr-defined]
+
+    def action_new_directory(self) -> None:
+        self.app.run_worker(self.app.new_directory())  # type: ignore[attr-defined]
+
     def action_go_up(self) -> None:
         self.app.run_worker(self.app.browse(sandbox_parent(self.current_path())))  # type: ignore[attr-defined]
 
@@ -667,11 +684,6 @@ class MqttScreen(Vertical):
         )
 
 
-class HelpScreen(VerticalScroll):
-    def compose(self) -> ComposeResult:
-        yield Static(HELP_TEXT, id="help-body")
-
-
 class SplashScreen(Vertical):
     """`05-bridge.md` §5.9: the mascot and one tip, dismissed by any key.
 
@@ -722,7 +734,7 @@ class BridgeApp(App):
 
     CSS = """
     Screen { layout: vertical; }
-    #status-body, #help-body { padding: 1 2; }
+    #status-body { padding: 1 2; }
     #completion { padding: 0 2; height: auto; color: $text-muted; }
     /* One row, never wrapped: a bar that grows with the facts would push the
        composer off a short terminal. Truncated by `clip` at the call site. */
@@ -732,7 +744,7 @@ class BridgeApp(App):
     """
 
     BINDINGS = [
-        Binding("f1", "show('help')", "Help"),
+        Binding("f1", "help", "Help"),
         Binding("f2", "show('chat')", "Chat"),
         Binding("f3", "show('status')", "Status"),
         Binding("f4", "show('tasks')", "Tasks"),
@@ -778,7 +790,6 @@ class BridgeApp(App):
             yield SettingsScreen(id="settings")
             yield MqttScreen(id="mqtt")
             yield FilesScreen(id="files")
-            yield HelpScreen(id="help")
             yield SplashScreen(pick_tip(), id="splash")
         yield Footer()
 
@@ -787,7 +798,7 @@ class BridgeApp(App):
         # A link drop sends no frame: without this the bar would sit at
         # `linked` through an outage (`05` §5.1).
         self.session.install_state_hook(lambda _state: self._refresh_bar())
-        for name in ("status", "tasks", "logs", "settings", "mqtt", "files", "help"):
+        for name in ("status", "tasks", "logs", "settings", "mqtt", "files"):
             self.query_one(f"#{name}").display = False
         # `05` §5.9: the splash is the first thing a reader sees. Headless runs
         # (`run_test`, `--headless`) mount Chat directly so the 140 existing
@@ -811,6 +822,10 @@ class BridgeApp(App):
             self._on_hello_ack(ack)
         await self._request("status")
 
+    def action_help(self) -> None:
+        """`05` §5.6: `F1` opens the catalogue as a modal, not a screen."""
+        self.push_screen(HelpModal(help_tabs()))
+
     def action_show(self, name: str) -> None:
         for screen in (
             "chat",
@@ -820,7 +835,6 @@ class BridgeApp(App):
             "settings",
             "mqtt",
             "files",
-            "help",
         ):
             self.query_one(f"#{screen}").display = screen == name
         self.title = name.capitalize()
@@ -967,16 +981,76 @@ class BridgeApp(App):
         await self.view_file(chosen[0])
 
     async def delete_entry(self) -> None:
+        """`05` §5.8: delete a file, or a directory after naming what it holds.
+
+        A directory is never removed on one keypress. The device refuses a
+        populated one unless `recursive` is set, and the confirmation reports the
+        child count so "delete `runs`" and "delete `runs` and the 47 files under
+        it" cannot look the same at the moment the key is pressed.
+        """
         chosen = self._files().selected_entry()
         if chosen is None:
             return
         path, kind = chosen
-        if kind == "dir":
-            self._chat().write(f"[warn] {path} is a directory; the device refuses")
+        if kind == "file":
+            if not await self.push_screen_wait(ConfirmPrompt(f"Delete {path}?")):
+                return
+            await self._request("sandbox.delete", {"path": path})
             return
-        if not await self.push_screen_wait(ConfirmPrompt(f"Delete {path}?")):
+        entries = await self._request("sandbox.list", {"path": path + "/"})
+        count = len((entries or {}).get("entries") or [])
+        question = (
+            f"Delete {path} and the {count} entries under it?"
+            if count
+            else f"Delete the empty directory {path}?"
+        )
+        if not await self.push_screen_wait(ConfirmPrompt(question)):
             return
-        await self._request("sandbox.delete", {"path": path})
+        # `recursive` only when there is something to recurse into: an empty
+        # directory is the same frame either way, and saying less is safer.
+        args: dict[str, Any] = {"path": path}
+        if count:
+            args["recursive"] = True
+        await self._request("sandbox.delete", args)
+
+    async def move_entry(self) -> None:
+        """`05` §5.8: rename or relocate the cursor row.
+
+        Both a file and a directory move, because `sandbox.move` is one `rename`
+        on the device. The default in the prompt is the current name, so a plain
+        rename is Enter and an edit, not a retyped absolute path.
+        """
+        chosen = self._files().selected_entry()
+        if chosen is None:
+            return
+        path, _kind = chosen
+        if path.rstrip("/") == SANDBOX_ROOT.rstrip("/"):
+            self._chat().write("[warn] /workspace cannot be moved")
+            return
+        name = await self.push_screen_wait(
+            ValuePrompt(f"Move {path} to", path)
+        )
+        if not name or name == path:
+            return
+        try:
+            target = sandbox_normalise(name)
+        except SandboxPathError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        await self._request("sandbox.move", {"from": path, "to": target})
+        await self.browse(self._files_path)
+
+    async def new_directory(self) -> None:
+        name = await self.push_screen_wait(ValuePrompt("New directory name", ""))
+        if not name:
+            return
+        try:
+            path = sandbox_join(self._files_path, name)
+        except SandboxPathError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        await self._request("sandbox.mkdir", {"path": path})
+        await self.browse(self._files_path)
 
     async def new_file(self) -> None:
         name = await self.push_screen_wait(ValuePrompt("New file name", ""))
@@ -1226,8 +1300,22 @@ class BridgeApp(App):
             self._chat().write(
                 f"{name} {result.get('path')} "
                 + ("created" if result.get("created") else "ok")
+                + _entries_note(result)
             )
             self.run_worker(self.browse(self._files_path))
+            return
+        if name in ("sandbox.mkdir", "sandbox.move"):
+            self._chat().write(
+                f"{name} {result.get('path') or result.get('to')} "
+                + ("created" if result.get("created") else "ok")
+            )
+            self.run_worker(self.browse(self._files_path))
+            return
+        if name == "sys.reset_counter":
+            # `04` §4.23: the previous value is the proof the reply names.
+            self._chat().write(f"boot failures: {result.get('previous')} -> 0")
+            if result.get("safe_mode"):
+                self._chat().write("safe mode lifts on the next boot")
             return
         if name == "secret.set":
             # Never render the value; `05-bridge.md` §8.
@@ -1476,7 +1564,7 @@ class BridgeApp(App):
         if head == "logs":
             self.action_show("logs")
         elif head == "help":
-            self.action_show("help")
+            self.action_help()
         elif head == "tools":
             caps = self._state.get("capabilities") or {}
             self._chat().write("tools: " + ", ".join(caps.get("tools") or []))

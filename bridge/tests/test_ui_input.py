@@ -15,6 +15,7 @@ from bridge.client import LinkState, Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
+from bridge.ui.modals import HelpModal
 from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, ChatScreen
 from bridge.ui.render import clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory
@@ -781,7 +782,8 @@ async def test_slash_logs_opens_the_logs_screen_without_a_frame():
         await session.close()
 
 
-async def test_slash_help_opens_the_help_screen_without_a_frame():
+async def test_slash_help_opens_the_help_modal_without_a_frame():
+    """`05` §5.6: help is a modal over the current screen, not a screen swap."""
     transport = FakeTransport(on_write=_reply)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
@@ -790,8 +792,8 @@ async def test_slash_help_opens_the_help_screen_without_a_frame():
         before = len(transport.written)
         app.submit("/help")
         await pilot.pause(0.2)
-        assert app.query_one("#help").display is True
-        assert app.query_one("#chat").display is False
+        assert isinstance(app.screen, HelpModal)
+        assert app.query_one("#chat").display is True  # the screen is still there
         assert not [line for line in transport.written[before:] if b'"type":"command"' in line]
         await session.close()
 

@@ -14,7 +14,15 @@ from bridge.commands import LOCAL_COMMANDS
 from bridge.link import FakeTransport
 from bridge.ui import BridgeApp
 from bridge.ui.help import COMMANDS, HELP_TEXT, _SUBCOMMANDS, options, suggest
-from bridge.ui.modals import ConfirmPrompt, SecretPrompt
+from bridge.ui.modals import (
+    ConfirmPrompt,
+    FilePrompt,
+    FilterPrompt,
+    HelpModal,
+    SecretPrompt,
+    ValuePrompt,
+)
+from bridge.ui.task_prompt import TaskPrompt
 from bridge.ui.render import SlashHighlighter, json_payload, render_json_block, sanitize
 
 from .test_ui import _reply
@@ -307,3 +315,43 @@ def test_the_slash_head_is_emphasised_and_placeholders_dimmed():
     assert spans[(12, 18)] == "dim"
     assert highlighter("plain prompt").spans == []
     assert highlighter("/unknown").spans == []
+
+
+# -- modal geometry (`05` §5.2) -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: SecretPrompt("openai_api_key"),
+        lambda: ConfirmPrompt("Delete?"),
+        lambda: FilterPrompt("level"),
+        lambda: ValuePrompt("key", "value"),
+        lambda: FilePrompt("/workspace/a.md", "body"),
+        lambda: HelpModal({name: "row" for name in ("Device",)}),
+        lambda: TaskPrompt(),
+    ],
+)
+async def test_every_modal_is_centred(factory):
+    """`05` §5.2: a modal sits in the middle of the screen.
+
+    This is a real regression: `_CSS` selected `Screen`, which does not match a
+    `ModalScreen` in Textual 8.2 because the subclass carries its own
+    `DEFAULT_CSS`. Every modal rendered at `(0, 0)` while the rule still read
+    `align: center middle`.
+    """
+    from bridge.ui.testing import ModalCanvas
+
+    app = ModalCanvas()
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(factory())
+        await pilot.pause(0.2)
+        box = app.screen.query_one(".prompt-box, .help-box")
+        left = box.region.x
+        right = 100 - (box.region.x + box.region.width)
+        top = box.region.y
+        bottom = 40 - (box.region.y + box.region.height)
+        # A cell boundary can leave half a cell on either side; anything larger
+        # means the box is not centred.
+        assert abs(left - right) <= 1, (left, right)
+        assert abs(top - bottom) <= 1, (top, bottom)

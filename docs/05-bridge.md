@@ -158,12 +158,24 @@ The primary interaction pane.
     link is down, linking or refused that word is the whole bar, because every
     other fact would be the last thing heard before the link died), the
     provider and model while a `status` has named one, the agent's `idle` or
-    `busy <run_id>`, a queue segment only while the queue is non-empty, RSSI in
-    `dBm`, workspace use against its quota, `SAFE MODE` while safe mode is
-    active, the running token total once a call has been charged, and the
-    `device` from `hello_ack`. A segment whose fact is unknown is omitted rather
-    than rendered as `none`: a bar that blamed the provider before the first
-    `status` arrived would send the reader after the wrong thing.
+    `busy <run_id>`, a queue segment only while the queue is non-empty, the wifi
+    state and its signal, workspace use against its quota, the running token
+    total once a call has been charged, and the `device` from `hello_ack`. A
+    segment whose fact is unknown is omitted rather than rendered as `none`: a
+    bar that blamed the provider before the first `status` arrived would send
+    the reader after the wrong thing.
+  - Two facts sit immediately behind the link word, because the bar drops from
+    the right: `SAFE MODE` while safe mode is active, and the uptime from
+    `status.uptime_s` as one compact segment — `45s`, `12m05s`, `3h04m`, `1d2h`.
+    Safe mode is the fact that explains a failure, so it outranks everything the
+    model or agent says; uptime dates every other fact on the bar.
+  - The wifi fact carries `state`, not only the signal: `up` beside `-58dBm`
+    while connected, and `wifi linking`, `wifi failed` or `wifi off` with no
+    signal segment at all when there is none — a bar that showed nothing for a
+    dead association would read as silence rather than as a fault. A `failovers`
+    count above zero is appended as `N failover(s)`, because a network that took
+    three tries to come up is about to take three tries again. All of it comes
+    from the last `status` the bridge holds; none of it costs a frame.
   - The bar is redrawn when a fact changes: `hello_ack`, a `status` frame, the
     `status` command's own reply (a `/status` is a command, not a push, and a bar
     that ignored it would stay empty until the device volunteered one), a usage
@@ -190,7 +202,7 @@ The primary interaction pane.
 |                                                                       |
 | User: [ /tasks list ]                                                 |
 +-----------------------------------------------------------------------+
-| linked | openai/gpt-4o-mini | idle | -58dBm | workspace 2048/65536    |
+| linked | 3h04m | openai/gpt-4o-mini | idle | up | -58dBm              |
 | > Hello agent!                                                        |
 +-----------------------------------------------------------------------+
 ```
@@ -300,13 +312,23 @@ Chat input (`/mqtt publish`) or by the agent; the screen has no composer.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.6 Help Screen (`/help`, F1)
+### 5.6 Help Modal (`/help`, F1)
 
-The help body is generated from one table, `COMMANDS` in `bridge/ui/help.py`: every
+Help is a modal over the current screen, not a screen of its own: `F1` is pressed
+mid-composition, and a screen swap would discard the half-typed prompt. The draft
+survives the modal opening and closing, which a test asserts.
+
+The body is generated from one table, `COMMANDS` in `bridge/ui/help.py`: every
 head `commands.py` accepts and every `LOCAL_COMMANDS` entry appears exactly once, so
 the screen cannot drift from the parser. Each entry carries a `usage`, a one-line
 `summary`, and whether it is local (`05` §7). A command that is accepted but absent
 from the table, or documented but rejected, fails a test rather than a user's memory.
+
+The entries are grouped by a second table, `CATEGORIES`, into four `TabPane`s —
+**Device**, **Chat**, **Info**, **Screens** — and a coverage test asserts that the
+groups name every command exactly once, so a new command cannot silently vanish
+from the modal. A keybinding strip sits above the tabs, from `KEYS_TEXT`, because
+the keys that close the modal are the ones a reader looks for. `Esc` dismisses.
 
 When the longest usage in a group is wider than a column that still fits a terminal,
 each form moves to its own line with the summary indented beneath it. The result
@@ -316,23 +338,20 @@ never exceeds 78 columns, so no line wraps on a narrow terminal.
 F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files
 Ctrl+R Reconnect | Ctrl+Q Quit
 Esc Closes a modal and cancels a run
+```
 
-Device commands
-  /status
-      force a status refresh
-  /tasks
-  /tasks add
-  /tasks set <id>
-  /tasks enable <id>
-  /tasks disable <id>
-  /tasks delete <id>
-      list tasks, or add, set, enable, disable or delete one
-  /run <id>
-      run a task now
+The modal itself, over whatever screen was open:
 
-Local commands
-  /tools    list built-in and MCP tools
-  /mcp      list MCP servers from the last status
+```text
++--------------------------------------------------------------+
+| Help  Device | Chat | Info | Screens                         |
++--------------------------------------------------------------+
+| Device commands                                              |
+|   /status                                                    |
+|       force a status refresh                                 |
+|   /sys reset-counter                                         |
+|       clear the boot-failure counter                         |
++--------------------------------------------------------------+
 ```
 
 ### 5.7 Settings Screen (`/settings`)
@@ -400,10 +419,28 @@ intact; a buffer is never half-written by a failed frame. A file the device repo
 the cut back over the original. `Esc` discards. Nothing is written on navigation, so
 leaving the screen with an open modal cannot silently save.
 
-Deleting asks `y`/`n` first, naming the path, and sends `sandbox.delete`. A
-non-empty directory is refused by the device, so there is no recursive delete and
-no confirmation that could take a subtree. `N` creates a new empty file through
-`sandbox.write` with an empty body, then opens it for editing.
+Deleting asks `y`/`n` first. For a file the question names the path. For a
+directory the screen lists it first, counts the entries, and says how many a
+recursive delete would take: *"Delete /workspace/runs and the 3 entries under it?"*
+An empty directory asks without a count, because there is nothing to lose, and the
+frame omits `recursive` (`04` §4.19). The destructive form of the command is never
+sent for a directory the reader was not told the size of.
+
+`M` moves or renames the selected entry through `sandbox.move`, with the prompt
+pre-filled with the current path so a rename is an edit rather than retyping. The
+target is normalised locally by `sandbox_normalise`, so a path outside `/workspace/`
+is refused before a frame is sent. `K` creates a directory via `sandbox.mkdir`, in
+the directory currently browsed. `N` creates a new empty file through `sandbox.write`
+with an empty body, then opens it for editing. Both `N` and `K` re-request the
+listing on success, so the new entry appears without a manual refresh.
+
+The editor modal holds a `TextArea` and supports `Ctrl+F` to search: the first
+`Enter` sets the needle and selects the first match, the second replaces every
+occurrence with the new text in one edit, so the whole cascade undoes as one step.
+`F3` jumps to the next match and wraps at the end, because a search that stops at the
+buffer's end reads as "not found" when the match is above the caret. `Ctrl+Z` and
+`Ctrl+Y` undo and redo, and the hint line under the buffer names both, since a
+keybinding nobody can discover is not a feature.
 
 ```text
 +-----------------------------------------------------------------------+
@@ -414,7 +451,8 @@ no confirmation that could take a subtree. `N` creates a new empty file through
 | f     notes.md                         412                            |
 | f     run_7.json                       1834                           |
 +-----------------------------------------------------------------------+
-| [Enter] Open [E] Edit [D] Delete [N] New [U] Up [R] Refresh           |
+| [Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir [U] Up    |
+| [R] Refresh                                                           |
 +-----------------------------------------------------------------------+
 ```
 
@@ -468,6 +506,16 @@ dismissing it needs no screen-stack plumbing.
 - **Headless**: `--json` runs and tests are headless, so the splash is never
   displayed and its timer is never started — a fired timer would steal focus from
   the composer the caller is driving. Chat is displayed instead.
+
+### 5.10 Modals
+
+Every modal derives from `PromptBox`, a `ModalScreen`, and all of them sit in the
+centre of the terminal. The rule is `ModalScreen, * { align: center middle; }`:
+selecting `Screen` alone does not match, because a `ModalScreen` subclass carries
+its own `DEFAULT_CSS` with `layout: vertical`, and the more specific rule wins. The
+symptom is a box pinned to the top-left while the stylesheet still reads correctly,
+so a parametrised test measures each modal's rendered region and requires it within
+one cell of centre on both axes.
 
 ## 6. Keybindings
 
@@ -531,8 +579,13 @@ future that is never resolved.
 | Files | `Up`/`Down` | Move between entries |
 | Files | `Enter` | Open the selected directory, or view the selected file |
 | Files | `E` | Edit the selected file in a `TextArea` modal, send `sandbox.write` on `Ctrl+S` |
-| Files | `D` | Delete the selected entry after `y`/`n`, send `sandbox.delete` |
+| Files | `D` | Delete the selected entry after `y`/`n`, send `sandbox.delete`; a directory is listed first and its entry count named |
+| Files | `M` | Move or rename the selected entry through `sandbox.move`, prompt pre-filled with its current path |
 | Files | `N` | Create an empty file at a prompted name, send `sandbox.write`, then edit it |
+| Files | `K` | Create a directory at a prompted name, send `sandbox.mkdir` |
+| Editor | `Ctrl+F` | Search: first `Enter` finds, second replaces every match in one undo step |
+| Editor | `F3` | Jump to the next match, wrapping at the end of the buffer |
+| Editor | `Ctrl+Z` / `Ctrl+Y` | Undo and redo |
 | Files | `U` | Go up one directory, stopping at `/workspace/` |
 | Files | `R` | Re-request `sandbox.list` for the current path |
 
@@ -561,6 +614,10 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/fs put <p>` | `command {name:"fs.put"}` | `path, data, offset, final` | Uploads a local file to `userfs` in 2 KiB chunks; refuses a path outside the allowlist before sending |
 | `/files` | `command {name:"sandbox.list"}` | `path?` | Opens the Files screen at `/workspace/` |
 | `/files <p>` | `command {name:"sandbox.list"}` | `path` | Opens the Files screen at that sandbox directory |
+| `/sandbox mkdir <p>` | `command {name:"sandbox.mkdir"}` | `path` | Creates one directory; refuses outside sandbox before sending |
+| `/sandbox move <f> <t>` | `command {name:"sandbox.move"}` | `from, to` | Renames or relocates a file or directory |
+| `/sandbox delete <p> [-r]` | `command {name:"sandbox.delete"}` | `path, recursive?` | Deletes one entry; recursive removes populated directories |
+| `/sys reset-counter` | `command {name:"sys.reset_counter"}` | none | Clears the boot-failure counter |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
 | `/tools` | (Local) | none | Lists `capabilities.tools` (every tool currently callable, declarative ones included) and `capabilities.mcp` |
