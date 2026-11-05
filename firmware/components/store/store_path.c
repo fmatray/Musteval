@@ -110,3 +110,10 @@ esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap)
     out[n] = '\0';
     return ESP_OK;
 }
+bool store_path_is_under(const char *dir, const char *path)
+{
+    if (dir == NULL || path == NULL) return false;
+    size_t n = strlen(dir);
+    if (strncmp(dir, path, n) != 0) return false;
+    return path[n] == '\0' || path[n] == '/';
+}

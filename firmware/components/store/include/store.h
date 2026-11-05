@@ -94,6 +94,10 @@ esp_err_t store_map_path(const char *agent_path, char *out, size_t out_cap);
  * bytes and over-long paths with E_TOOL. */
 esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap);
 
+/* True when `path` is `dir` itself or lies below it. Whole segments are compared,
+ * so `/workspace/a` is not under `/workspace/ab`. Pure. */
+bool store_path_is_under(const char *dir, const char *path);
+
 /* Largest VFS path any `store_*` call produces; sized for a full agent path plus
  * the `/fs/` prefix. A caller's buffer may be smaller, which the calls reject. */
 #define STORE_PATH_MAX 512
@@ -207,12 +211,53 @@ esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data,
                             size_t len, size_t offset, bool final,
                             size_t *out_bytes, bool *out_created);
 
-/* Unlink one file, or one empty directory. A directory that still holds entries
- * is ESP_ERR_INVALID_STATE (§4.19). */
-esp_err_t store_delete_file(const char *agent_path);
+/* Delete one file, one empty directory, or — with `recursive` — a whole subtree
+ * (§4.19). `*entries` is the immediate child count when a populated directory is
+ * refused for want of `recursive`, and the number of descendants removed on
+ * success. */
+esp_err_t store_delete_file(const char *agent_path, bool recursive, size_t *entries);
+
+/* Create one directory; intermediates are never created (§4.21). `*created` is
+ * false when the directory was already there. A missing parent is
+ * ESP_ERR_INVALID_ARG, which `main` reports as E_CONFIG with `detail`. */
+esp_err_t store_mkdir(const char *agent_path, bool *created);
+
+/* Rename one file or directory inside `/workspace/` (§4.22). Both paths are
+ * canonicalised, an existing `to` is never overwritten, and a directory carries
+ * its subtree. A missing source is ESP_ERR_NOT_FOUND; a taken target or a move
+ * into the source itself is ESP_ERR_INVALID_STATE (`main` maps both to the wire
+ * codes §4.22 names). */
+esp_err_t store_move(const char *from, const char *to);
 
 /* `true` when `agent_path` names a directory. */
 esp_err_t store_is_dir(const char *agent_path, bool *out);
+
+/* --- §4.19 / §4.22 decisions, pure so the host suite can fail them --------- */
+
+typedef enum {
+    STORE_DELETE_FILE,            /* not a directory: unlink */
+    STORE_DELETE_EMPTY,           /* empty directory: rmdir */
+    STORE_DELETE_TREE,            /* populated and `recursive`: remove post-order */
+    STORE_DELETE_NEEDS_RECURSIVE, /* populated without `recursive`: refuse */
+} store_delete_action_t;
+
+store_delete_action_t store_delete_action(bool is_dir, size_t entries, bool recursive);
+
+/* Fold one `readdir` name into a child count. `.`, `..` and any name a listing
+ * would refuse are not children (§4.17). Pure. */
+size_t store_count_entry(size_t count, const char *name);
+
+typedef enum {
+    STORE_MOVE_OK = 0,
+    STORE_MOVE_SOURCE_MISSING,
+    STORE_MOVE_TARGET_TAKEN, /* §4.22: an existing `to` is never overwritten */
+    STORE_MOVE_INTO_ITSELF,  /* `to` is `from` or below it */
+} store_move_verdict_t;
+
+/* Decide a move before the syscall, so the refusal order is fixed in one place.
+ * `from`/`to` are canonical VFS paths. Pure. */
+store_move_verdict_t store_move_verdict(bool source_exists, bool target_exists,
+                                        const char *from, const char *to);
 
 /* Directories first, then name, both ascending (§4.17). Pure. */
 int  store_entry_cmp(const store_entry_t *a, const store_entry_t *b);

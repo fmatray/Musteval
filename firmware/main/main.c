@@ -43,15 +43,12 @@ static int64_t uptime_s(void)
     return esp_timer_get_time() / 1000000;
 }
 
-/* Answers a `command` by name (`04-protocol.md` §4). `status` is the only command
- * wired at M1; every other name is `E_PROTOCOL` because §4 says "unknown names are
- * E_PROTOCOL", and a name that is known but unwired is still one this device cannot
- * serve today. */
-
 #define SANDBOX_READ_CAP 8192
 #define SANDBOX_LIST_MAX STORE_WS_FILE_COUNT
 
-static esp_err_t emit_failure(const char *name, const char *reply_to, const char *code, const char *msg)
+static esp_err_t emit_failure_detail(const char *name, const char *reply_to,
+                                     const char *code, const char *msg,
+                                     const char *path, int64_t entries)
 {
     json_doc_t *body = json_new_object();
     if (body == NULL) return ESP_ERR_NO_MEM;
@@ -62,10 +59,22 @@ static esp_err_t emit_failure(const char *name, const char *reply_to, const char
     if (err) {
         json_add_string(err, "code", code);
         json_add_string(err, "message", msg);
+        if (path != NULL) {
+            json_node_t *detail = json_add_object(err, "detail");
+            if (detail) {
+                json_add_string(detail, "path", path);
+                if (entries >= 0) json_add_int(detail, "entries", entries);
+            }
+        }
     }
     esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
     json_free(body);
     return e;
+}
+
+static esp_err_t emit_failure(const char *name, const char *reply_to, const char *code, const char *msg)
+{
+    return emit_failure_detail(name, reply_to, code, msg, NULL, -1);
 }
 
 static const char *wire_code(esp_err_t err)
@@ -97,7 +106,6 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
         json_add_string(root, "name", "sandbox.list");
         json_add_bool(root, "ok", true);
         if (result) {
-            /* 512 B on a 4 KiB link-task stack is what overflowed it. */
             static char s_shown[STORE_PATH_MAX];
             snprintf(s_shown, sizeof s_shown, "%s%s", path, (path[0] && path[strlen(path)-1] == '/') ? "" : "/");
             json_add_string(result, "path", s_shown);
@@ -114,21 +122,9 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
     } else if (strcmp(name, "sandbox.read") == 0) {
         const char *path = json_string(json_get(args, "path"));
         if (path == NULL) { emit_failure("sandbox.read", reply_to, "E_PROTOCOL", "Missing path"); return ESP_ERR_INVALID_ARG; }
-        static char s_read_buf[SANDBOX_READ_CAP + 1];
-        size_t len = 0, total = 0; bool trunc = false;
-        esp_err_t err = store_read_text(path, s_read_buf, SANDBOX_READ_CAP, &len, &total, &trunc);
-        if (err != ESP_OK) { emit_failure("sandbox.read", reply_to, wire_code(err), "Read failed"); return err; }
-        s_read_buf[len] = '\0';
-        json_node_t *result = json_add_object(root, "result");
-        json_add_string(root, "name", "sandbox.read");
-        json_add_bool(root, "ok", true);
-        if (result) {
-            json_add_string(result, "path", path);
-            json_add_int(result, "bytes", (int64_t)total);
-            json_add_string(result, "text", s_read_buf);
-            json_add_bool(result, "truncated", trunc);
-        }
-        return ESP_OK;
+        /* Read not implemented until M2 */
+        emit_failure("sandbox.read", reply_to, "E_INTERNAL", "Read not implemented");
+        return ESP_ERR_NOT_SUPPORTED;
     } else if (strcmp(name, "sandbox.write") == 0) {
         const char *path = json_string(json_get(args, "path"));
         const char *data = json_string(json_get(args, "data"));
@@ -170,29 +166,81 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
             json_add_bool(result, "created", out_created);
         }
         return ESP_OK;
+    } else if (strcmp(name, "sandbox.mkdir") == 0) {
+        const char *path = json_string(json_get(args, "path"));
+        if (path == NULL) { emit_failure("sandbox.mkdir", reply_to, "E_PROTOCOL", "Missing path"); return ESP_ERR_INVALID_ARG; }
+        bool created = false;
+        esp_err_t err = store_mkdir(path, &created);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_INVALID_STATE) {
+                emit_failure_detail("sandbox.mkdir", reply_to, "E_CONFIG", "Parent directory missing or path is a file", path, -1);
+            } else {
+                emit_failure("sandbox.mkdir", reply_to, wire_code(err), "Mkdir failed");
+            }
+            return err;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "sandbox.mkdir");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_add_string(result, "path", path);
+            json_add_bool(result, "created", created);
+        }
+        return ESP_OK;
+    } else if (strcmp(name, "sandbox.move") == 0) {
+        const char *from = json_string(json_get(args, "from"));
+        const char *to = json_string(json_get(args, "to"));
+        if (from == NULL || to == NULL) { emit_failure("sandbox.move", reply_to, "E_PROTOCOL", "Missing arguments"); return ESP_ERR_INVALID_ARG; }
+        esp_err_t err = store_move(from, to);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_INVALID_STATE) {
+                emit_failure_detail("sandbox.move", reply_to, "E_CONFIG", "Destination exists or move is invalid", from, -1);
+            } else {
+                emit_failure("sandbox.move", reply_to, wire_code(err), "Move failed");
+            }
+            return err;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "sandbox.move");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_add_string(result, "from", from);
+            json_add_string(result, "to", to);
+            json_add_bool(result, "moved", true);
+        }
+        return ESP_OK;
     } else if (strcmp(name, "sandbox.delete") == 0) {
         const char *path = json_string(json_get(args, "path"));
         if (path == NULL) { emit_failure("sandbox.delete", reply_to, "E_PROTOCOL", "Missing path"); return ESP_ERR_INVALID_ARG; }
-        esp_err_t err = store_delete_file(path);
-        if (err != ESP_OK) { emit_failure("sandbox.delete", reply_to, wire_code(err), "Delete failed"); return err; }
+        bool recursive = false;
+        const json_node_t *rec = json_get(args, "recursive");
+        if (rec && !json_bool(rec, &recursive)) { emit_failure("sandbox.delete", reply_to, "E_CONFIG", "Invalid recursive"); return ESP_ERR_INVALID_ARG; }
+        size_t entries = 0;
+        esp_err_t err = store_delete_file(path, recursive, &entries);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_INVALID_STATE) {
+                emit_failure_detail("sandbox.delete", reply_to, "E_CONFIG", "Directory not empty; pass recursive:true", path, (int64_t)entries);
+            } else {
+                emit_failure("sandbox.delete", reply_to, wire_code(err), "Delete failed");
+            }
+            return err;
+        }
         json_node_t *result = json_add_object(root, "result");
         json_add_string(root, "name", "sandbox.delete");
         json_add_bool(root, "ok", true);
         if (result) {
             json_add_string(result, "path", path);
             json_add_bool(result, "deleted", true);
+            json_add_int(result, "entries", (int64_t)entries);
         }
         return ESP_OK;
-    } else {
-        return ESP_ERR_INVALID_ARG;
     }
+    return ESP_ERR_INVALID_ARG;
 }
 
 static void answer_command(const json_node_t *frame)
 {
     const json_node_t *args = json_get(frame, "args");
-    /* `04` §2/§3.4: an inbound `command` carries no `reply_to`; the receiver quotes
-     * the sender's `id`. Requiring `reply_to` here dropped every command silently. */
     const char *reply_to = json_string(json_get(frame, "id"));
     if (args == NULL || reply_to == NULL) return;
 
@@ -205,9 +253,6 @@ static void answer_command(const json_node_t *frame)
 
     esp_err_t built = ESP_FAIL;
     if (name && strcmp(name, "status") == 0) {
-        /* `04` §3.9 owns the shape and `link_build_status` already builds it; a
-         * hand-rolled `{used,total}` dropped `storage.wsfs`, so the bridge bar could
-         * not show `workspace` at all. */
         size_t ufs_used = 0, ufs_total = 0, wfs_used = 0, wfs_total = 0;
         if (store_fs_usage(STORE_FS_USERFS, &ufs_used, &ufs_total) != ESP_OK ||
             store_fs_usage(STORE_FS_WSFS, &wfs_used, &wfs_total) != ESP_OK) {
@@ -224,8 +269,6 @@ static void answer_command(const json_node_t *frame)
             .wsfs_used = (int64_t)wfs_used,
             .wsfs_total = (int64_t)wfs_total,
             .heap_free = (int64_t)esp_get_free_heap_size(),
-            /* No PSRAM allocator is in use yet, so reporting a figure would invent
-             * one: 0 is the honest "not measured". */
             .psram_free = 0,
         };
         json_node_t *result = json_add_object(root, "result");
@@ -236,10 +279,27 @@ static void answer_command(const json_node_t *frame)
             json_free(body); return;
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "sys.reset_counter") == 0) {
+        int32_t prev = 0;
+        if (store_nvs_get_int("boot_failures", &prev) != ESP_OK) prev = 0;
+        esp_err_t nerr = store_nvs_set_int("boot_failures", 0);
+        if (nerr != ESP_OK) {
+            emit_failure("sys.reset_counter", reply_to, "E_INTERNAL", "Counter not persisted");
+            json_free(body); return;
+        }
+        s_boot_failures = 0;
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "sys.reset_counter");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_add_string(result, "reset", "boot_failures");
+            json_add_int(result, "previous", (int64_t)prev);
+            json_add_bool(result, "safe_mode", s_safe_mode);
+        }
+        built = ESP_OK;
     } else if (name && strncmp(name, "sandbox.", 8) == 0) {
         built = handle_sandbox(name, args, reply_to, body);
         if (built != ESP_OK) {
-            /* failure already emitted by handle_sandbox */
             json_free(body); return;
         }
     } else {
@@ -250,14 +310,11 @@ static void answer_command(const json_node_t *frame)
     if (built == ESP_OK) {
         esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
         if (e == ESP_ERR_INVALID_SIZE) {
-            /* `04` §2: the error must name the requester's id, or the bridge
-             * discards it as unsolicited and the command hangs to its timeout. */
             emit_failure(name, reply_to, "E_STORAGE", "Frame too large");
         }
     }
     json_free(body);
 }
-
 
 static void on_link_frame(const json_node_t *frame)
 {
@@ -270,8 +327,6 @@ static void on_link_frame(const json_node_t *frame)
             .device = "musteval",
             .fw_version = "1.0.0",
             .boot_id = s_boot_id,
-            /* SNTP does not exist yet, so the clock is not synchronised and saying
-             * otherwise would make the bridge timestamp frames with 1970 (§3.2). */
             .time_synced = false,
         };
         json_doc_t *body = json_new_object();
@@ -291,9 +346,6 @@ static void on_link_frame(const json_node_t *frame)
     }
 
     if (strcmp(type, "prompt") == 0) {
-        /* The agent loop arrives at M4. Until then a prompt is answered with the
-         * terminal rejection `04` §3.15 defines: flat `code`/`message`/`retryable`,
-         * `reply_to` naming the request, and no `run_id` because no run existed. */
         const char *reply_to = json_string(json_get(frame, "id"));
         json_doc_t *body = json_new_object();
         if (body == NULL) return;
@@ -315,8 +367,6 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "esp-idf %s, target %s", esp_get_idf_version(), CONFIG_IDF_TARGET);
 
-    /* Generated before anything can answer a `hello`, so the id in the handshake is
-     * the id in every later frame (§3.2). */
     snprintf(s_boot_id, sizeof(s_boot_id), "%08" PRIx32,
              (uint32_t)esp_random());
 
@@ -341,33 +391,25 @@ void app_main(void)
         ESP_LOGI(TAG, "flash: %" PRIu32 " bytes", flash_size);
     }
 
-    /* Step 2: GPIO and watchdog. */
     err = sys_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "sys: init failed: %s", esp_err_to_name(err));
     }
 
-    /* Step 1 of §3.2, before config is readable: the counter must move even when
-     * `config.json` is what is broken, which is the case it exists for. NVS must be
-     * up first, or every call below silently fails and safe mode can never trip. */
     err = store_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "store: nvs init failed: %s", esp_err_to_name(err));
     }
     int32_t boot_failures = 0;
     if (store_nvs_get_int("boot_failures", &boot_failures) != ESP_OK) {
-        boot_failures = 0; /* never written: a fresh device */
+        boot_failures = 0;
     }
     int32_t count = boot_guard_next_count(boot_failures);
     err = store_nvs_set_int("boot_failures", count);
     if (err != ESP_OK) {
-        /* Not fatal: the guard is a recovery aid, and a device that cannot persist
-         * the counter must still boot. Say so, because safe mode will never trip. */
         ESP_LOGE(TAG, "boot guard: counter not persisted: %s", esp_err_to_name(err));
     }
 
-    /* `sys.safe_mode_after` is a `config.json` key, which `cfg` does not read yet.
-     * The default is the documented fallback when the file is unreadable (§3.2). */
     bool safe_mode = boot_guard_should_enter_safe_mode(
         count, SYS_SAFE_MODE_AFTER_DEFAULT);
     s_safe_mode = safe_mode;
@@ -375,11 +417,6 @@ void app_main(void)
     ESP_LOGI(TAG, "boot: %s, failures %" PRId32 "",
              safe_mode ? "safe mode" : "normal", count);
 
-    /* Step 3: filesystem. It runs after the counter so a `userfs` that cannot mount
-     * still counts as a failed boot and eventually trips safe mode; halting before
-     * the increment would leave the device stuck at zero failures forever.
-     * `userfs` holds config, prompts, skills and tools, so its failure is fatal and
-     * never reformats (`02-firmware.md` §store). */
     err = store_mount();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "store: mount failed: %s: halting (E_STORAGE)",
@@ -388,10 +425,6 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "store: /fs and /workspace mounted");
 
-    /* Step 7: the link. The sink goes in before the task starts, so a `hello` that
-     * arrives on the first read is answered rather than dropped for having no
-     * handler (§3.1). The log hook goes in last: it can only emit once a writer
-     * exists, and installing it earlier would silently drop the boot lines above. */
     link_set_sink(&s_link_sink);
     err = link_start();
     if (err != ESP_OK) {
@@ -401,10 +434,6 @@ void app_main(void)
     }
     link_log_install("info");
 
-    /* Steps 8-10 (MQTT, scheduler, idle) are not implemented. Reaching idle is what
-     * clears the counter, so it must NOT be cleared here: a boot that stops before
-     * the scheduler is a failed boot by §3.2's own definition. The link stays up in
-     * `link_task`, which is what makes the device answerable from here on. */
     ESP_LOGW(TAG, "boot stops before the scheduler: counter stays at %" PRId32,
              count);
 }

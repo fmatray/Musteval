@@ -11,6 +11,15 @@ static const char *TAG = "store";
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
+
+
+/* One path per filesystem call that holds its own while another runs, so they are
+ * not shared with `s_scan_bufs`. Single-threaded dispatch makes the statics safe. */
+static char s_delete_path[STORE_PATH_MAX];
+static char s_mkdir_path[STORE_PATH_MAX];
+static char s_move_from[STORE_PATH_MAX];
+static char s_move_to[STORE_PATH_MAX];
 
 /* Static buffers for directory scanning to avoid link task stack overflow.
  * Max recursion depth 8, each with a path buffer. */
@@ -186,19 +195,6 @@ esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data, size_t 
     return ESP_OK;
 }
 
-esp_err_t store_delete_file(const char *agent_path)
-{
-    char vfs[STORE_PATH_MAX];
-    esp_err_t err = store_resolve_write_path(agent_path, vfs, sizeof vfs);
-    if (err != ESP_OK) return err;
-    struct stat st;
-    if (stat(vfs, &st) != 0) return ESP_ERR_NOT_FOUND;
-    if (S_ISDIR(st.st_mode)) {
-        if (rmdir(vfs) != 0) return ESP_ERR_INVALID_STATE;
-        return ESP_OK;
-    }
-    return unlink(vfs) == 0 ? ESP_OK : ESP_FAIL;
-}
 
 esp_err_t store_is_dir(const char *agent_path, bool *out)
 {
@@ -352,3 +348,118 @@ esp_err_t store_fs_usage(store_fs_t fs, size_t *used, size_t *total)
                                                            : ESP_ERR_NOT_FOUND;
 }
 
+static size_t count_children(const char *dir)
+{
+    size_t n = 0;
+    DIR *d = opendir(dir);
+    if (d == NULL) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) n = store_count_entry(n, e->d_name);
+    closedir(d);
+    return n;
+}
+
+/* Post-order removal below `dir`. `depth` indexes the shared scan buffers. */
+static esp_err_t remove_tree(const char *dir, int depth, size_t *removed)
+{
+    if (depth >= STORE_SCAN_DEPTH) return ESP_ERR_INVALID_SIZE;
+    DIR *d = opendir(dir);
+    if (d == NULL) return ESP_FAIL;
+    struct dirent *e;
+    char *child = s_scan_bufs[depth];
+    esp_err_t err = ESP_OK;
+    while ((e = readdir(d)) != NULL) {
+        if (!store_entry_name_ok(e->d_name)) continue;
+        int n = snprintf(child, STORE_PATH_MAX, "%s/%s", dir, e->d_name);
+        if (n <= 0 || (size_t)n >= STORE_PATH_MAX) { err = ESP_ERR_INVALID_SIZE; break; }
+        struct stat st;
+        if (stat(child, &st) != 0) { err = ESP_FAIL; break; }
+        if (S_ISDIR(st.st_mode)) {
+            esp_err_t derr = remove_tree(child, depth + 1, removed);
+            if (derr != ESP_OK) { err = derr; break; }
+            if (rmdir(child) != 0) { err = ESP_FAIL; break; }
+            (*removed)++;
+        } else {
+            if (unlink(child) != 0) { err = ESP_FAIL; break; }
+            (*removed)++;
+        }
+    }
+    closedir(d);
+    return err;
+}
+
+esp_err_t store_delete_file(const char *agent_path, bool recursive, size_t *entries)
+{
+    if (agent_path == NULL || entries == NULL) return ESP_ERR_INVALID_ARG;
+    *entries = 0;
+    esp_err_t err = store_resolve_write_path(agent_path, s_delete_path, sizeof s_delete_path);
+    if (err != ESP_OK) return err;
+    struct stat st;
+    if (stat(s_delete_path, &st) != 0) return ESP_ERR_NOT_FOUND;
+
+    bool is_dir = S_ISDIR(st.st_mode);
+    size_t children = is_dir ? count_children(s_delete_path) : 0;
+    switch (store_delete_action(is_dir, children, recursive)) {
+    case STORE_DELETE_NEEDS_RECURSIVE:
+        *entries = children;
+        return ESP_ERR_INVALID_STATE;
+    case STORE_DELETE_FILE:
+        return unlink(s_delete_path) == 0 ? ESP_OK : ESP_FAIL;
+    case STORE_DELETE_EMPTY:
+        return rmdir(s_delete_path) == 0 ? ESP_OK : ESP_FAIL;
+    case STORE_DELETE_TREE: {
+        size_t removed = 0;
+        err = remove_tree(s_delete_path, 0, &removed);
+        if (err != ESP_OK) return err;
+        if (rmdir(s_delete_path) != 0) return ESP_FAIL;
+        *entries = removed;
+        return ESP_OK;
+    }
+    }
+    return ESP_FAIL;
+}
+
+esp_err_t store_mkdir(const char *agent_path, bool *created)
+{
+    if (agent_path == NULL || created == NULL) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = store_resolve_write_path(agent_path, s_mkdir_path, sizeof s_mkdir_path);
+    if (err != ESP_OK) return err;
+
+    struct stat st;
+    if (stat(s_mkdir_path, &st) == 0) {
+        if (S_ISDIR(st.st_mode)) { *created = false; return ESP_OK; }
+        *created = false;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    store_quota_t q = {0};
+    quota_scan(STORE_VFS_WORKSPACE, &q, 0, NULL);
+    if (store_quota_exceeded(&q, 0)) return ESP_ERR_INVALID_SIZE;
+
+    if (mkdir(s_mkdir_path, 0777) != 0) {
+        *created = false;
+        return (errno == ENOENT) ? ESP_ERR_INVALID_STATE : ESP_FAIL;
+    }
+    *created = true;
+    return ESP_OK;
+}
+
+esp_err_t store_move(const char *from, const char *to)
+{
+    if (from == NULL || to == NULL) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = store_resolve_write_path(from, s_move_from, sizeof s_move_from);
+    if (err != ESP_OK) return err;
+    err = store_resolve_write_path(to, s_move_to, sizeof s_move_to);
+    if (err != ESP_OK) return err;
+
+    struct stat st;
+    if (stat(s_move_from, &st) != 0) return ESP_ERR_NOT_FOUND;
+    bool target_exists = (stat(s_move_to, &st) == 0);
+    switch (store_move_verdict(true, target_exists, s_move_from, s_move_to)) {
+    case STORE_MOVE_SOURCE_MISSING: return ESP_ERR_NOT_FOUND;
+    case STORE_MOVE_TARGET_TAKEN:   return ESP_ERR_INVALID_STATE;
+    case STORE_MOVE_INTO_ITSELF:    return ESP_ERR_INVALID_STATE;
+    case STORE_MOVE_OK: break;
+    }
+    return rename(s_move_from, s_move_to) == 0 ? ESP_OK : ESP_FAIL;
+}

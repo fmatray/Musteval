@@ -546,7 +546,7 @@ generic notification line and MUST NOT error.
 
 ## 4. Command catalog
 
-All sixteen names, their arguments and their `result` shapes. Unknown names are
+All twenty-three names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -571,8 +571,11 @@ reads are never refused.
 | `fs.put` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created}` | `E_CONFIG` (bad path, bad extension, or a built-in target), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
 | `sandbox.list` | `{path?}` | `{path, entries:[{name,dir,bytes}]}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing directory) | yes |
 | `sandbox.read` | `{path}` | `{path, bytes, text, truncated}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing file) | yes |
-| `sandbox.delete` | `{path}` | `{path, deleted}` | `E_CONFIG` (path outside `/workspace/` or a non-empty directory), `E_STORAGE` (missing) | yes |
+| `sandbox.delete` | `{path, recursive?}` | `{path, deleted, entries}` | `E_CONFIG` (path outside `/workspace/`, or a non-empty directory without `recursive`), `E_STORAGE` (missing), `E_BUSY` (recursive while a run is in flight) | yes |
 | `sandbox.write` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
+| `sandbox.mkdir` | `{path}` | `{path, created}` | `E_CONFIG` (path outside `/workspace/`, or a parent that is not a directory), `E_STORAGE` (quota or entry cap) | yes |
+| `sandbox.move` | `{from, to}` | `{from, to, moved}` | `E_CONFIG` (either path outside `/workspace/`, or `to` exists), `E_STORAGE` (missing source, or a cross-mount move) | yes |
+| `sys.reset_counter` | `{}` | `{reset, previous, safe_mode}` | `E_INTERNAL` | yes |
 
 ### 4.1 `status`
 
@@ -936,14 +939,36 @@ Deletes one sandbox file, or one **empty** directory.
 ```
 
 ```json
-{"v":1,"type":"command.result","id":"d-43","ts":1730572420,"reply_to":"b-33","name":"sandbox.delete","ok":true,"result":{"path":"/workspace/notes.md","deleted":true},"duration_ms":11}
+{"v":1,"type":"command.result","id":"d-43","ts":1730572420,"reply_to":"b-33","name":"sandbox.delete","ok":true,"result":{"path":"/workspace/notes.md","deleted":true,"entries":0},"duration_ms":11}
 ```
 
-A directory that still holds entries is `E_CONFIG` with `detail` naming the
-offending path, so deletion is never recursive and a mis-keyed confirmation cannot
-take a subtree with it. A path that names nothing is `E_STORAGE`, not a success:
-reporting `deleted:true` for a file that was never there would hide a typo. `tools.allow_dangerous` does not gate this command: it is
-host-only, and the gate exists to stop the model, which cannot reach it.
+A recursive delete of a populated directory:
+
+```json
+{"v":1,"type":"command","id":"b-35","ts":1730572440,"name":"sandbox.delete","args":{"path":"/workspace/runs","recursive":true}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-45","ts":1730572440,"reply_to":"b-35","name":"sandbox.delete","ok":true,"result":{"path":"/workspace/runs","deleted":true,"entries":3},"duration_ms":47}
+```
+
+| Arg | Type | Required | Notes |
+|---|---|---|---|
+| `path` | string | yes | Absolute path under `/workspace/` |
+| `recursive` | bool | no | `true` removes a populated directory and everything under it; default `false` |
+
+A directory that still holds entries and no `recursive:true` is `E_CONFIG` with
+`detail` naming the path and `entries` its immediate child count, so a caller can
+say what it is about to take before it takes it. `recursive` defaults to `false`
+because the destructive form must be asked for: a mis-keyed confirmation cannot
+take a subtree by accident. With `recursive:true` the subtree is removed post-order,
+and the response reports how many entries went, so a caller can tell an empty
+directory from a full one.
+
+A path that names nothing is `E_STORAGE`, not a success: reporting `deleted:true`
+for a file that was never there would hide a typo. `tools.allow_dangerous` does not
+gate this command: it is host-only, and the gate exists to stop the model, which
+cannot reach it.
 
 ### 4.20 `sandbox.write`
 
@@ -969,6 +994,63 @@ that no extension allowlist applies.
 
 A write that would exceed the workspace quota is `E_STORAGE` and leaves the
 previous file intact, because the staged file is renamed only on `final:true`.
+
+### 4.21 `sandbox.mkdir`
+
+Creates one directory. A parent that does not exist is `E_CONFIG` with `detail`:
+mkdir does not create intermediates, because a typo in the middle of a path would
+otherwise silently build a tree the user did not ask for.
+
+```json
+{"v":1,"type":"command","id":"b-36","ts":1730572450,"name":"sandbox.mkdir","args":{"path":"/workspace/runs/2026-11-05"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-46","ts":1730572450,"reply_to":"b-36","name":"sandbox.mkdir","ok":true,"result":{"path":"/workspace/runs/2026-11-05","created":true},"duration_ms":8}
+```
+
+`created:false` means the directory already existed and nothing changed. The
+workspace quota and the 64-entry cap apply as they do for `sandbox.write`.
+
+### 4.22 `sandbox.move`
+
+Renames or relocates a file or directory. This is one command rather than two
+because the device implements it with one `rename`; a separate copy-and-unlink
+would double the flash writes and could leave both halves on a failed second step.
+
+```json
+{"v":1,"type":"command","id":"b-37","ts":1730572460,"name":"sandbox.move","args":{"from":"/workspace/notes.md","to":"/workspace/archive/notes.md"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-47","ts":1730572460,"reply_to":"b-37","name":"sandbox.move","ok":true,"result":{"from":"/workspace/notes.md","to":"/workspace/archive/notes.md","moved":true},"duration_ms":14}
+```
+
+Both paths are canonicalised by the rule in §4.19, so `to` is refused if it leaves
+`/workspace/`. An existing `to` is `E_CONFIG` and is never overwritten: a rename is
+not a write, and silently replacing the target is how a mistaken destination
+destroys a file. Moving a directory carries its subtree, since the rename is the
+filesystem's, not a walk. `/workspace` itself cannot be moved or overwritten.
+
+### 4.23 `sys.reset_counter`
+
+Clears the boot-guard counter, `sys.boot_failures` (`02-firmware.md` §3.2). It
+touches that counter and nothing else: it does not reload config, restart the
+scheduler, or leave safe mode by itself. Safe mode is decided at boot from the
+counter, so the effect is visible on the next boot; the response reports the state
+in force when the call returns.
+
+```json
+{"v":1,"type":"command","id":"b-38","ts":1730572470,"name":"sys.reset_counter","args":{}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-48","ts":1730572470,"reply_to":"b-38","name":"sys.reset_counter","ok":true,"result":{"reset":"boot_failures","previous":182,"safe_mode":true},"duration_ms":5}
+```
+
+`previous` is the value before the reset, so a caller can confirm it changed what
+it meant to change. The counter is written to NVS before the reply, so a device
+that reboots immediately after still sees `0`.
 
 ## 5. Error codes
 

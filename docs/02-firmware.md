@@ -106,6 +106,10 @@ path. Pure prefix substitution, no filesystem access:
   directory after `store_resolve_write_path` gating. Quota accounting is
   recomputed from the directory state rather than decremented, so a failed
   unlink leaves the count untouched. Non-empty directories return `E_CONFIG`.
+- `store_delete_file(agent_path, recursive, entries)`: unlink a sandbox file, one empty
+  directory, or — with `recursive` — a whole subtree (§4.19).
+- `store_mkdir(agent_path, created)`: create one directory (§4.21).
+- `store_move(from, to)`: rename or relocate a sandbox entry (§4.22).
 - `store_is_dir(agent_path, out)`: report if a sandbox path is a directory.
 
 Pure helpers in `store_sandbox.c` implement internal logic: `store_entry_cmp`
@@ -113,6 +117,23 @@ for sorting, `store_entry_name_ok` for character validation,
 `store_decode_chunk` for base64/UTF-8 normalization, `store_is_staging_entry`
 for the listing skip above, and `store_utf8_prefix` for the UTF-8 scan
 `store_read_text` runs. `store_utf8_prefix` returns the longest
+valid prefix and refuses a lone continuation byte, an overlong form (`C0`/`C1`,
+`E0 80..9F`, `F0 80..8F`), a surrogate (`ED A0..BF`) and anything above
+`U+10FFFF` (`F4 90..`, `F5`..`FF`). A prefix shorter than the buffer is a
+truncation only if the remaining bytes begin a sequence the cap cut in half:
+those shorten the text and set `truncated`, they do not refuse the file. Being
+pure, it is host-tested rather than reached through a mounted filesystem.
+`store_is_staging_entry(vfs_dir, entry_name, stage_path)` is exact-match for the
+same reason: a prefix compare would hide `a.txt.new.new` and a suffix append on
+an entry already carrying `.new` hides nothing at all, which is the shape of the
+bug it exists to prevent.
+- `store_delete_action(is_dir, entries, recursive)`: decide if a delete is a
+  file, empty dir, recursive tree, or a refusal (§4.19).
+- `store_count_entry(count, name)`: fold one `readdir` name into a child count.
+- `store_move_verdict(source_exists, target_exists, from, to)`: decide if a
+  rename is allowed, refuse root, or report target taken (§4.22).
+- `store_nvs_set_int(key, val)` / `store_nvs_get_int(key, &val)`: Access
+  NVS namespace `runtime`.
 valid prefix and refuses a lone continuation byte, an overlong form (`C0`/`C1`,
 `E0 80..9F`, `F0 80..8F`), a surrogate (`ED A0..BF`) and anything above
 `U+10FFFF` (`F4 90..`, `F5`..`FF`). A prefix shorter than the buffer is a

@@ -79,3 +79,27 @@ bool store_is_staging_entry(const char *vfs_dir, const char *entry_name,
     if (rest[0] == '/') rest++;
     return strcmp(rest, entry_name) == 0;
 }
+
+/* --- §4.19 delete, §4.21 mkdir, §4.22 move ----------------------------------- */
+
+store_delete_action_t store_delete_action(bool is_dir, size_t entries, bool recursive)
+{
+    if (!is_dir) return STORE_DELETE_FILE;
+    if (entries == 0) return STORE_DELETE_EMPTY;
+    return recursive ? STORE_DELETE_TREE : STORE_DELETE_NEEDS_RECURSIVE;
+}
+
+size_t store_count_entry(size_t count, const char *name)
+{
+    return store_entry_name_ok(name) ? count + 1 : count;
+}
+
+store_move_verdict_t store_move_verdict(bool source_exists, bool target_exists,
+                                        const char *from, const char *to)
+{
+    if (!source_exists) return STORE_MOVE_SOURCE_MISSING;
+    if (target_exists) return STORE_MOVE_TARGET_TAKEN;
+    if (from == NULL || to == NULL) return STORE_MOVE_INTO_ITSELF;
+    if (store_path_is_under(from, to)) return STORE_MOVE_INTO_ITSELF;
+    return STORE_MOVE_OK;
+}

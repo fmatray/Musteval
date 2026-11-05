@@ -183,3 +183,48 @@ TEST_CASE("a staging predicate names nothing else", "[sandbox]")
     TEST_ASSERT_FALSE(store_is_staging_entry("/ws2/", "a.txt.new", "/ws/a.txt.new"));
     TEST_ASSERT_FALSE(store_is_staging_entry(NULL, "a.txt.new", "/ws/a.txt.new"));
 }
+
+TEST_CASE("a populated directory needs recursive, an empty one does not", "[sandbox]")
+{
+    TEST_ASSERT_EQUAL(STORE_DELETE_FILE, store_delete_action(false, 0, false));
+    TEST_ASSERT_EQUAL(STORE_DELETE_FILE, store_delete_action(false, 0, true));
+    TEST_ASSERT_EQUAL(STORE_DELETE_EMPTY, store_delete_action(true, 0, false));
+    TEST_ASSERT_EQUAL(STORE_DELETE_EMPTY, store_delete_action(true, 0, true));
+    TEST_ASSERT_EQUAL(STORE_DELETE_NEEDS_RECURSIVE, store_delete_action(true, 3, false));
+    TEST_ASSERT_EQUAL(STORE_DELETE_TREE, store_delete_action(true, 3, true));
+}
+
+TEST_CASE("only listable names count as directory children", "[sandbox]")
+{
+    size_t n = 0;
+    n = store_count_entry(n, ".");
+    n = store_count_entry(n, "..");
+    TEST_ASSERT_EQUAL_size_t(0, n);
+    n = store_count_entry(n, "notes.md");
+    n = store_count_entry(n, "runs");
+    TEST_ASSERT_EQUAL_size_t(2, n);
+    TEST_ASSERT_EQUAL_size_t(2, store_count_entry(2, NULL));
+    TEST_ASSERT_EQUAL_size_t(2, store_count_entry(2, "a/b"));
+}
+
+TEST_CASE("a move never overwrites its target", "[sandbox]")
+{
+    TEST_ASSERT_EQUAL(STORE_MOVE_TARGET_TAKEN,
+                      store_move_verdict(true, true, "/workspace/a", "/workspace/b"));
+    TEST_ASSERT_EQUAL(STORE_MOVE_OK,
+                      store_move_verdict(true, false, "/workspace/a", "/workspace/b"));
+    TEST_ASSERT_EQUAL(STORE_MOVE_SOURCE_MISSING,
+                      store_move_verdict(false, false, "/workspace/gone", "/workspace/x"));
+}
+
+TEST_CASE("a move refuses the root and a directory into itself", "[sandbox]")
+{
+    TEST_ASSERT_EQUAL(STORE_MOVE_INTO_ITSELF,
+                      store_move_verdict(true, false, "/workspace/runs", "/workspace/runs"));
+    TEST_ASSERT_EQUAL(STORE_MOVE_INTO_ITSELF,
+                      store_move_verdict(true, false, "/workspace/runs", "/workspace/runs/2026"));
+    TEST_ASSERT_EQUAL(STORE_MOVE_INTO_ITSELF,
+                      store_move_verdict(true, false, "/workspace", "/workspace/runs"));
+    TEST_ASSERT_EQUAL(STORE_MOVE_OK,
+                      store_move_verdict(true, false, "/workspace/run", "/workspace/runs"));
+}

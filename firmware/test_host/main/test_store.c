@@ -99,3 +99,28 @@ TEST_CASE("map roots anything outside the workspace at userfs", "[store]")
     TEST_ASSERT_EQUAL(ESP_OK, store_map_path("/prompts/x.md", out, sizeof out));
     TEST_ASSERT_EQUAL_STRING("/fs/prompts/x.md", out);
 }
+TEST_CASE("a move canonicalises both paths before comparing them", "[store]")
+{
+    char from[256], to[256];
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_write_path("/workspace/x/../runs", from, sizeof from));
+    TEST_ASSERT_EQUAL_STRING("/workspace/runs", from);
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_write_path("/workspace/./archive/", to, sizeof to));
+    TEST_ASSERT_EQUAL_STRING("/workspace/archive", to);
+    TEST_ASSERT_EQUAL(STORE_MOVE_OK, store_move_verdict(true, false, from, to));
+
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_write_path("/workspace/runs/./2026/..", to, sizeof to));
+    TEST_ASSERT_EQUAL(STORE_MOVE_INTO_ITSELF, store_move_verdict(true, false, from, to));
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, store_resolve_write_path("/workspace/../fs/x", to, sizeof to));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, store_resolve_write_path("/workspace/../../x", to, sizeof to));
+}
+
+TEST_CASE("path containment compares whole segments", "[store]")
+{
+    TEST_ASSERT_TRUE(store_path_is_under("/workspace/a", "/workspace/a"));
+    TEST_ASSERT_TRUE(store_path_is_under("/workspace/a", "/workspace/a/b"));
+    TEST_ASSERT_FALSE(store_path_is_under("/workspace/a", "/workspace/ab"));
+    TEST_ASSERT_FALSE(store_path_is_under("/workspace/a", "/workspace"));
+    TEST_ASSERT_FALSE(store_path_is_under(NULL, "/workspace/a"));
+    TEST_ASSERT_FALSE(store_path_is_under("/workspace/a", NULL));
+}
