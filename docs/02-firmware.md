@@ -73,25 +73,48 @@ path. Pure prefix substitution, no filesystem access:
 
 - `store_mount()`: register `userfs` at `/fs` and `wsfs` at `/workspace`.
   `userfs` mount failure is `E_STORAGE` and halts boot; `wsfs` mount failure
-  formats `wsfs` once and retries. Never formats `userfs`.
-- `store_read_file(agent_path, buf, len)`: reads through `store_map_path`; both
-  mounts are readable, NVS is not reachable.
+  formats `wsfs` once and retries. Never formats `userfs`. The mount points carry
+  no trailing slash: `esp_vfs_register` rejects one (`is_path_prefix_valid`), while
+  the agent-path prefixes need it, so `store.h` derives `STORE_ROOT_*` from
+  `STORE_VFS_*`.
+- `store_read_text(agent_path, buf, cap, len, total, truncated)`: read partial
+  text under `/workspace/`; UTF-8 validated, invalid sequences return `E_STORAGE`.
+  `total` is the file's whole length, which is what `04` §4.18 reports as `bytes`
+  even when the cap stopped the read short.
+- `store_list_dir(agent_path, out, cap, count)`: list one directory under
+  `/workspace/`, sorting directories first then names. A listing exceeding the
+  cap returns `E_STORAGE`. The root `/workspace/` is a legal listing target,
+  though not a legal file target; the resolver is applied to entries within.
 - `store_resolve_write_path(in, out, out_len)`: accept `in` only if it canonicalises
   to strictly under `/workspace/` (with at least one further segment), then return
   the VFS path. Rejects `..` that escapes, relative paths, NUL bytes and over-long
   paths with `E_TOOL`. Because `/workspace` is a separate mount root, `..` above it
   has nowhere to go; the resolver is defense in depth, not the only barrier
   (`06-security.md` §6.1).
-- `store_write_data(agent_path, buf, len)`: write after `store_resolve_write_path`;
-  callers never pre-check paths themselves. Enforces the `/workspace/` quota
-  (`06-security.md` §6.2) before truncating the target: over-quota returns
-  `E_STORAGE` and leaves the file untouched. The write target is always `wsfs`.
-- `store_delete_file(agent_path)`: the only delete entry point; runs the same
-  `store_resolve_write_path` gate, so it can only unlink under `/workspace/`.
-  Quota accounting is recomputed from the resulting directory state rather than
-  decremented, so a delete always frees exactly what was on disk and a failed
-  unlink leaves the count untouched. Refuses with `E_STORAGE` if the path is a
-  directory.
+- `store_write_chunk(agent_path, data, len, offset, final, bytes, created)`:
+  staged chunked write after `store_resolve_write_path`. Enforces the workspace
+  quota (`06-security.md` §6.2); the write commits by renaming a temporary
+  file over the target only on `final:true`.
+- `store_fs_usage(fs, used, total)`: report one mounted filesystem's usage through
+  `esp_littlefs_info`, with `STORE_FS_USERFS` / `STORE_FS_WSFS` naming the mount. It
+  exists so `app` can fill `status.storage` without naming a partition label itself;
+  the label is `store`'s knowledge (`04` §3.9).
+- `store_delete_file(agent_path)`: unlinks a sandbox file or an empty
+  directory after `store_resolve_write_path` gating. Quota accounting is
+  recomputed from the directory state rather than decremented, so a failed
+  unlink leaves the count untouched. Non-empty directories return `E_CONFIG`.
+- `store_is_dir(agent_path, out)`: report if a sandbox path is a directory.
+
+Pure helpers in `store_sandbox.c` implement internal logic: `store_entry_cmp`
+for sorting, `store_entry_name_ok` for character validation,
+`store_decode_chunk` for base64/UTF-8 normalization, and `store_utf8_prefix` for
+the UTF-8 scan `store_read_text` runs. `store_utf8_prefix` returns the longest
+valid prefix and refuses a lone continuation byte, an overlong form (`C0`/`C1`,
+`E0 80..9F`, `F0 80..8F`), a surrogate (`ED A0..BF`) and anything above
+`U+10FFFF` (`F4 90..`, `F5`..`FF`). A prefix shorter than the buffer is a
+truncation only when the remaining bytes begin a sequence the cap cut in half:
+those shorten the text and set `truncated`, they do not refuse the file. Being
+pure, it is host-tested rather than reached through a mounted filesystem.
 - `store_nvs_set_int(key, val)` / `store_nvs_get_int(key, &val)`: Access
   NVS namespace `runtime`.
 - Exactly three APIs write `userfs`: `config.set`, which targets `/fs/config.json`
@@ -188,6 +211,29 @@ per-tool schemas are in §7.1 and `docs/tools/`.
   index counts against `agent.max_input_bytes`; if the total prompt exceeds the cap,
   skills are dropped from the end of the index in name order until it fits, and the
   omission is logged. The body remains load-on-demand via `skill.read`.
+
+### `link` — Framing
+The only module that builds an envelope (`08-code-architecture.md` §3); every other
+module hands it a JSON body built with the `store` helpers.
+
+- `link_start()`: install the USB-Serial/JTAG driver, register the CDC writer and
+  start `link_task` (§3.3). Idempotent, and a driver failure is reported without
+  aborting boot. The driver's ring buffers are sized to `LINK_TX_MAX + 2` and
+  `LINK_RX_MAX + 2`, not IDF's 256-byte default: `link_emit` makes exactly one
+  writer call per frame so two tasks cannot interleave halves of a line, and a ring
+  smaller than the frame refuses that single call and drops the frame. Measured on
+  the board, a 277-byte `hello_ack` against the default 256-byte ring wrote 0 bytes.
+- `link_emit_body(type, id, ts, reply_to, body)`: build the envelope around `body`
+  and write one frame. This is the only way `app` sends a frame — `08` §3 forbids
+  any other module from building an envelope.
+- `link_build_hello_ack(obj, hello)` / `link_build_status(obj, st)`: pure body
+  builders, host-tested. They fill a node the caller already created
+  (`json_root(doc)`) and return `esp_err_t`, because no `store` entry point adopts a
+  detached subtree. The `link_hello_t` / `link_status_t` facts they serialise are
+  filled by `app`.
+- `ping` is answered inside `link_task` and never reaches the sink, so the
+  keepalive costs no handler round-trip.
+
 ### `sched` — Scheduler
 - `sched_init()`: Load `/tasks.json` and start timers.
 - `sched_trigger_event(type, pin_id)`: Mark a trigger (e.g., `gpio`, `boot`)
@@ -248,10 +294,21 @@ Flow:
 - `sys_init()`: Install the GPIO ISR service (`gpio_install_isr_service()`) and start
   the task watchdog. Does not install a brownout handler: the brownout threshold is a
   board constant (`01-hardware.md` §5), not a runtime decision.
+  - `sys` is the only owner of the task watchdog: `CONFIG_ESP_TASK_WDT_INIT` and both
+    `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU*` are off in `sdkconfig.defaults`. Left
+    on, IDF initializes the watchdog first, `esp_task_wdt_init()` then returns
+    `ESP_ERR_INVALID_STATE` and logs an error on every boot. Taking ownership means
+    also taking the subscription IDF was doing: `idle_core_mask` covers every core
+    (`(1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1`), so the idle tasks are watched
+    until the scheduler exists and can subscribe its own.
 - `sys_gpio_edge_config(pin, edge)`: Configure a pin as input with the given edge
   (`SYS_EDGE_RISING` / `SYS_EDGE_FALLING` / `SYS_EDGE_ANY`). Does not install a
   handler.
 - `sys_gpio_read(pin, *level)` / `sys_gpio_write(pin, level)`.
+- `sys_led_set(on)`: the onboard user LED on GPIO21 (`01-hardware.md` §6), which is
+  active-low and not on the header. The inversion lives here, so no caller writes a
+  logic level that means the opposite of what it says. `gpio.read` on GPIO21 still
+  reports the raw level, per the tool contract in `03-config.md`.
 - `sys_adc_read(channel, *mv)`: One-shot ADC1 read.
 - `sys_wdt_reset()` / `sys_wdt_add(task)`.
 - `sys_brownout_pending()`: Returns true if the reset cause was a brownout
@@ -307,7 +364,7 @@ the only place that names both sides.
 ### 3.1 Boot Sequence
 The device follows a strict linear boot to ensure dependencies are met.
 
-1. **ROM Stage**: USB-Serial/JTAG enumerates; logs sent to UART0 (D6/D7).
+1. **ROM Stage**: USB-Serial/JTAG enumerates; logs sent to UART0 (D6/D7). Early ROM and bootloader text also reaches the CDC endpoint raw, where the bridge drops it: `04-protocol.md` §1.2 makes an undecodable line non-fatal.
 2. **Hardware Init**: `sys` initializes GPIOs and Watchdog.
 3. **Storage**: `store` registers `userfs` at `/fs`, then `wsfs` at `/workspace`.
    Failure to mount `userfs` is fatal (`E_STORAGE`); `wsfs` may be reformatted.
@@ -321,13 +378,12 @@ The device follows a strict linear boot to ensure dependencies are met.
      `userfs` is read-only to tools and OTA is not planned.
 5. **Networking**: `net` connects to best WiFi AP from `wifi.networks[]`.
 6. **Clock**: `clock` syncs via SNTP → `ntp_synced` trigger fires.
-7. **Link**: `link` starts NDJSON framing on USB.
+7. **Link**: the driver claims the CDC endpoint — the secondary console writes through the same buffer, so there is no second owner — and `link_task` blocks on a 100 ms read. `hello` is routed to `app`'s sink, which answers `hello_ack`.
 8. **MQTT**: `mqtt_init()` starts each enabled broker client. Connecting is
    asynchronous and does not block boot; a broker that never connects does not
    delay the agent.
 9. **Scheduler**: `sched` loads `tasks.json` → `boot` trigger fires.
-10. **Idle**: `app` enters main loop, waiting for `prompt`, `sched` or
-    `mqtt.message` events.
+10. **Idle**: `app` enters main loop, waiting for `prompt`, `sched` or `mqtt.message` events. This is the step that clears `boot_failures` (§3.2). At M1 this is not implemented: `app_main` returns after starting the link, so `link_task` is what keeps the device reachable, and the boot counter legitimately stays at its incremented value because the idle step that clears it does not run yet.
 
 ### 3.2 Boot guard and safe mode
 
@@ -348,8 +404,11 @@ previous boot did not complete.
 **Threshold.** `sys.safe_mode_after` (default `3`, range 2..10) consecutive failed
 boots. It is a `config.json` key, not an NVS value, so when `config.json` will not
 parse the device falls back to the default rather than locking itself out — see step
-4 of §3.1. When the counter reaches the threshold, the current boot enters safe
-mode.
+4 of §3.1. The counter already includes the boot in progress, so the current boot
+enters safe mode once the *previously failed* boots reach the threshold: with the
+default `3`, three failed boots put the fourth into safe mode (`07-roadmap.md` M0),
+which is one increment past it. Entering a boot earlier would make the threshold
+mean one fewer failure than its name says.
 
 **Safe mode** changes the boot sequence in exactly four places:
 
@@ -630,3 +689,68 @@ Authority split and argument semantics: `tools/tasks.md`.
  `tasks.delete` additionally purges that task's keys from NVS namespace `runtime`
  before the rename commits, so a partially applied delete cannot leave orphaned
  `fired_count` state.
+
+## 8. Simulator
+
+`firmware/tools/run_qemu.sh` boots the firmware under `qemu-system-xtensa` with no
+board attached. It builds a QEMU-only image into `build/qemu/`, merges it, seeds
+`userfs`, and runs the machine. The board `sdkconfig` is never read or written; the
+script layers `sdkconfig.qemu.defaults` over `sdkconfig.defaults`.
+
+```bash
+firmware/tools/run_qemu.sh                 # build, then boot
+firmware/tools/run_qemu.sh --no-build      # boot what is already in build/qemu/
+firmware/tools/run_qemu.sh --keep          # keep flash state between runs
+firmware/tools/run_qemu.sh --pty           # UART0 on build/qemu/uart
+QEMU_BIN=/path/to/qemu-system-xtensa firmware/tools/run_qemu.sh
+```
+
+The default mode binds UART0 to the invoking terminal's stdin and stdout, so there is
+no pts and `--no-build` creates none. `--pty` allocates one instead and links it at
+`build/qemu/uart`, a stable path rather than a `/dev/pts/N` number that changes each
+run; that is what `bridge/link/serial_transport.py` opens. There is no argument for
+choosing the number, and a stray argument is forwarded to QEMU.
+
+A pty is not a log. A reader that opens the slave before the guest writes receives
+the whole 4,560-byte boot log; one that attaches later receives none, and this is the
+reader's doing, not the pty's: pyserial calls `tcflush(TCIFLUSH)` on open
+(`serialposix.py`, `_reset_input_buffer`), so a buffer the kernel did hold is
+discarded at the moment the bridge attaches. Holding the slave open in the script does
+not help for the same reason. QEMU's chardev `logfile` cannot recover it either, since
+it only copies bytes the backend accepted. Reading the log means the default mode. The
+guest also writes no reply until `link` exists (§3.1), which makes `--pty` a proof of
+the transport plumbing, not of the protocol.
+
+The script prints the link path before QEMU's own redirect line, so the mode does not
+look inert once the guest goes quiet.
+
+Each run normally re-merges the image, which resets NVS. `--keep` reuses the
+existing one, and that is how the boot guard is exercised from here: three
+`--keep` runs count failures 1→2→3 and the fourth reports
+`boot: safe mode, failures 4` (§3.2).
+
+Exit the default mode with `Ctrl-A` then `x`. `--pty` runs with no monitor, so the
+terminal carries nothing but QEMU's two startup lines and `Ctrl-C` stops the guest.
+
+Four settings are not optional, and each one has a failure that names something
+else:
+
+| Setting | Without it |
+|---|---|
+| `-m 8M`, not 32M | PSRAM mapping shares the MMU vaddr window; 32M leaves none for flash, and the partition table cannot be read |
+| `ssi_psram is_octal=true` | `PSRAM chip is not connected, or wrong PSRAM line mode`, then boot loops |
+| `CONFIG_ESPTOOLPY_FLASHMODE_DIO` | QEMU's `gd25q64` model has no Gigadevice branch in `WRSR`, so the QE bit never latches; a QIO app asserts in `esp_flash_init_default_chip` |
+| 8 MiB padded image | `esp32s3_init_spi_flash` selects the flash model by exact drive length, 2/4/8/16 MiB only |
+
+What the simulator proves and what it does not:
+
+| Provable | Board-only |
+|---|---|
+| partition table parse, NVS namespaces, boot counter and safe mode across reboots | GPIO21 LED polarity: QEMU's GPIO write handler is a stub |
+| `userfs` and `wsfs` mounts, including the once-only `wsfs` reformat | LittleFS wear behaviour, brownout, WiFi failover |
+| `app_main()` reaching `store_mount()` and the fit assertions in §3.1 | `ping` latency, and any code path that needs a real radio |
+
+The seeded `userfs` is a throwaway: three directories and a placeholder
+`config.json`. The real image builder is the M4 `bridge/tools/build_userfs.py`
+(`03-config.md` open question 8); until it lands, a freshly flashed board halts on
+a `userfs` that is blank and cannot be formatted (§3.1).

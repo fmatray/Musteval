@@ -50,6 +50,12 @@ Rules:
 
 - A single 16 KiB TX line (`docs/00-overview.md` §6) plus TLS overhead must fit
   without PSRAM allocation, so the link serializer writes from an internal buffer.
+  Measured cost of honouring that: the emit and wrap scratch are two 16 KiB statics
+  (`s_emit`, `s_tx`), the reader is 4,104 B and the log hook's three buffers 3,200 B
+  — 40,072 B of `.bss` — and the driver's own rings add `LINK_TX_MAX + 2` and
+  `LINK_RX_MAX + 2` on the heap (`02-firmware.md` §2, `link`). DIRAM sits at 31.2%
+  of 341,760 B with that in place, so it fits; it is also why DIRAM is not nearer a
+  tenth.
 - Anything sized from `llm.max_history_messages` is allocated in PSRAM and marked
   `MALLOC_CAP_SPIRAM`.
 - MQTT client contexts and the geo scan buffer stay in internal SRAM: both are
@@ -82,6 +88,7 @@ flowchart LR
 | `serial.baud` is cosmetic | CDC-ACM ignores baud; the key is kept frozen in `config.json` for bridge compatibility (see `docs/03-config.md`) |
 | Logs share the endpoint | `esp_log_set_vprintf` is hooked (D9). A raw `printf` would corrupt framing — firmware must never use `printf` on this build |
 | USB is the only console | Panic output is visible only if the bridge is attached and the port is open at 115200 for the ROM stage |
+| M1 answers the link | `link_task` owns the CDC endpoint (`02-firmware.md` §3.1 step 7), so the board answers `hello`, `ping` and `command`. A bridge pointed at it reaches `linked`. At M0 the same board enumerated as `ttyACM0`, logged to it and never read it, so a write filled the TX buffer and timed out; that silence was the milestone, not a fault |
 
 Because the peripheral is the *SoC's* USB, not a bridge chip, a hard hang still
 leaves USB enumerated. That is why `reboot` is a protocol command
@@ -308,8 +315,49 @@ frozen four are owned by `docs/04-protocol.md`:
 
 ## 10. Bring-up checklist
 
-1. Attach the board; confirm the host enumerates a CDC-ACM device and that opening
-   it at 115200 shows ROM boot text.
+Flashing needs esptool 5.6 or newer. IDF v5.5.6 ships 4.12.0, whose flasher stub
+stalls at `Running stub...` against the native USB-JTAG on this board; 5.6 completes
+in seconds. IDF pins `esptool~=4.12` in `~/.espressif/espidf.constraints.v5.5.txt`,
+so upgrading the package alone makes `idf.py` refuse to run — that pin moves with it.
+Legacy command spellings (`write_flash`, `merge_bin`, `erase_flash`) still work under
+5.6 with a deprecation warning, which is what keeps `idf.py` and `run_qemu.sh`
+working unchanged.
+
+A virgin board also needs a seeded `userfs`: it is never formatted by the firmware,
+and a blank one halts with `E_STORAGE` (§4). `build/qemu/userfs.bin` from
+`02-firmware.md` §8 serves until `bridge/tools/build_userfs.py` exists.
+
+The working sequence, and the two traps in it:
+
+```
+idf.py -p /dev/ttyACM0 -b 921600 flash
+esptool --chip esp32s3 -p /dev/ttyACM0 -b 460800 write-flash \
+   0x320000 build/qemu/userfs.bin        # only on a fresh or erased board
+idf.py -p /dev/ttyACM0 monitor            # or a pyserial reader, see below
+```
+
+- **Reading the log means leaving the modem lines alone.** On native USB-JTAG DTR
+  and RTS drive the reset strap, and *any* transition on the pair resets the chip:
+  clearing them after `open` reboots the board, and so does clearing them before it,
+  because the kernel's CDC-ACM layer asserts both when it activates the port.
+  `SerialTransport` therefore never touches them (`09-bridge-architecture.md` §4.2).
+  A hand-written reader that wants a fresh boot must pulse RTS itself; one that only
+  wants the running device must not touch either line.
+- **The flashed NVS survives reflashing**, so the boot guard keeps counting across
+  experiments and can sit in safe mode. `esptool erase-region 0x9000 0x6000` clears
+  just the counter; a full `erase-flash` also wipes both LittleFS images.
+- **`verify-flash` is not read-only: it is a boot.** Every esptool invocation ends
+  with `--after hard_reset`, so verifying three images costs three runs of the guard
+  — measured at exactly +1 each, and nothing at M0 ever decrements it (reaching idle
+  clears the counter, and `main.c` stops before the scheduler). Verify once after a
+  flash, not after each edit, and check the counter in the log rather than assuming
+  it is still where it was left. One `erase-region` resets it to zero.
+
+1. Attach the board; confirm the host enumerates a CDC-ACM device. Reading the ROM
+   text needs a deliberate reset, not a side effect: to land a fresh boot in an
+   attached reader, pulse RTS high for ~150 ms and release it. Merely opening the
+   port does not reboot the chip, which is the point — an idle bridge reconnects to
+   the running device and `uptime_s` keeps climbing.
 2. Confirm PSRAM is detected as octal and 8 MiB — if it reports none, the build is
    missing the SPIRAM octal config and the memory budget in §2 is invalid.
 3. Drive GPIO21 to confirm the LED is active-low (writing `0` lights it).

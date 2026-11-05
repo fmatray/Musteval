@@ -482,10 +482,11 @@ Recorded so they are not reintroduced as "just one more layer".
   "network provider interface". The portability it would buy is not needed — there is
   one target board.
 - **No host-side emulation of the firmware.** The two testable seams are `llm` and
-  `geo`, which get stubs. A full simulator is out of scope and would be the largest
-  module in the tree. The one host-side double is `bridge/tools/test_agent.py`
-  (`10-test-agent.md`), and it is not emulation: it speaks the wire format and models
-  no config, NVS, LLM, network or scheduler, so no firmware behaviour is reimplemented
-  where a bug could hide.
+  `geo`, which get stubs. A simulator that reimplemented the firmware would be out of
+  scope and the largest module in the tree. The one host-side double is
+  `bridge/tools/test_agent.py` (`10-test-agent.md`), and it is not emulation: it speaks
+  the wire format and models no config, NVS, LLM, network or scheduler, so no firmware
+  behaviour is reimplemented where a bug could hide. QEMU is not this: it executes the
+  real firmware binary, reimplements nothing, and cannot drift (`02-firmware.md` §8).
 - **No subagents, no multirole, no wake word, no audio** — frozen in
   `00-overview.md` §1.2 and not revisited here.

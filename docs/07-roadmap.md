@@ -31,6 +31,8 @@ Goal: Establish the NDJSON communication channel with the Bridge.
  - Log hook: `ESP_LOGI` prints in monitor as NDJSON `log` messages while link is open (D9).
  - `uv run bridge --target test --port <pty>` completes `hello`/`hello_ack`, `ping`/`pong` and one `command` round trip against `bridge/tools/test_agent.py`, with no board attached.
 
+Firmware status: `hello`/`hello_ack`, `ping`/`pong` and `status` are wired in `link`, not only in the fake agent.
+
 ### M2: Configuration & Static Assets
 Goal: Implement the frozen config schema and secret resolution.
 - **Scope**: `/config.json` parsing, `secret_ref` resolution, `config.get/set`, `secret.set`.
@@ -123,6 +125,8 @@ Goal: Full automation, remote capabilities, and final security audit.
 ### M6: MQTT, Geolocation & Task Authoring
 Goal: Enable asynchronous external triggers and agent-managed task persistence.
 - **Scope**: MQTT client, BSSID/IP geolocation, `task.set` tool plus `tasks.set`/`tasks.delete` commands, task quota enforcement.
+  `store`'s sandbox primitives and the four wired commands are implemented
+  ahead of the rest of M6.
 - **Deliverables**: `mqtt`, `geo` modules.
 - **Acceptance Tests**:
   - Multi-broker: Connect to two brokers simultaneously (one TLS, one plain) and receive messages from both.

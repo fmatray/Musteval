@@ -1,0 +1,6 @@
+# QEMU-only deviations, layered over sdkconfig.defaults by firmware/tools/run_qemu.sh.
+# Never applied to the board build: the simulator's SPI flash model (gd25q64 in
+# hw/block/m25p80.c) has no Gigadevice branch in WRSR, so the QE bit never latches
+# and a QIO app trips the esp_flash_init_default_chip assert in
+# esp_system/startup_funcs.c. DIO sidesteps it.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y

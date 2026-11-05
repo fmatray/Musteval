@@ -11,3 +11,10 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # Custom partition table (docs/01-hardware.md §4)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Watchdog: sys_init() owns it (docs/02-firmware.md §3.1 step 2). With IDF's own
+# init left on, esp_task_wdt_init() returns ESP_ERR_INVALID_STATE and logs an error
+# every boot, and its idle-task subscription contradicts idle_core_mask = 0.
+CONFIG_ESP_TASK_WDT_INIT=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

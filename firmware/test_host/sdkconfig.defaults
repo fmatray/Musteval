@@ -1,0 +1,4 @@
+# The `linux` target needs no flash, PSRAM or partition-table options; the
+# esp32s3 settings in ../sdkconfig.defaults are device-only (docs/01-hardware.md
+# §2, §4) and deliberately absent here. The target itself is written to
+# sdkconfig by `idf.py --preview set-target linux`.

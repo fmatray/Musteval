@@ -857,9 +857,9 @@ Errors: `E_CONFIG` for a path outside the allowlist or a disallowed extension,
 `E_STORAGE` when the assembled file would exceed the per-file or partition limit,
 `E_PROTOCOL` for an out-of-sequence offset, a chunk over 2048 raw bytes, malformed
 base64, or `final:true` on a path with no staged transfer. `E_BUSY` never applies:
-concurrent transfers serialise on the same mutex `store_task_write()` uses, and
-two interleaved transfers to one path fail the offset check rather than corrupting
-the file.
+command dispatch is single-threaded (`link_task` via `link_reader_feed`), so one
+transfer is in flight at a time by construction, and two interleaved transfers to
+one path still fail the offset check rather than corrupting the file.
 
 ### 4.17 `sandbox.list`
 
@@ -907,13 +907,25 @@ Returns one file from the sandbox as UTF-8 text for viewing and editing.
 |---|---|---|---|
 | `path` | string | yes | Absolute file path under `/workspace/` |
 
-`truncated` is `true` when the file exceeded the read cap and only its first part
-is returned; the bridge renders a banner rather than editing a partial file. A
-file that is not valid UTF-8 is `E_STORAGE`, so the bridge never shows mojibake.
-The read cap is fixed at 32 KiB, which keeps the whole `command.result` inside the
-16 KiB TX limit only because the device answers in one frame under the
-`04-protocol.md` §1 line caps: a longer file MUST be `truncated`, never a second
-frame.
+`bytes` is the **whole file length**, not the number of bytes returned: it stays
+the file's true size when `truncated` is `true`, so the bridge can report what it
+did not fetch.
+
+The read cap is fixed at 8192 raw bytes, chosen so ordinary UTF-8 text leaves the
+whole `command.result` inside the 16384-byte TX limit (§1) once the envelope and
+JSON escaping are added. A file above the cap returns its first 8192 bytes with
+`truncated:true`; it MUST NOT be continued in a second frame. `truncated:true` is
+what the bridge renders as a banner, and it refuses to open the file for editing,
+so a partial file is never saved back (`05-bridge.md` §5.8).
+
+Truncation alone cannot guarantee a fitting frame: pathological content (dense
+control characters, each escaping to six bytes) can blow 16384 even at 8192 raw
+bytes. There the device answers `E_STORAGE` naming the cause instead of emitting a
+frame that does not fit — a dropped frame would leave the bridge waiting on a reply
+that never arrives. A file that is not valid UTF-8 is likewise `E_STORAGE`, so the
+bridge never shows mojibake, and so is a path that names nothing: the distinction is
+between a bad request (`E_PROTOCOL`, `E_CONFIG`) and a filesystem that refused, which
+keeps the bridge from suggesting the user fix arguments that were already valid.
 
 ### 4.19 `sandbox.delete`
 
@@ -929,7 +941,8 @@ Deletes one sandbox file, or one **empty** directory.
 
 A directory that still holds entries is `E_CONFIG` with `detail` naming the
 offending path, so deletion is never recursive and a mis-keyed confirmation cannot
-take a subtree with it. `tools.allow_dangerous` does not gate this command: it is
+take a subtree with it. A path that names nothing is `E_STORAGE`, not a success:
+reporting `deleted:true` for a file that was never there would hide a typo. `tools.allow_dangerous` does not gate this command: it is
 host-only, and the gate exists to stop the model, which cannot reach it.
 
 ### 4.20 `sandbox.write`

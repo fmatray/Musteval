@@ -1,0 +1,8 @@
+## `main` wires the boot sequence and `store` mounts the two LittleFS partitions
+## (`02-firmware.md` §store), so the `esp_littlefs` managed component is declared
+## here: it lands in the board project's `managed_components/`, where every
+## component of this project can resolve it. The host test project is a separate
+## IDF project and must not see it — `store.c` is excluded there.
+dependencies:
+  idf: ">=5.5"
+  joltwallet/littlefs: "^1.14"
