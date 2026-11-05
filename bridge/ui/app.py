@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import time
@@ -36,7 +37,11 @@ from ..protocol import (
     sandbox_parent,
 )
 from .settings import ROWS, coerce, flatten, lookup, render_value
+from .splash import SPLASH_SECONDS, pick_tip, render_splash
+from . import onboard
 from .render import (
+    LINK_WORDS,
+    UNREACHABLE,
     SlashHighlighter,
     clip,
     render_diag,
@@ -667,6 +672,51 @@ class HelpScreen(VerticalScroll):
         yield Static(HELP_TEXT, id="help-body")
 
 
+class SplashScreen(Vertical):
+    """`05-bridge.md` §5.9: the mascot and one tip, dismissed by any key.
+
+    A screen, not a chat banner: a banner scrolls away, and this is the first
+    thing a reader sees. It is displayed by `on_mount` and hidden by the same
+    display toggle the other screens use.
+    """
+
+    can_focus = True
+
+    BINDINGS = [Binding("escape", "close_splash", "Continue", show=False)]
+
+    def __init__(self, tip: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.tip = tip
+        #: A key press and the timer both arrive; only the first one acts.
+        self._gone = False
+
+    def compose(self) -> ComposeResult:
+        yield Static(render_splash(self.tip), id="splash-body")
+
+    def on_mount(self) -> None:
+        # Headless runs mount Chat instead (`05` §5.9), so the timer is not
+        # started at all: a timer that fires under `run_test` would move focus
+        # away from the composer the pilot is driving.
+        if self.app.is_headless:  # type: ignore[attr-defined]
+            self._gone = True
+            return
+        self.focus()
+        # The timer is for a reader who walked away; a key is the real path.
+        self.set_timer(SPLASH_SECONDS, self.action_close_splash)
+
+    def action_close_splash(self) -> None:
+        if self._gone:
+            return
+        self._gone = True
+        self.display = False
+        self.app.query_one("#chat").display = True  # type: ignore[attr-defined]
+        self.app.query_one("#chat-input").focus()  # type: ignore[attr-defined]
+
+    def on_key(self, event: Any) -> None:
+        event.stop()
+        self.action_close_splash()
+
+
 class BridgeApp(App):
     """Composition root for the UI. `__main__` builds the `Session` and hands it in."""
 
@@ -729,6 +779,7 @@ class BridgeApp(App):
             yield MqttScreen(id="mqtt")
             yield FilesScreen(id="files")
             yield HelpScreen(id="help")
+            yield SplashScreen(pick_tip(), id="splash")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -738,7 +789,12 @@ class BridgeApp(App):
         self.session.install_state_hook(lambda _state: self._refresh_bar())
         for name in ("status", "tasks", "logs", "settings", "mqtt", "files", "help"):
             self.query_one(f"#{name}").display = False
-        self.query_one("#chat").display = True
+        # `05` §5.9: the splash is the first thing a reader sees. Headless runs
+        # (`run_test`, `--headless`) mount Chat directly so the 140 existing
+        # `BridgeApp(session)` sites keep the screen they assert on.
+        splash = self.query_one("#splash")
+        splash.display = not self.is_headless
+        self.query_one("#chat").display = self.is_headless
         self._refresh_bar()
         # Run in a worker: mounting must not block the loop that pumps the
         # transport, or the handshake can never complete.
@@ -1016,6 +1072,12 @@ class BridgeApp(App):
         """
         if not self.is_mounted:
             return
+        # The bar lives on the chat screen, which is not queryable until the app's
+        # children are mounted. A link-state change that lands before that must not
+        # take the whole app down over a bar nobody can see yet.
+        chat = self.query("#chat")
+        if not chat:
+            return
         bar = render_prompt_bar(
             self.session.state.value,
             self._state,
@@ -1193,6 +1255,9 @@ class BridgeApp(App):
         except SessionError as exc:
             self._chat().write(f"✗ {exc}")
             return None
+        except asyncio.TimeoutError:
+            self._chat().write("✗ the device did not answer in time")
+            return None
         if reply.type != "command.result":
             return None
         self._on_command_result(reply)
@@ -1207,11 +1272,25 @@ class BridgeApp(App):
     async def _send_prompt(self, text: str) -> None:
         self._last_prompt = text
         self._chat().write(f"you: {text}")
+        # `05-bridge.md` §5.1: a prompt with no link is answered immediately. The
+        # ack timeout is 6x `connect_timeout`, so waiting would leave the reader
+        # staring at their own line for half a minute with nothing to act on.
+        # `flaky` still carries traffic, so only the states that cannot answer are
+        # refused; a prompt there may succeed or time out, and both are reported.
+        state = self.session.state
+        if state.value in UNREACHABLE:
+            self._chat().write(
+                f"✗ {LINK_WORDS[state.value]}; the prompt was not sent"
+            )
+            return
         frame = Frame(type="prompt", id=new_id("b"), ts=0, body={"text": text})
         try:
             reply = await self.session.request(frame)
         except SessionError as exc:
             self._chat().write(f"✗ {exc}")
+            return
+        except asyncio.TimeoutError:
+            self._chat().write("✗ the run did not answer in time")
             return
         if reply.type == "agent.error":
             self._on_agent_error(reply)
@@ -1240,6 +1319,9 @@ class BridgeApp(App):
                 return
             self._files_target = target
             self.action_show("files")
+            return
+        if head == "onboard":
+            await self.onboard()
             return
         if head in LOCAL_COMMANDS:
             self._run_local(head)
@@ -1305,6 +1387,10 @@ class BridgeApp(App):
         except SessionError as exc:
             self._chat().write(f"✗ {exc}")
             return
+        except asyncio.TimeoutError:
+            self._chat().write("✗ the device did not answer in time")
+            self._pending_secret = None
+            return
         if reply.type == "command.result":
             self._on_command_result(reply)
         self._pending_secret = None
@@ -1316,6 +1402,75 @@ class BridgeApp(App):
         # and hands it over here, so the parser stays pure and the value never
         # reaches a log line.
         return self._pending_secret or ""
+
+    async def onboard(self) -> None:
+        """`05-bridge.md` §7 `/onboard`: collect answers, narrate, then write.
+
+        Refuses at once on a link that cannot answer, naming the bar's word — the
+        same rule `_send_prompt` follows, and for the same reason: the ack timeout
+        is long and the reader would be left guessing.
+        """
+        state = self.session.state
+        if state.value in UNREACHABLE:
+            self._chat().write(f"✗ {LINK_WORDS[state.value]}; onboarding needs a live link")
+            return
+        answers = await self._onboard_prompts()
+        if answers is None:
+            self._chat().write("onboarding cancelled")
+            return
+        plan = onboard.writes(answers)
+        if not plan:
+            self._chat().write("nothing to write: every answer was empty")
+            return
+        lines = onboard.narration(answers, self._config)
+        if not await self.push_screen_wait(
+            ConfirmPrompt("Write this configuration?\n\n" + "\n".join(lines))
+        ):
+            self._chat().write("onboarding cancelled")
+            return
+        for kind, body in plan:
+            if kind == "secret":
+                await self._onboard_secret(body["key"], body["value"])
+            else:
+                for path, value in body.items():
+                    await self._request("config.set", {"path": path, "value": value})
+        await self._request("config.get")
+
+    async def _onboard_prompts(self) -> onboard.Answers | None:
+        """The wizard. `None` means Esc at any step, and nothing is written."""
+        ssid = await self.push_screen_wait(ValuePrompt("Wifi SSID", ""))
+        if ssid is None:
+            return None
+        password = await self.push_screen_wait(
+            SecretPrompt(f"Wifi password for {ssid} (Esc to skip)")
+        )
+        if password is None:
+            password = ""
+        base_url = await self.push_screen_wait(
+            ValuePrompt("Provider base URL", "https://api.openai.com/v1")
+        )
+        if base_url is None:
+            return None
+        api_key = await self.push_screen_wait(SecretPrompt("Provider API key (Esc to skip)"))
+        if api_key is None:
+            api_key = ""
+        model = await self.push_screen_wait(ValuePrompt("Model", ""))
+        if model is None:
+            return None
+        return onboard.Answers(
+            ssid=ssid.strip(),
+            password=password.strip(),
+            base_url=base_url.strip(),
+            api_key=api_key.strip(),
+            model=model.strip(),
+        )
+
+    async def _onboard_secret(self, key: str, value: str) -> None:
+        """One `secret.set`, via the existing path so redaction stays in one place."""
+        self._pending_secret = value
+        await self._request_secret(
+            Frame(type="secret.set", id=new_id("b"), ts=0, body={"key": key})
+        )
 
     def _run_local(self, head: str) -> None:
         if head == "logs":

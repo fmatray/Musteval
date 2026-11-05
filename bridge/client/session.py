@@ -173,8 +173,12 @@ class Session:
     async def _send(self, frame: Frame) -> None:
         try:
             await self._transport.write_line(encode(frame))
-        except (TransportError, ProtocolError) as exc:
+        except TransportError as exc:
+            # `TransportError` already names the operation ("write failed: ..."),
+            # so the message is passed through rather than prefixed again.
             raise SessionError(str(exc)) from exc
+        except ProtocolError as exc:
+            raise SessionError(f"encode failed: {exc}") from exc
 
     def _set_state(self, state: LinkState) -> None:
         if state is self._state:

@@ -89,7 +89,7 @@ PROMPT_SEPARATOR = " | "
 
 #: Short forms for the bar, which has one line and many facts. The Status screen
 #: keeps the long words; this is the same value, said in less.
-_LINK_WORDS = {
+LINK_WORDS = {
     "connected": "linked",
     "connecting": "linking",
     "wait_ack": "linking",
@@ -100,7 +100,7 @@ _LINK_WORDS = {
 
 
 #: States in which no fact from the device can be current.
-_UNREACHABLE = frozenset({"down", "connecting", "wait_ack", "rejected"})
+UNREACHABLE = frozenset({"down", "connecting", "wait_ack", "rejected"})
 
 
 def render_prompt_bar(
@@ -124,10 +124,10 @@ def render_prompt_bar(
     wsfs = storage.get("wsfs") or {}
     sysinfo = status.get("sys") or {}
 
-    word = _LINK_WORDS.get(link, link)
+    word = LINK_WORDS.get(link, link)
     # Without a link every other fact is stale, and a stale fact printed beside
     # `down` reads as current. The link word alone is the honest bar.
-    if link in _UNREACHABLE:
+    if link in UNREACHABLE:
         return word
     segments = [word]
 

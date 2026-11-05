@@ -300,8 +300,11 @@ Example of a compliant diagnostic (envelope fields per overview section 6; paylo
 fields are owned by `docs/04-protocol.md`):
 
 ```json
-{"v":1,"type":"log","id":"log-17","ts":1762041600,"level":"ERROR","code":"E_CONFIG","message":"secret_ref nvs:llm_api_key did not resolve"}
+{"v":1,"type":"log","id":"d-4","ts":1762041600,"level":"error","tag":"cfg","msg":"secret_ref nvs:llm_api_key did not resolve","t_ms":1840}
 ```
+
+The failing `secret_ref` is reported by name in `msg`, never by value; the frame shape
+is owned by `docs/04-protocol.md` §3.10.
 
 Example of a compliant `config.get` view: references preserved, values absent.
 

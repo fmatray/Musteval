@@ -1,0 +1,14 @@
+#!/bin/sh
+# Start the Musteval host bridge. Arguments go straight to `python -m bridge`,
+# which autodetects the USB CDC port when --port is omitted.
+#   bin/bridge                      # TUI against the first board found
+#   bin/bridge --port /dev/ttyACM0
+#   bin/bridge --send /status       # headless, one frame, exit
+set -eu
+cd "$(dirname "$0")/.."
+PY=.venv/bin/python
+if [ ! -x "$PY" ]; then
+    echo "bin/bridge: no venv at $PY; run: uv sync" >&2
+    exit 1
+fi
+exec "$PY" -m bridge "$@"

@@ -11,7 +11,7 @@ import serial
 from serial.tools import list_ports
 
 from .transport import LineAssembler, Transport, TransportError
-from ..protocol import MAX_RX_BYTES
+from ..protocol import MAX_FROM_DEVICE_BYTES
 
 
 def find_port() -> str | None:
@@ -73,25 +73,38 @@ class SerialTransport(Transport):
         self._error: str | None = None
         #: Thread-safe hand-off between the reader thread and the event loop.
         self._pending: queue.Queue[bytes | None] = queue.Queue()
+        #: Serialises the port handle against `close`: writes and the close itself
+        #: both leave the loop, so an in-flight write could otherwise reach a port
+        #: that `close` has just released (`EBADF`).
+        self._io_lock = asyncio.Lock()
 
     @property
     def port(self) -> str:
         return self._port
 
     async def open(self) -> None:
+        # DTR and RTS are left exactly as `open` sets them, on purpose. On the S3's
+        # native USB-JTAG that pair drives the reset strap, and any *transition* on
+        # it resets the chip: leaving the port alone reconnects to a running device,
+        # while dropping the lines after opening reboots it on every connection
+        # (measured: `boot_id` changed per connect, `uptime_s` never left 0, the boot
+        # counter climbed one per connect; untouched, the same `boot_id` held with
+        # `uptime_s` climbing 13→17→21). A deliberate reset is `idf.py monitor`'s job,
+        # never a side effect of the bridge connecting.
         try:
-            self._serial = serial.Serial(
+            port = serial.Serial(
                 self._port, self._baud, timeout=self._read_timeout, write_timeout=5
             )
         except (serial.SerialException, OSError) as exc:
             raise TransportError(f"cannot open {self._port}: {exc}") from exc
+        self._serial = port
         self._queue = asyncio.Queue()
         self._closed.clear()
         self._thread = threading.Thread(target=self._reader, name="bridge-reader", daemon=True)
         self._thread.start()
 
     def _reader(self) -> None:
-        assembler = LineAssembler(MAX_RX_BYTES)
+        assembler = LineAssembler(MAX_FROM_DEVICE_BYTES)
         assert self._serial is not None
         while not self._closed.is_set():
             try:
@@ -121,28 +134,44 @@ class SerialTransport(Transport):
             return item
 
     async def write_line(self, line: bytes) -> None:
-        if self._serial is None:
-            raise TransportError("port is not open")
         if not line.endswith(b"\n"):
             line += b"\n"
         self._log(b"-> ", line)
-        try:
-            self._serial.write(line)
-            self._serial.flush()
-        except (serial.SerialException, OSError) as exc:
-            raise TransportError(f"write failed: {exc}") from exc
+        # pyserial's write blocks until the kernel accepts the bytes, and a
+        # firmware that never reads turns that into the full `write_timeout`.
+        # On the event loop that freezes the whole TUI, so it runs in a thread.
+        # The lock is held across the hand-off so `close` cannot release the port
+        # mid-write, and the handle is re-checked inside it for the same reason.
+        async with self._io_lock:
+            port = self._serial
+            if port is None:
+                raise TransportError("port is not open")
+            try:
+                await asyncio.to_thread(self._write_now, port, line)
+            except (serial.SerialException, OSError) as exc:
+                raise TransportError(f"write failed: {exc}") from exc
+
+    @staticmethod
+    def _write_now(port: serial.Serial, line: bytes) -> None:
+        port.write(line)
+        port.flush()
 
     async def close(self) -> None:
         self._closed.set()
         if self._thread is not None:
-            self._thread.join(timeout=1.0)
+            # The reader may be inside a blocking read, so the join waits on it.
+            await asyncio.to_thread(self._thread.join, 1.0)
             self._thread = None
-        if self._serial is not None:
-            try:
-                self._serial.close()
-            except (serial.SerialException, OSError):
-                pass
-            self._serial = None
+        # Closing a CDC port whose peer stopped reading costs ~30 s inside
+        # pyserial, measured on the S3's native USB-JTAG. It must not run on the
+        # event loop, or every retry cycle freezes the UI.
+        async with self._io_lock:
+            port, self._serial = self._serial, None
+            if port is not None:
+                try:
+                    await asyncio.to_thread(port.close)
+                except (serial.SerialException, OSError):
+                    pass
         self._queue = None
 
 

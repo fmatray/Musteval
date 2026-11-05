@@ -281,6 +281,7 @@ is host-originated.
 | USB Serial to computer | `04-protocol.md`, `05-bridge.md`, `09-bridge-architecture.md` |
 | Browse and edit the agent sandbox from the terminal | `05-bridge.md` §5.8, `04-protocol.md` §4.17 to §4.20 |
 | Secured provider (URL + API key) | `03-config.md` §llm, `06-security.md` |
+| First-run setup from the terminal | `05-bridge.md` §7 `/onboard` |
 | Provider/model fallback | `02-firmware.md` §Request body, §4.2 Fallback & Error Handling |
 | Extensible skills | `03-config.md` §skills, `tools/skills.md` |
 | Extensible tools | `03-config.md` §tools, `tools/README.md`, `02-firmware.md` §7.1 Tool definitions sent to the model |
@@ -312,3 +313,7 @@ is host-originated.
 - **Trigger**: a condition that starts a task (`boot`, `gpio`, `mqtt_message`, ...).
 - **Declarative tool**: a `/tools/*.json` file describing one HTTP call.
 - **Broker**: one entry in `mqtt.servers[]`, connected independently.
+- **Musteval**: the project's namesake and mascot — a two-foot celestial spy with
+  white fur, tufted ears, an elongated snout and pink eyes, able to cast magic
+  missile at will. It appears on the bridge splash (`05` §5.9); nothing in the
+  firmware depends on it.

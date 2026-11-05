@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from bridge.client import Session
+from bridge.client import LinkState, Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
@@ -753,7 +753,14 @@ async def test_every_screen_claims_focus_when_shown():
         }
         for name, widget in expected.items():
             app.action_show(name)
-            await pilot.pause(0.1)
+            # `Show` is posted, and a worker may re-show the screen afterwards, so
+            # the focus lands on a message boundary, not at a fixed latency. Poll
+            # for the condition rather than guessing a sleep that a loaded suite
+            # can outrun.
+            for _ in range(50):
+                await pilot.pause(0.02)
+                if app.focused is not None and f"#{app.focused.id}" == widget:
+                    break
             assert (app.focused is not None
                     and f"#{app.focused.id}" == widget), (name, app.focused)
         await session.close()
@@ -1110,3 +1117,47 @@ async def test_the_selection_never_lands_on_a_row_that_is_not_drawn():
             app.query_one("#chat-input").value = "/"
             await pilot.pause(0.1)
         await session.close()
+
+
+async def test_prompt_with_no_link_is_refused_at_once():
+    """A prompt cannot be acknowledged when nothing is linked.
+
+    The ack timeout is `6 x connect_timeout`, so the old path left the reader
+    looking at their own line for half a minute; the refusal names the link word
+    instead, and it arrives without waiting for a reply.
+    """
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        app.action_show("chat")
+        await pilot.pause(0.1)
+        app.submit("hello board")
+        await pilot.pause(0.2)
+        lines = [str(line) for line in app.query_one("#chat-log").lines]
+        assert any("you: hello board" in line for line in lines), lines
+        # The refusal names the bar's word, not the internal state enum: a reader
+        # comparing it with the prompt bar must never see two vocabularies.
+        assert any("✗ linking; the prompt was not sent" in line for line in lines), lines
+    await session.close()
+
+
+async def test_prompt_timeout_is_reported_not_swallowed():
+    """A linked peer that never answers leaves a line, not silence."""
+    # Answers `hello` and `ping`, then goes quiet on the prompt: a live link
+    # whose run never reports back.
+    def silent_prompt(line: bytes) -> list[bytes]:
+        return [] if json.loads(line)["type"] == "prompt" else _reply(line)
+
+    session = Session(
+        FakeTransport(on_write=silent_prompt), ack_timeout=0.1, ping_interval=99
+    )
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.submit("hello board")
+        await pilot.pause(0.6)
+        lines = [str(line) for line in app.query_one("#chat-log").lines]
+        assert any("did not answer in time" in line for line in lines), lines
+        assert any("✗ " in line for line in lines), lines
+    await session.close()

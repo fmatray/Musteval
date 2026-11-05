@@ -120,8 +120,13 @@ def decode_line(line: bytes) -> Frame: ...     # raises ProtocolError
 ```
 
 The constants live here too, because they are protocol facts rather than policy:
-`VERSION = 1`, `MAX_RX_BYTES = 4096`, `MAX_TX_BYTES = 16384`, and the two
-direction allowlists that `04-protocol.md` §2.1 defines. Direction checking is a
+`VERSION = 1`, `MAX_FROM_BRIDGE_BYTES = 4096`, `MAX_FROM_DEVICE_BYTES = 16384`,
+and the two direction allowlists that `04-protocol.md` §2.1 defines. The size caps
+are named by direction, not by device side, because they are not interchangeable:
+`04-protocol.md` §1 bounds what the device can *read* at 4096 and what it can
+*write* at 16384, so a bridge line is capped at 4096 and a received line at 16384.
+Naming them after the device's own buffers invited a swap that silently discarded
+every reply above 4 KiB. Direction checking is a
 decode concern: a `pong` arriving bridge-to-device is malformed input, not a
 session bug.
 
@@ -182,7 +187,8 @@ a test seam, and a list of things it must not do.
 ### 4.1 `bridge/protocol/` (L0)
 
 Public surface: `Frame`, `ProtocolError`, `encode`, `decode_line`, `redact_line`,
-`new_id`, `VERSION`, `MAX_RX_BYTES`, `MAX_TX_BYTES`, the type enum and the
+`new_id`, `VERSION`, `MAX_FROM_BRIDGE_BYTES`, `MAX_FROM_DEVICE_BYTES`, the
+type enum and the
 error-code enum.
 
 Must not: open the port, sleep, retry, print, read config, or import anything above
@@ -195,6 +201,25 @@ and the two implementations. `read_line` is `async`; `SerialTransport` runs
 pyserial blocking reads in one dedicated thread and hands complete lines to an
 `asyncio.Queue`. `FakeTransport` is scripted from a list of inbound lines and
 records outbound ones.
+
+Every blocking pyserial call leaves the event loop. `write_line` runs its write in
+a worker thread, and `close` does the same for the port: a firmware that does not
+read the link fills the TX buffer, so a write costs the whole `write_timeout` and
+`close` costs about 31 s on the S3's native USB-JTAG. Measured on the board, both
+on the loop, the TUI repainted nothing for the length of a retry cycle and looked
+hung; off the loop, the composer keeps painting and the failure surfaces in chat.
+
+`SerialTransport.open()` never touches DTR or RTS. On the S3's native USB-JTAG that
+pair drives the reset strap, and any *transition* on it resets the chip: dropping the
+lines after opening rebooted the board on every connection, and so did clearing them
+before `open` — the kernel's CDC-ACM layer asserts both when the port is activated,
+so the wire sequence is a pulse either way. Measured on the board, all three variants
+that drove the lines gave a new `boot_id` per connect with `uptime_s` stuck at 0 and
+the boot counter climbing one per connect; leaving them alone held one `boot_id`
+across three separate bridge runs with `uptime_s` climbing 45→46. A reset is
+`idf.py monitor`'s job, never a side effect of connecting.
+
+A pty has no modem lines at all, which is why nothing here has to ask for them.
 
 Debug logging happens here, because this is the only layer that sees bytes in both
 directions. With `--json` set, each line is passed through `redact_line()` before it
@@ -263,7 +288,11 @@ terminal to be tested.
 an app-level `Esc` would never fire; `task_prompt.py` is the JSON editor for the
 Tasks screen's `E` and `N`, and `files.py` holds the Files screen's path arithmetic
 — `join`, `parent`, and the `/workspace/` confinement check — so the screen itself
-holds no state the module does not own. `testing.py` is test-only: it hosts a pilot that
+holds no state the module does not own. `splash.py` holds the mascot art and the tip
+table (`05` §5.9), and `onboard.py` holds the `/onboard` planner: `provider_id`,
+`writes` and `narration` are pure functions from answers to frames and to the text
+of the confirm step, so the ordering rule — every `secret.set` before the `config.set`
+naming its `nvs:` key — is testable without a terminal or a device. `testing.py` is test-only: it hosts a pilot that
 pushes one modal, because the `textual` law of §6 applies to `bridge/tests/` too
 and a test may not import Textual itself.
 
@@ -376,6 +405,13 @@ Each layer is testable without a device, and each has exactly one seam.
 | docs | `04-protocol.md` §2.1 vs `05-bridge.md` §10 | The set of device `→` bridge types equals the set of rows in the traceability table |
 | `redact_line` | A `hello` with `token` and a `secret.set` with `value` | Neither value appears in the output; every other member survives byte-identical |
 | `link` + `client`, end to end | `bridge/tools/test_agent.py` over a pty, `--target test` | A full `hello` → `hello_ack` → `ping` → `command` cycle, plus the `--no-hello` and `--token` failure scenarios, without hardware (`10-test-agent.md`) |
+| `test_agent` | The double on a pty master, driven directly | Every rung of `10-test-agent.md` §5 refuses, every §6 reply is emitted, and the `--script` entry shapes behave as documented. The e2e suite cannot see these: a `Session` only sends frames a healthy peer accepts, so the double's own refusals are invisible there |
+| `ui` errors | `FakeTransport` answering `ok:false`, timing out, or replying with the wrong type | Each refusal produces visible text naming the code, the ui never retries a refused chunk, and a truncated read is never opened for editing |
+
+`bridge/tests/test_ui_errors.py` exists because the happy-path `ui` cases prove a
+screen renders what a well-behaved device sends. Refusals are the other half of
+`05-bridge.md` §4.1's promise, and each case there asserts the user-visible
+consequence rather than that a handler ran.
 
 The `client` cases worth naming, because each is a rule rather than a happy path:
 
@@ -411,5 +447,7 @@ Recorded so they are not reintroduced as "just one more package".
   client all import `protocol`. Re-implementing the codec in tests is how two
   definitions of the envelope appear.
 - **No device simulator.** `bridge/tools/test_agent.py` validates and echoes frames
-  (`10-test-agent.md`); it models no config, NVS, LLM or network. A simulator would
-  be a second firmware and would drift from it.
+  (`10-test-agent.md`); it models no config, NVS, LLM or network. A Python simulator
+  would be a second firmware and would drift from it. QEMU is exempt from this: it runs
+  the real binary and lives in the firmware tree, not in `bridge/` (`02-firmware.md`
+  §8).

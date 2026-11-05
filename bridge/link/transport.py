@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Callable
 
-from ..protocol import MAX_RX_BYTES, redact_line
+from ..protocol import MAX_FROM_DEVICE_BYTES, redact_line
 
 LogSink = Callable[[bytes], None]
 
@@ -19,7 +19,7 @@ class LineAssembler:
     rather than here.
     """
 
-    def __init__(self, max_bytes: int = MAX_RX_BYTES) -> None:
+    def __init__(self, max_bytes: int = MAX_FROM_DEVICE_BYTES) -> None:
         self._buf = bytearray()
         self._discarding = False
         self._max = max_bytes

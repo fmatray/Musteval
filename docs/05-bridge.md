@@ -63,7 +63,11 @@ flowchart TD
    `bridge/tools/test_agent.py`. Each target refuses a path belonging to the other
    before opening it, so a test session cannot reach real firmware and a hardware
    session cannot be pointed at a pty. The selection itself is specified in
-   `10-test-agent.md` §3.
+   `10-test-agent.md` §3. Opening does not touch DTR or RTS: on the ESP32-S3's
+   native USB-JTAG that pair is the reset strap, and any transition on it pulses a
+   reset, so a bridge that drove them would reboot the board on every connection
+   instead of reconnecting to the running device. The evidence is in
+   `09-bridge-architecture.md` §4.2.
 2. **Hello**: Bridge sends `hello` frame. When the user has configured a link token, the frame carries it as `token`; otherwise the field is omitted.
 3. **Ack**: Bridge waits for `hello_ack` (5 s timeout). If missing, close and retry.
    - **Rejected**: If the device answers with `event` and `kind:"link.rejected"`, the token is wrong: render red line `link rejected: bad token` and stop -- no auto-retry, no backoff loop.
@@ -78,6 +82,27 @@ periodically and expects a `pong` within 5 s.
 - **Reconnect**: If the port closes or 3 pongs fail, the bridge enters an exponential backoff retry loop: 1 s, 2 s, 4 s, 8 s, 15 s (max).
 - **Rejected**: A `link.rejected` close is not retried; see §4.1.
 
+### 4.3 Headless Invocation
+
+`bin/bridge` is the launcher: it locates the checkout, then `exec`s the venv's
+`python -m bridge` with every argument passed through unchanged, so there is one
+CLI definition, not two. The port is autodetected from the USB CDC vendor id when
+`--port` is omitted.
+
+`--send TEXT` skips the TUI: it connects, sends each `TEXT` (a prompt, or a
+slash command turned into its frame), prints the reply, and exits. The exit code
+is the contract a script depends on:
+
+|Code|Meaning|
+|---|---|
+|`0`|every `--send` got its reply|
+|`1`|the link never came up, a send was refused, or a reply never arrived|
+|`2`|bad usage: a missing `--port`, a target/port mismatch, or a malformed command|
+
+A send that is never answered is a `1` with one line of explanation, never a
+traceback: the request timeout has no message of its own, so the headless path
+supplies one.
+
 ## 5. Screens
 
 ### 5.1 Chat Screen (F2)
@@ -87,7 +112,16 @@ The primary interaction pane.
   directly above it.
 - **Output**: A scrollable log of the conversation.
 - **Behavior**:
-  - `prompt` is sent on Enter.
+  - `prompt` is sent on Enter. A prompt submitted while the link cannot answer —
+    `down`, `linking` or `refused` — is answered in the log at once, naming the
+    word the prompt bar is showing, rather than waiting for an acknowledgement
+    that cannot arrive: the ack timeout is `6 × connect_timeout`, so the silent
+    version left the reader with a typed prompt and no reply for half a minute.
+    `flaky` is not refused: a degraded link still carries traffic, so the prompt
+    is sent and either succeeds or reports its timeout like any other. A prompt on
+    a `linked` peer that never answers leaves one line saying so, never silence.
+    Slash commands are not gated this way — `/help`, `/settings` and the other
+    local screens work with no link.
   - Every submitted line is kept in a bounded in-memory ring (100 entries,
     adjacent duplicates collapsed, blank lines ignored). `Up` walks back through
     it, `Down` walks forward and returns to the line being typed, so a draft is
@@ -387,6 +421,54 @@ no confirmation that could take a subtree. `N` creates a new empty file through
 `U` goes up one directory, and stops at `/workspace/`, which is the root this
 screen can see. `R` re-requests the listing for the current path.
 
+### 5.9 Splash Screen
+
+The first surface a reader sees on a normal run: the mascot, who is the musteval
+of `00-overview.md` §10, and one tip drawn from the tips table. It is mounted
+alongside the eight screens and shown by `display`, like every other screen, so
+dismissing it needs no screen-stack plumbing.
+
+- **Art**: two hand-drawn half-block blocks held in `splash.py` — `WORDMARK`, the
+  name in half-block letters 47 columns wide, and `MASCOT`, a 35-column side
+  profile of the musteval. Rows are stored unpadded and padded to the block width
+  when drawn, so the panel never jitters and the literals carry no trailing spaces
+  that a reader would have to count. Both are emitted one character at a time
+  rather than through Rich markup, so no glyph can be reinterpreted.
+  - **The wordmark carries the identity.** This is the lesson taken from the omp
+    and pi splashes: neither draws its character. Their marks are abstract block
+    grids twelve columns wide and the *name* in half-block letters does the
+    identifying, because a creature rendered at a few dozen cells is read by the
+    viewer as a blob whatever it was meant to be. Drawing the name is the part
+    that is legible by construction.
+  - **The art is a side profile, not a face.** What survives at this size is the
+    long low body, the tail sweeping up behind it, two ear tufts, one eye and four
+    short legs. A head alone reads as a cat; a head with tall ears reads as a bat;
+    both were drawn and rejected before this shape was kept. The eye stays a
+    literal `o` rather than a block so it survives the half-block merge.
+  - **Solid blocks, not line art.** An outline made of `/ \ _ |` reads as scratches
+    in a cell grid this small, which is why the omp and pi splashes use filled
+    half-blocks for their marks too.
+  - **Gradient, not a flat colour.** A diagonal pink → violet → cyan ramp runs
+    across both blocks — the same three stops the omp lockup uses, sampled per
+    cell. Each block spans the full ramp on its own geometry, so the wordmark is
+    not squeezed into the top-left corner of the art's range. The eye is
+    `hot_pink`, breaking out of the ramp, so the face keeps a focal point.
+  - **The blocks stack**, following omp's lockup rather than setting them side by
+    side: at this width a side-by-side layout either starves the tip or overruns
+    the 78-column budget, and an overrun soft-wraps at the terminal edge and drops
+    its tail to column 0.
+- **Tip**: `TIPS` holds twelve one-line hints, each naming at most one slash
+  command. `/onboard` is among them. A tip that names a command the catalogue
+  dropped is a lie, so a test asserts every `/<head>` in `TIPS` is in the Help
+  catalogue's names; the table lives here and not on the device because a tip read
+  from `userfs` would need an answer from a link that is not up yet.
+- **Dismissal**: any key, `Esc`, or `SPLASH_SECONDS` (8 s) elapsed, whichever comes
+  first; a single guard makes the loser a no-op. The timer covers the reader who
+  walked away, the key covers the reader who did not.
+- **Headless**: `--json` runs and tests are headless, so the splash is never
+  displayed and its timer is never started — a fired timer would steal focus from
+  the composer the caller is driving. Chat is displayed instead.
+
 ## 6. Keybindings
 
 Focus follows the screen: entering a screen puts focus on the widget that consumes
@@ -494,13 +576,27 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
 | `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
+| `/onboard` | `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard: six modals for SSID, password, provider URL, API key, model, then a confirm. Writes both secrets first, then `wifi.networks` and `llm.providers` as whole arrays, then `llm.model`, then re-reads `config.get`. Refuses at once on `down`, `linking` or `refused` |
 | `/quit` | (Local) | none | Exits TUI |
 
 Commands marked `(Local)` render from state the bridge already holds from
-`hello_ack`, `status` and `agent.final`, and send no frame at all. The five rows that
-are neither `command` nor `(Local)` send the frame named in their mapping instead:
+`hello_ack`, `status` and `agent.final`, and send no frame at all — except
+`/onboard`, which is local only in that it takes no argument from the command line:
+its whole purpose is to send the frames in its mapping. The five rows that are
+neither `command` nor `(Local)` send the frame named in their mapping instead:
 `/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping` sends `ping`,
 `/diag` sends `status`, and `/cancel` sends `cancel`.
+
+`/onboard`'s writes are whole-array sets rather than per-leaf paths:
+`config.set` with path `wifi.networks.0.ssid` assumes index 0 exists, and `04` §4.9
+does not say that setting a missing index creates the array. `03` revalidates the
+whole file, so on a fresh device the per-leaf form would plausibly answer
+`E_CONFIG` at the second step, and on a configured one it would silently overwrite
+network 0. `[ASSUMPTION]`: a whole-array `config.set` replaces `wifi.networks` and
+`llm.providers` wholesale and is accepted on a device that has no such array yet.
+If that is wrong, `/onboard` reports the device's `E_CONFIG` and writes no config;
+the two `secret.set` frames before it have already landed, which is harmless — a
+stored key nothing references is inert.
 
 4. **Link token**: the value sent as `hello.token` is a bridge-side config value that the user sets when provisioning the device (`06-security.md` §9); it is not a slash command and the bridge never prints it.
 `/fs put <p>` is the one command that sends more than one frame per invocation: it

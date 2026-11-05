@@ -32,7 +32,8 @@ import binascii
 
 from bridge.protocol import (
     COMMAND_NAMES,
-    MAX_RX_BYTES,
+    MAX_FROM_BRIDGE_BYTES,
+    MAX_FROM_DEVICE_BYTES,
     SANDBOX_ROOT,
     Frame,
     ProtocolError,
@@ -138,7 +139,9 @@ class TestAgent:
     # -- I/O ------------------------------------------------------------
 
     def emit(self, frame: Frame) -> None:
-        line = encode(frame)
+        # This tool is the device double, so its lines are bounded by the device's
+        # TX cap, not by the bridge's outgoing limit.
+        line = encode(frame, max_bytes=MAX_FROM_DEVICE_BYTES)
         if self.delay_ms:
             time.sleep(self.delay_ms / 1000)
         os.write(self.fd, line)
@@ -181,7 +184,7 @@ class TestAgent:
         command_name = ""
 
         # 1. size
-        if len(line) + 1 > MAX_RX_BYTES:
+        if len(line) + 1 > MAX_FROM_BRIDGE_BYTES:
             self._protocol_error(
                 "line over the RX cap", f"line is {len(line) + 1} bytes", line, command_name
             )
@@ -371,7 +374,7 @@ class TestAgent:
             self._protocol_error(
                 f"injected failure for {frame.type}",
                 f"--fail-on {frame.type}",
-                encode(frame).rstrip(b"\n"),
+                encode(frame, max_bytes=MAX_FROM_DEVICE_BYTES).rstrip(b"\n"),
                 frame.body.get("name", ""),
                 reply_to=frame.id,
             )
@@ -443,7 +446,7 @@ class TestAgent:
             "protocol": PROTOCOL_VERSION,
             "boot_id": BOOT_ID,
             "time_synced": True,
-            "limits": {"rx_max": MAX_RX_BYTES, "tx_max": 16384},
+            "limits": {"rx_max": MAX_FROM_BRIDGE_BYTES, "tx_max": MAX_FROM_DEVICE_BYTES},
             "capabilities": {
                 "tools": list(CANNED_TOOLS),
                 "mcp": [],

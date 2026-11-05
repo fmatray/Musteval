@@ -12,8 +12,8 @@ from bridge.protocol import (
     COMMAND_NAMES,
     DEVICE_TO_BRIDGE,
     ERROR_CODES,
-    MAX_RX_BYTES,
-    MAX_TX_BYTES,
+    MAX_FROM_BRIDGE_BYTES,
+    MAX_FROM_DEVICE_BYTES,
     Frame,
     ProtocolError,
     decode_line,
@@ -104,11 +104,35 @@ def test_encode_refuses_a_body_that_redefines_the_envelope():
 
 def test_encode_refuses_an_oversize_frame():
     with pytest.raises(ProtocolError):
-        encode(Frame(type="log", id="b-1", ts=0, body={"msg": "x" * MAX_TX_BYTES}))
+        encode(Frame(type="log", id="b-1", ts=0, body={"msg": "x" * MAX_FROM_BRIDGE_BYTES}))
 
 
 def test_encode_keeps_unicode_readable():
     assert "é".encode() in encode(Frame(type="log", id="b-1", ts=0, body={"msg": "é"}))
+
+
+def test_the_two_directions_have_different_caps():
+    """`04-protocol.md` §1: the device reads 4096 and writes 16384, so the bridge's
+    outgoing and incoming limits are not interchangeable.
+
+    Swapping them was a real bug: a `sandbox.read` reply of ~8 KiB fits the device's
+    16384-byte TX window but was discarded by a 4096-byte receive cap, and the command
+    hung until its timeout with no error shown.
+    """
+    assert MAX_FROM_BRIDGE_BYTES == 4096
+    assert MAX_FROM_DEVICE_BYTES == 16384
+
+    # A line the device is allowed to send is accepted, exactly at the cap minus its
+    # terminating newline...
+    head = b'{"v":1,"type":"log","id":"d-1","ts":0,"msg":"'
+    tail = b'"}'
+    at_limit = head + b"x" * (MAX_FROM_DEVICE_BYTES - 1 - len(head) - len(tail)) + tail
+    assert decode_line(at_limit).type == "log"
+    # ...and one byte more is refused, so the cap is enforced rather than decorative.
+    over = head + b"x" * (MAX_FROM_DEVICE_BYTES - len(head) - len(tail) + 1) + tail
+    assert len(over) + 1 > MAX_FROM_DEVICE_BYTES
+    with pytest.raises(ProtocolError):
+        decode_line(over)
 
 
 # -- decode -------------------------------------------------------------
@@ -165,7 +189,7 @@ def test_decode_rejects_invalid_utf8():
 
 
 def test_decode_rejects_an_oversize_line():
-    line = b'{"v":1,"type":"log","id":"d-1","ts":0,"msg":"' + b"x" * MAX_RX_BYTES + b'"}'
+    line = b'{"v":1,"type":"log","id":"d-1","ts":0,"msg":"' + b"x" * MAX_FROM_DEVICE_BYTES + b'"}'
     with pytest.raises(ProtocolError):
         decode_line(line)
 
@@ -188,7 +212,7 @@ def test_decode_rejects_a_deeply_nested_document_without_crashing():
     # `04` §1.2 fuzz rule: never a crash, never a hang.
     nested = b'{"v":1,"type":"log","id":"d-1","ts":0,"msg":' + b"[" * 5000 + b"]" * 5000
     with pytest.raises(ProtocolError):
-        decode_line(nested[: MAX_RX_BYTES - 1])
+        decode_line(nested[: MAX_FROM_DEVICE_BYTES - 1])
 
 
 # -- ids ----------------------------------------------------------------

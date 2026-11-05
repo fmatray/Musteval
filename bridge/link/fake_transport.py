@@ -6,7 +6,7 @@ import asyncio
 from typing import Callable, Iterable
 
 from .transport import LineAssembler, Transport, TransportError
-from ..protocol import MAX_RX_BYTES
+from ..protocol import MAX_FROM_DEVICE_BYTES
 
 
 class FakeTransport(Transport):
@@ -33,7 +33,7 @@ class FakeTransport(Transport):
         self.written: list[bytes] = []
         self._on_write = on_write
         self._opened = False
-        self._inbound = LineAssembler(MAX_RX_BYTES)
+        self._inbound = LineAssembler(MAX_FROM_DEVICE_BYTES)
 
     async def open(self) -> None:
         self._opened = True

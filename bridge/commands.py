@@ -37,6 +37,7 @@ LOCAL_COMMANDS = frozenset(
         "logs",
         "help",
         "files",
+        "onboard",
     }
 )
 

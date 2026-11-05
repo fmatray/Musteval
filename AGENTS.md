@@ -32,12 +32,13 @@ This document defines the working rules for AI agents contributing to the Mustev
 
 ## Test Strategy
 
-Four suites, one per kind of thing that can break. Each has an owner, a command, and a gate.
+Five suites, one per kind of thing that can break. Each has an owner, a command, and a gate.
 
 | Suite | Runs on | Covers | Command |
 |---|---|---|---|
 | Bridge unit | host | `protocol`, `link`, `client`, `commands` | `uv run pytest bridge/tests` |
 | Bridge end to end | host | `link` + `client` + `ui` over a real serial device, no board | `uv run pytest bridge/tests/e2e` (the fixture starts `bridge/tools/test_agent.py`) |
+| Test agent | host | `bridge/tools/test_agent.py`: the `10-test-agent.md` §5 ladder and §6 replies, including every refusal | `uv run pytest bridge/tests/test_test_agent.py` |
 | Firmware host | host, `linux` target | pure logic: NDJSON codec, config schema, tool-argument validation, skill and geo parsing | `idf.py --preview set-target linux build`, then run the produced unity binary |
 | Firmware on target | XIAO ESP32-S3 | NVS and `secrets`, GPIO and ADC, scheduler timers, WiFi failover, brownout, boot guard | `uv run pytest firmware/test/on_target` (pytest-embedded drives the serial port) |
 
@@ -52,6 +53,7 @@ High coverage is a floor, not a goal. A suite at 95% that has never failed on a 
 | `bridge/protocol/` | 100% line and branch | small, pure, and every branch is a protocol rule from `docs/04-protocol.md` |
 | `bridge/link/`, `bridge/client/`, `bridge/commands.py` | 90% line | state machines with named failure paths; the tail is unreachable I/O error branches proven on target |
 | `bridge/ui/` | no line gate | behaviour is asserted through Textual's pilot; line coverage of event handlers is noise |
+| `bridge/tools/test_agent.py` | 90% line | the device double is what e2e trusts; a §5 rung it skips turns a real protocol bug into a mysterious bridge timeout |
 | firmware, host-testable modules | 80% line | C error paths are long; the remaining 20% is usually ESP-IDF glue |
 | hardware-bound modules | no line gate | coverage measured against a stub is a measurement of the stub |
 
@@ -136,10 +138,18 @@ A step that cannot run yet is named in the commit body, not silently skipped.
 4. **Suites.** The affected suites from the Test Strategy table pass, along with the
    coverage gates that apply to the touched packages. A change to a frozen contract
    runs all four.
-5. **Smoke.** Run the thing. A test that has never been observed failing is a
+5. **Fit.** Every change under `firmware/` is followed by `idf.py size`, and the numbers
+   go in the reply. The green build already gates fit — `app` depends on
+   `app_check_size` (`esptool_py/CMakeLists.txt`, active because
+   `CONFIG_APP_BUILD_TYPE_APP_2NDBOOT=y`) and the bootloader on `bootloader_check_size`,
+   both of which fail on overflow — so this step is not a second gate. It exists because
+   "it fits" without the figure is a claim, and because the app has a fixed 3 MiB
+   `factory` partition: the trend matters long before the margin runs out. Report image
+   size against that partition, plus DIRAM and IRAM headroom.
+6. **Smoke.** Run the thing. A test that has never been observed failing is a
    hypothesis; a feature that has never been observed working is a claim. For UI
    work, that means the actual surface, not a screenshot review.
-6. **Clean tree.** No scratch scripts, no unused scaffold, no coverage output, no
+7. **Clean tree.** No scratch scripts, no unused scaffold, no coverage output, no
    `.env`. Delete what was only there to help.
 
 A commit that touches a frozen contract without moving the doc, or moves the doc

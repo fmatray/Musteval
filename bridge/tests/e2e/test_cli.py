@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import json
 
+from argparse import Namespace
+
 import pytest
 
-from bridge.__main__ import main
-from bridge.protocol import reset_ids
+from bridge.__main__ import _headless, main
+from bridge.client import Session
+from bridge.link import FakeTransport
+from bridge.protocol import Frame, encode, reset_ids
 
 from .test_agent_session import Agent
 
@@ -83,3 +87,40 @@ def test_json_switch_writes_redacted_frames(agent, tmp_path):
     text = log.read_text()
     lines = [json.loads(line) for line in text.splitlines() if line.strip()]
     assert lines and all("v" in frame and "type" in frame for frame in lines)
+
+
+async def test_send_prompt_that_is_never_answered_exits_one(capsys):
+    """A linked peer that goes quiet on the prompt fails as a line, not a traceback.
+
+    Built on `FakeTransport` because the point is the timeout, not the wire: the
+    agent double would have to stall the reply without stalling `hello`.
+    """
+    ack = {
+        "device": "test-agent", "fw_version": "test-1.0.0", "protocol": 1,
+        "boot_id": "b1", "time_synced": True,
+        "limits": {"rx_max": 4096, "tx_max": 16384},
+        "capabilities": {"tools": [], "mcp": [], "dangerous_tools": False,
+                         "streaming": False},
+    }
+
+    def answers_hello_only(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "prompt":
+            return []
+        if frame["type"] == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0,
+                                 body=ack, reply_to=frame["id"]))]
+        return [encode(Frame(type="pong", id="d-2", ts=0, body={},
+                             reply_to=frame["id"]))]
+
+    session = Session(FakeTransport(on_write=answers_hello_only),
+                      ack_timeout=0.05, ping_interval=99)
+    await session.connect()
+    args = Namespace(send=["hello there"], target="test")
+    try:
+        code = await _headless(session, args)
+    finally:
+        await session.close()
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "no reply before the timeout" in err

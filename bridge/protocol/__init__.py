@@ -15,8 +15,13 @@ from dataclasses import dataclass
 from typing import Any, FrozenSet
 
 VERSION = 1
-MAX_RX_BYTES = 4096
-MAX_TX_BYTES = 16384
+
+#: `04-protocol.md` §1 caps the *device's* buffers: it reads at most 4096 bytes per
+#: line and writes at most 16384. A bridge line is therefore bounded by the device's
+#: RX, and a received line by the device's TX. Naming them by direction rather than
+#: by device side is what keeps the two from being swapped.
+MAX_FROM_BRIDGE_BYTES = 4096
+MAX_FROM_DEVICE_BYTES = 16384
 
 #: Frozen by `04-protocol.md` §2.1. Direction is a decode concern: a `pong`
 #: arriving bridge-to-device is malformed input, not a session bug.
@@ -156,8 +161,14 @@ def _check_ts(value: Any) -> int:
     return value
 
 
-def encode(frame: Frame) -> bytes:
-    """Serialise one frame to a single NDJSON line, terminating newline included."""
+def encode(frame: Frame, *, max_bytes: int = MAX_FROM_BRIDGE_BYTES) -> bytes:
+    """Serialise one frame to a single NDJSON line, terminating newline included.
+
+    `max_bytes` defaults to the device's RX cap, which is what bounds a bridge line.
+    A *device* double must pass `MAX_FROM_DEVICE_BYTES` instead: it is emitting as
+    the device, and a reply the device may legally send would otherwise be refused
+    by the bridge's own outgoing limit.
+    """
     if frame.type not in ALL_TYPES:
         raise ProtocolError(f"unknown type: {frame.type!r}")
     _check_id(frame.id, "id")
@@ -176,8 +187,8 @@ def encode(frame: Frame) -> bytes:
             raise ProtocolError(f"body must not redefine envelope member {key!r}")
         obj[key] = value
     line = _dumps(obj) + b"\n"
-    if len(line) > MAX_TX_BYTES:
-        raise ProtocolError(f"frame is {len(line)} bytes, over the {MAX_TX_BYTES} cap")
+    if len(line) > max_bytes:
+        raise ProtocolError(f"frame is {len(line)} bytes, over the {max_bytes} cap")
     return line
 
 
@@ -192,8 +203,10 @@ def decode_line(line: bytes, *, expect: FrozenSet[str] | None = None) -> Frame:
         line = line[:-1]
     if line.endswith(b"\r"):
         line = line[:-1]
-    if len(line) + 1 > MAX_RX_BYTES:
-        raise ProtocolError(f"line is {len(line) + 1} bytes, over the {MAX_RX_BYTES} cap")
+    if len(line) + 1 > MAX_FROM_DEVICE_BYTES:
+        raise ProtocolError(
+            f"line is {len(line) + 1} bytes, over the {MAX_FROM_DEVICE_BYTES} cap"
+        )
     try:
         text = line.decode("utf-8")
     except UnicodeDecodeError as exc:

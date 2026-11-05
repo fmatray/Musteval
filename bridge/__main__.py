@@ -85,6 +85,13 @@ async def _run(args: argparse.Namespace) -> int:
             log_handle.close()
 
 
+def _failure(exc: Exception) -> str:
+    """One line for a failed `--send`; a bare timeout has no message of its own."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return "no reply before the timeout"
+    return str(exc)
+
+
 async def _headless(session: Session, args: argparse.Namespace) -> int:
     await session.connect()
     if session.state.value != "connected":
@@ -97,8 +104,8 @@ async def _headless(session: Session, args: argparse.Namespace) -> int:
             prompt = Frame(type="prompt", id=new_id("b"), ts=0, body={"text": text})
             try:
                 reply = await session.request(prompt)
-            except SessionError as exc:
-                print(f"{exc}", file=sys.stderr)
+            except (SessionError, asyncio.TimeoutError) as exc:
+                print(_failure(exc), file=sys.stderr)
                 return 1
             print(reply.body.get("text", reply.body))
             continue
@@ -114,8 +121,8 @@ async def _headless(session: Session, args: argparse.Namespace) -> int:
             if frame.type in ("command", "prompt"):
                 try:
                     reply = await session.request(frame)
-                except SessionError as exc:
-                    print(f"{exc}", file=sys.stderr)
+                except (SessionError, asyncio.TimeoutError) as exc:
+                    print(_failure(exc), file=sys.stderr)
                     return 1
                 print(reply.body.get("result", reply.body))
             else:

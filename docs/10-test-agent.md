@@ -212,8 +212,21 @@ state stops being deterministic on the second run.
 `--script` is the escape hatch for orders the table cannot produce: two `agent.final`
 frames for one `prompt`, a `status` burst, a malformed line. Format is NDJSON, one
 object per line, sent in order; each is completed with an envelope by the tool, so
-the file carries no `v`, `id` or `ts`. `[ASSUMPTION]` a line of the form
-`{"wait_ms":500}` delays the next reply by that amount.
+the file carries no `v`, `id` or `ts`. An entry is consumed per inbound frame, and
+the script is not a permanent replacement: once it is exhausted the table answers
+again, so a scripted prologue cannot silently disable the rest of the peer.
+
+Three entry shapes exist, and only the first is a normal reply:
+
+| Entry | Effect |
+|---|---|
+| `{"type": ..., ...}` | reply with that type; `reply_to` is `auto` (the inbound `id`) unless the entry names one explicitly |
+| `{"wait_ms": 500}` | consume the frame and sleep, emitting nothing |
+| `{"type": "raw", "data": "..."}` | write `data` to the port verbatim, bypassing `encode` |
+
+`raw` is the only way to put a line on the wire that `encode` would refuse — a
+truncated object, invalid UTF-8, an oversize line — which is what checks 1 and 2
+of §5 need to be exercised at the port rather than only in a unit test.
 
 ```json
 {"type":"pong","reply_to":"auto"}

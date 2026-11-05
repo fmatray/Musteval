@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
+import time
 
 import pytest
 
 from bridge.link import FakeTransport, SerialTransport, Transport
 from bridge.link.transport import LineAssembler, TransportError
-from bridge.protocol import MAX_RX_BYTES
 
 
 # -- LineAssembler ------------------------------------------------------
@@ -192,6 +193,147 @@ async def test_serial_transport_carries_a_line_across_a_real_fd():
                 os.close(fd)
             except OSError:
                 pass
+
+
+async def test_serial_transport_opens_a_pty_without_raising():
+    """A pty has no modem lines, and opening one must not ask for them."""
+    master, slave = os.openpty()
+    transport = SerialTransport(os.ttyname(slave), read_timeout=0.05)
+    try:
+        await transport.open()
+        os.write(master, b'{"v":1,"type":"pong"}\n')
+        assert await asyncio.wait_for(transport.read_line(), 2) == b'{"v":1,"type":"pong"}'
+    finally:
+        await transport.close()
+        for fd in (master, slave):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+async def test_serial_transport_does_not_block_the_loop_on_a_stalled_write(monkeypatch):
+    """A firmware that never reads must not freeze the UI for `write_timeout`.
+
+    pyserial's write blocks until the kernel takes the bytes. On the event loop
+    that stalls every widget, which is exactly what made the bridge look hung.
+    """
+
+    class StalledPort:
+        def __init__(self, *args, **kwargs):
+            pass
+
+
+
+        def write(self, data):
+            time.sleep(0.5)  # stands in for a full TX buffer
+
+        def flush(self):
+            pass
+
+        def read(self, size):
+            raise OSError(errno.EIO, "gone")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", StalledPort)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.05)
+    await transport.open()
+    # The loop must keep turning while the write is stuck in the thread.
+    ticks = 0
+    task = asyncio.create_task(transport.write_line(b"x"))
+    while not task.done():
+        ticks += 1
+        await asyncio.sleep(0.01)
+        if ticks > 200:
+            break
+    assert task.done(), "write_line blocked the event loop"
+    assert ticks >= 10, f"loop starved: only {ticks} ticks during a 0.5s write"
+    await task
+    await transport.close()
+
+
+async def test_serial_transport_write_and_close_never_meet_on_a_freed_port(monkeypatch):
+    """Observed live: `EBADF` when a retry cycle closed under an in-flight frame.
+
+    Whether the queued write wins the lock or arrives after the close is not the
+    contract; that it never reaches a released handle is.
+    """
+    state = {"closed": False, "bad_fd": 0}
+
+    class SlowPort:
+        def __init__(self, *args, **kwargs):
+            pass
+
+
+
+        def write(self, data):
+            time.sleep(0.02)
+            if state["closed"]:
+                state["bad_fd"] += 1
+                raise OSError(errno.EBADF, "Bad file descriptor")
+
+        def flush(self):
+            pass
+
+        def read(self, size):
+            raise OSError(errno.EIO, "gone")
+
+        def close(self):
+            state["closed"] = True
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", SlowPort)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.05)
+    await transport.open()
+    writers = [asyncio.create_task(transport.write_line(b"x")) for _ in range(5)]
+    await asyncio.sleep(0)
+    await transport.close()
+    results = await asyncio.gather(*writers, return_exceptions=True)
+    assert state["bad_fd"] == 0
+    for result in results:
+        if isinstance(result, TransportError):
+            assert "not open" in str(result), result
+
+
+async def test_serial_transport_never_touches_the_reset_strap(monkeypatch):
+    """DTR and RTS are the S3 reset strap: any transition resets the chip.
+
+    Driving either line, before or after `open`, pulsed a reset on every connection
+    and the board never stayed up. Leaving the pair alone reconnects to the running
+    device, so the transport must not set them at all.
+    """
+
+    events = []
+
+    class RecordingPort:
+        def __init__(self, *args, **kwargs):
+            events.append("construct")
+
+        def _line(self, value):
+            events.append(("line", value))
+
+        dtr = property(lambda self: True, lambda self, value: self._line(value))
+        rts = property(lambda self: True, lambda self, value: self._line(value))
+
+        def write(self, data):
+            pass
+
+        def flush(self):
+            pass
+
+        def read(self, size):
+            return b""
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", RecordingPort)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.05)
+    await transport.open()
+    await transport.close()
+
+    assert [e for e in events if isinstance(e, tuple)] == []
 
 
 async def test_serial_transport_reports_a_write_on_a_closed_port():

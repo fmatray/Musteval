@@ -60,6 +60,10 @@ The full specification is located in the `docs/` directory:
    `weather_now` needs no key.
 4. **Bridge**: Run the bridge on your PC:
    ```bash
-   uv run python -m bridge --port /dev/ttyACM0
+   bin/bridge            # autodetects the board's USB CDC port
    ```
+   `bin/bridge --port /dev/ttyACM0` pins the port, and every other flag
+   (`--target test`, `--send`, `--json`, ...) passes through to
+   `python -m bridge`. Use `uv run python -m bridge` if you would rather not
+   depend on the checkout's `.venv`.
 5. **Interact**: Use the TUI to chat with the agent or trigger tasks.
