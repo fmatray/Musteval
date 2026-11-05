@@ -210,7 +210,7 @@ nothing is in flight emits `event{kind:"cancel.noop"}`.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the sixteen names in §4. |
+| `name` | string | yes | One of the twenty-three names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -1142,23 +1142,25 @@ the same `run_id` as `E_PROTOCOL`.
 | New error code | no — codes are frozen |
 | New `command.name` | no — needs `v:2` |
 
-Two amendments have been applied while `v` stayed `1`, and they are recorded here
+Three amendments have been applied while `v` stayed `1`, and they are recorded here
 rather than left implicit. The first: the error catalog gained `E_LLM_RATE` and `E_SAFE_MODE`, and
 `status` gained the `llm.calls_*`, `llm.limit_*` and `sys.*` members. It is
 admissible because no firmware has shipped and therefore no receiver exists that
 could be surprised; the freeze binds published versions, not a contract still being
 written. The rule above applies unchanged from the first tagged release, at which
-point this paragraph stops being true and a further change of this kind does need
+point these paragraphs stop being true and a further change of this kind does need
 `v:2`. The two new codes are additive in practice: a bridge that does not know them
 still renders `error.code` as an opaque string.
 
 The second amendment adds four `command.name` values, `sandbox.list`,
 `sandbox.read`, `sandbox.delete` and `sandbox.write` (§4.17 to §4.20), which the
-table above otherwise forbids. It is admissible on the same ground as the first:
-the firmware does not exist, so no receiver can be surprised by a name it does not
-know, and an older bridge that meets one renders it as an unknown command exactly
-as §4 already requires. This is the last such amendment the `v:1` paragraph can
-carry: once a build is published, another name is `v:2`.
+table above otherwise forbids. The third adds four more: `sandbox.mkdir`,
+`sandbox.move` (§4.21, §4.22), `sys.reset_counter` (§4.23) and the `recursive`
+argument `sandbox.delete` gained in §4.19. Both are admissible on the same ground
+as the first: the firmware does not exist, so no receiver can be surprised by a
+name it does not know, and an older bridge that meets one renders it as an unknown
+command exactly as §4 already requires. These are the last such amendments the
+`v:1` paragraph can carry: once a build is published, another name is `v:2`.
 
 `v` is a single integer. A receiver that sees a higher `v` MUST refuse the session
 with `E_PROTOCOL` rather than guess. The bridge surfaces that as a hard banner, not

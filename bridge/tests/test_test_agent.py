@@ -226,6 +226,57 @@ def test_sandbox_delete_reports_deletion(harness):
     assert result["deleted"] is True and result["path"] == "/workspace/x.txt"
 
 
+def test_sandbox_delete_of_a_populated_directory_names_the_entries(harness):
+    """`04` §4.19: the refusal carries the count the bridge needs to ask."""
+    harness.feed_frame(
+        _frame("command", {"name": "sandbox.delete", "args": {"path": "/workspace/runs"}})
+    )
+    body = harness.one()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "E_CONFIG"
+    assert body["error"]["detail"] == {"path": "/workspace/runs", "entries": 1}
+
+
+def test_sandbox_delete_recursive_reports_the_total(harness):
+    harness.feed_frame(
+        _frame("command",
+               {"name": "sandbox.delete",
+                "args": {"path": "/workspace/runs", "recursive": True}})
+    )
+    result = harness.one()["result"]
+    assert result["deleted"] is True and result["entries"] == 1
+
+
+def test_sandbox_mkdir_reports_creation(harness):
+    harness.feed_frame(
+        _frame("command", {"name": "sandbox.mkdir", "args": {"path": "/workspace/new"}})
+    )
+    assert harness.one()["result"] == {"path": "/workspace/new", "created": True}
+
+
+def test_sandbox_move_reports_both_ends(harness):
+    """`04` §4.22: both paths come back, because a rename can change either."""
+    harness.feed_frame(
+        _frame("command",
+               {"name": "sandbox.move",
+                "args": {"from": "/workspace/a", "to": "/workspace/b"}})
+    )
+    assert harness.one()["result"] == {
+        "from": "/workspace/a",
+        "to": "/workspace/b",
+        "moved": True,
+    }
+
+
+def test_sys_reset_counter_reports_the_previous_value(harness):
+    """`04` §4.23: the previous count is the proof the reset happened."""
+    harness.feed_frame(_frame("command", {"name": "sys.reset_counter", "args": {}}))
+    result = harness.one()["result"]
+    assert result["reset"] == "boot_failures"
+    assert result["previous"] == 0
+    assert result["safe_mode"] is False
+
+
 def test_secret_set_echoes_only_the_length(harness):
     harness.feed_frame(_frame("secret.set", {"key": "llm.api_key", "value": "sk-123456"}))
     result = harness.one()["result"]

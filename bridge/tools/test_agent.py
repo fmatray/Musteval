@@ -504,7 +504,34 @@ class TestAgent:
             )
             return
         if name == "sandbox.delete":
-            result = {"path": args.get("path"), "deleted": True}
+            # `04` §4.19: a populated directory without `recursive` is refused, and
+            # the error names the entries so the bridge can count them.
+            path = str(args.get("path", ""))
+            directory = path if path.endswith("/") else path + "/"
+            entries = WORKSPACE_DIRS.get(directory)
+            if entries and not args.get("recursive"):
+                self.reply(
+                    "command.result",
+                    {"name": name, "ok": False,
+                     "error": {"code": "E_CONFIG",
+                               "message": "directory is not empty",
+                               "detail": {"path": path, "entries": len(entries)}},
+                     "duration_ms": 0},
+                    reply_to=frame.id,
+                )
+                return
+            result = {
+                "path": path,
+                "deleted": True,
+                "entries": len(entries) if entries else 0,
+            }
+        elif name == "sandbox.mkdir":
+            result = {"path": args.get("path"), "created": True}
+        elif name == "sandbox.move":
+            result = {"from": args.get("from"), "to": args.get("to"), "moved": True}
+        elif name == "sys.reset_counter":
+            # `04` §4.23: `previous` is what the reader can verify against `status`.
+            result = {"reset": "boot_failures", "previous": 0, "safe_mode": False}
         elif name == "sandbox.write":
             # The device decodes the chunk, so the tool does too: a client that
             # sent raw text where base64 was owed would otherwise look correct.
