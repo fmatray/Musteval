@@ -161,3 +161,25 @@ TEST_CASE("a sequence cut by the read cap is a truncation, not an error", "[sand
     const uint8_t cut[] = {'a', 'b', 0xE2, 0x82};          /* missing the last byte */
     TEST_ASSERT_EQUAL_size_t(2, store_utf8_prefix(cut, 4));
 }
+
+TEST_CASE("an in-flight staging file is recognised and hidden", "[sandbox]")
+{
+    const char *dir = "/ws/";
+    TEST_ASSERT_TRUE(store_is_staging_entry(dir, "a.txt.new", "/ws/a.txt.new"));
+}
+
+TEST_CASE("a staging predicate names nothing else", "[sandbox]")
+{
+    const char *dir = "/ws/";
+    /* The bug this guards: appending `.new` to an entry name that already carries
+     * it doubles the suffix and hides nothing, so the debris stayed visible. */
+    TEST_ASSERT_FALSE(store_is_staging_entry(dir, "keep.txt", "/ws/a.txt.new"));
+    TEST_ASSERT_FALSE(store_is_staging_entry(dir, "a.txt.new.new", "/ws/a.txt.new"));
+    TEST_ASSERT_FALSE(store_is_staging_entry(dir, "a.txt", "/ws/a.txt.new"));
+    /* An idle staging slot hides nothing at all. */
+    TEST_ASSERT_FALSE(store_is_staging_entry(dir, "a.txt.new", ""));
+    /* A directory without the separator still matches its own child. */
+    TEST_ASSERT_TRUE(store_is_staging_entry("/ws", "a.txt.new", "/ws/a.txt.new"));
+    TEST_ASSERT_FALSE(store_is_staging_entry("/ws2/", "a.txt.new", "/ws/a.txt.new"));
+    TEST_ASSERT_FALSE(store_is_staging_entry(NULL, "a.txt.new", "/ws/a.txt.new"));
+}

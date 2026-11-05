@@ -67,3 +67,15 @@ size_t store_utf8_prefix(const uint8_t *buf, size_t n)
     }
     return valid;
 }
+
+bool store_is_staging_entry(const char *vfs_dir, const char *entry_name,
+                            const char *stage_path)
+{
+    if (vfs_dir == NULL || entry_name == NULL || stage_path == NULL) return false;
+    if (stage_path[0] == '\0') return false;
+    size_t dlen = strlen(vfs_dir);
+    if (strncmp(stage_path, vfs_dir, dlen) != 0) return false;
+    const char *rest = stage_path + dlen;
+    if (rest[0] == '/') rest++;
+    return strcmp(rest, entry_name) == 0;
+}

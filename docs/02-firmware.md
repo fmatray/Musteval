@@ -85,6 +85,9 @@ path. Pure prefix substitution, no filesystem access:
   `/workspace/`, sorting directories first then names. A listing exceeding the
   cap returns `E_STORAGE`. The root `/workspace/` is a legal listing target,
   though not a legal file target; the resolver is applied to entries within.
+  The staging file of a live transfer is never listed, because `04` §4.16
+  forbids exposing partial state: an entry whose path equals the current
+  staging path is skipped, and nothing else is.
 - `store_resolve_write_path(in, out, out_len)`: accept `in` only if it canonicalises
   to strictly under `/workspace/` (with at least one further segment), then return
   the VFS path. Rejects `..` that escapes, relative paths, NUL bytes and over-long
@@ -107,14 +110,19 @@ path. Pure prefix substitution, no filesystem access:
 
 Pure helpers in `store_sandbox.c` implement internal logic: `store_entry_cmp`
 for sorting, `store_entry_name_ok` for character validation,
-`store_decode_chunk` for base64/UTF-8 normalization, and `store_utf8_prefix` for
-the UTF-8 scan `store_read_text` runs. `store_utf8_prefix` returns the longest
+`store_decode_chunk` for base64/UTF-8 normalization, `store_is_staging_entry`
+for the listing skip above, and `store_utf8_prefix` for the UTF-8 scan
+`store_read_text` runs. `store_utf8_prefix` returns the longest
 valid prefix and refuses a lone continuation byte, an overlong form (`C0`/`C1`,
 `E0 80..9F`, `F0 80..8F`), a surrogate (`ED A0..BF`) and anything above
 `U+10FFFF` (`F4 90..`, `F5`..`FF`). A prefix shorter than the buffer is a
 truncation only when the remaining bytes begin a sequence the cap cut in half:
 those shorten the text and set `truncated`, they do not refuse the file. Being
 pure, it is host-tested rather than reached through a mounted filesystem.
+`store_is_staging_entry(vfs_dir, entry_name, stage_path)` is exact-match for the
+same reason: a prefix compare would hide `a.txt.new.new` and a suffix append on
+an entry already carrying `.new` hides nothing at all, which is the shape of the
+bug it exists to prevent.
 - `store_nvs_set_int(key, val)` / `store_nvs_get_int(key, &val)`: Access
   NVS namespace `runtime`.
 - Exactly three APIs write `userfs`: `config.set`, which targets `/fs/config.json`

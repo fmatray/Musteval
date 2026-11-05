@@ -18,6 +18,15 @@ endif()
 
 # Only `main` and its real dependencies: without this IDF builds every component,
 # and `esp_phy` drags `nvs_flash` in, which the host suite has no use for.
+# `AGENTS.md` gates firmware host-testable modules at 80% line, and a gate that no
+# command enforces is a suggestion. `-DCOVERAGE=ON` instruments the components and
+# the suite, so `gcovr` reads the run rather than the source.
+option(COVERAGE "Instrument the host suite for gcovr" OFF)
+if(COVERAGE AND NOT CMAKE_SCRIPT_MODE_FILE)
+    add_compile_options(-fprofile-arcs -ftest-coverage)
+    add_link_options(--coverage)
+endif()
+
 set(COMPONENTS main)
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components")
 

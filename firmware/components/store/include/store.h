@@ -184,6 +184,12 @@ typedef struct {
 esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
                          size_t *count);
 
+/* True when `entry_name` is the staging file a live transfer is writing under
+ * `vfs_dir`. `store_list_dir` skips it because §4.16 forbids exposing partial
+ * state; the match is exact, so a real `<name>.new` is still listed. */
+bool store_is_staging_entry(const char *vfs_dir, const char *entry_name,
+                            const char *stage_path);
+
 /* Read up to `cap` bytes of text. `*truncated` is true when the file was longer,
  * `*len` is what was read and `*total` is the file's whole length, so the wire can
  * report what the cap left behind (§4.18). Content that is not valid UTF-8 is

@@ -81,6 +81,9 @@ esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
     while ((e = readdir(d)) != NULL) {
         if (!store_entry_name_ok(e->d_name)) continue;
         if (strlen(e->d_name) >= STORE_ENTRY_NAME_MAX) continue;
+        /* An in-flight staged write must not appear: §4.16 forbids exposing partial
+         * state, and listing it invites a `sandbox.read` of half a file. */
+        if (store_is_staging_entry(vfs, e->d_name, s_stage_path)) continue;
         if (n == cap) { closedir(d); return ESP_ERR_INVALID_SIZE; }
         store_entry_t *ent = &out[n];
         snprintf(ent->name, sizeof ent->name, "%.*s", STORE_ENTRY_NAME_MAX - 1, e->d_name);
@@ -141,7 +144,16 @@ esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data, size_t 
         s_stage_bytes = 0;
     } else if (s_stage_target[0] == '\0' || strcmp(s_stage_target, vfs) != 0) return ESP_ERR_INVALID_STATE;
 
-    if (!store_chunk_fits(offset, len, s_stage_bytes)) return ESP_ERR_INVALID_STATE;
+    /* A refused chunk kills the transfer, so its staging file must go now rather
+     * than wait for a later write that may never come: `sandbox.list` would
+     * otherwise show `<name>.new`, which is partial state §4.16 forbids exposing. */
+    if (!store_chunk_fits(offset, len, s_stage_bytes)) {
+        if (s_stage_path[0] != '\0') remove(s_stage_path);
+        s_stage_path[0] = '\0';
+        s_stage_target[0] = '\0';
+        s_stage_bytes = 0;
+        return ESP_ERR_INVALID_STATE;
+    }
 
     snprintf(s_stage_target, sizeof s_stage_target, "%s", vfs);
     snprintf(s_stage_path, sizeof s_stage_path, "%s.new", vfs);

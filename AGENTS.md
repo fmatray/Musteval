@@ -40,7 +40,7 @@ Five suites, one per kind of thing that can break. Each has an owner, a command,
 | Bridge end to end | host | `link` + `client` + `ui` over a real serial device, no board | `uv run pytest bridge/tests/e2e` (the fixture starts `bridge/tools/test_agent.py`) |
 | Test agent | host | `bridge/tools/test_agent.py`: the `10-test-agent.md` §5 ladder and §6 replies, including every refusal | `uv run pytest bridge/tests/test_test_agent.py` |
 | Firmware host | host, `linux` target | pure logic: NDJSON codec, config schema, tool-argument validation, skill and geo parsing | `idf.py --preview set-target linux build`, then run the produced unity binary |
-| Firmware on target | XIAO ESP32-S3 | NVS and `secrets`, GPIO and ADC, scheduler timers, WiFi failover, brownout, boot guard | `uv run pytest firmware/test/on_target` (pytest-embedded drives the serial port) |
+| Firmware on target | XIAO ESP32-S3 | NVS and `secrets`, GPIO and ADC, scheduler timers, WiFi failover, brownout, boot guard | Not built yet: `firmware/test/on_target/` does not exist, so hardware-bound facts are proven today by a scripted board probe over `/dev/ttyACM0` and recorded in the reply. A suite lands with pytest-embedded |
 
 A module that calls ESP-IDF hardware APIs is not forced onto the host: its firmware-side unit test is the on-target suite. Writing a host test for it means testing a stub, which proves nothing about the code that ships.
 
@@ -57,7 +57,7 @@ High coverage is a floor, not a goal. A suite at 95% that has never failed on a 
 | firmware, host-testable modules | 80% line | C error paths are long; the remaining 20% is usually ESP-IDF glue |
 | hardware-bound modules | no line gate | coverage measured against a stub is a measurement of the stub |
 
-Enforcement: `pytest-cov` for Python, `gcovr` over the host firmware build. A gate that is not enforced by a command is a suggestion, so both run in the same step as the suite.
+Enforcement: `pytest-cov` for Python, and `firmware/test_host/coverage.sh` for the firmware build, which runs `gcovr --fail-under-line 80` over a build made with `idf.py -DCOVERAGE=ON build`. A gate that is not enforced by a command is a suggestion, so both run in the same step as the suite.
 
 ### Non-regression rules
 
