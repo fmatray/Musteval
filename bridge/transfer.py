@@ -124,6 +124,12 @@ async def upload(send: Send, host_path: str, target_dir: str) -> list[str]:
     written: list[str] = []
     for current, dirs, names in os.walk(host_path):
         dirs.sort()
+        # `os.walk` files a symlink-to-directory under `dirs` and never descends it,
+        # so checking only `names` would drop that subtree without a word.
+        for name in dirs:
+            link = os.path.join(current, name)
+            if os.path.islink(link):
+                raise TransferError(f"{link}: a symlink is not a sandbox entry")
         relative = os.path.relpath(current, host_path)
         remote_dir = (
             target_dir

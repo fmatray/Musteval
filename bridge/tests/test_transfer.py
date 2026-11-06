@@ -183,6 +183,19 @@ async def test_upload_refuses_a_symlink_instead_of_skipping_it(tmp_path):
         await transfer.upload(Device({}).send, str(root), "/workspace/up")
 
 
+async def test_upload_refuses_a_symlinked_directory(tmp_path):
+    """`os.walk` lists a symlink-to-directory under `dirs` and never descends, so a
+    check over `names` alone would skip the whole subtree without a word."""
+    root = tmp_path / "tree"
+    (root / "real").mkdir(parents=True)
+    (root / "real" / "x.txt").write_text("x")
+    (root / "linkdir").symlink_to(root / "real")
+    device = Device({})
+    with pytest.raises(transfer.TransferError, match="symlink"):
+        await transfer.upload(device.send, str(root), "/workspace/up")
+    assert not [a for n, a in device.sent if n == "sandbox.write"]
+
+
 async def test_upload_refuses_a_missing_source(tmp_path):
     with pytest.raises(transfer.TransferError, match="no such file"):
         await transfer.upload(Device({}).send, str(tmp_path / "nope"), "/workspace")
