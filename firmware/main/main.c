@@ -17,6 +17,10 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "cfg.h"
 #include "link.h"
 #include "store.h"
 #include "sys.h"
@@ -46,6 +50,16 @@ static int64_t uptime_s(void)
 #define SANDBOX_READ_CAP 8192
 #define SANDBOX_LIST_MAX STORE_WS_FILE_COUNT
 
+/* `04` §3.20 requires `duration_ms` on every `command.result`. It is stamped from
+ * here, one place, because a handler is not the thing that knows when the frame
+ * arrived. Dispatch is single-threaded (§4.16), so one file-scope start is exact. */
+static int64_t s_cmd_start_us;
+static int64_t cmd_duration_ms(void)
+{
+    if (s_cmd_start_us == 0) return 0;
+    return (esp_timer_get_time() - s_cmd_start_us) / 1000;
+}
+
 static esp_err_t emit_failure_detail(const char *name, const char *reply_to,
                                      const char *code, const char *msg,
                                      const char *path, int64_t entries)
@@ -56,6 +70,7 @@ static esp_err_t emit_failure_detail(const char *name, const char *reply_to,
     json_node_t *err = json_add_object(root, "error");
     json_add_string(root, "name", name ? name : "");
     json_add_bool(root, "ok", false);
+    json_add_int(root, "duration_ms", cmd_duration_ms());
     if (err) {
         json_add_string(err, "code", code);
         json_add_string(err, "message", msg);
@@ -256,7 +271,400 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
         }
         return ESP_OK;
     }
+    /* `04` §4: an unknown `sandbox.*` name is `E_PROTOCOL`, the same as any other
+     * unknown command. Returning an error without emitting leaves the bridge
+     * waiting for a frame that never comes, which it reports as a dead link. */
+    emit_failure(name, reply_to, "E_PROTOCOL", "unknown or unwired command");
     return ESP_ERR_INVALID_ARG;
+}
+
+/* The canonical text of the loaded document, and the document it was parsed from.
+ * Both static: `link_task` has 4096 bytes of stack and a whole config does not fit
+ * on it (`02-firmware.md` §3.1). */
+static char s_cfg_out[CFG_JSON_MAX + 1];
+
+
+/* --- Templates (`04` §4.11, §4.12) ---------------------------------------- */
+
+/* `04` §4.12: `[A-Za-z0-9._-]+\.md`, no `/`. A name is a filename, never a path,
+ * so `..` cannot reach a parent even though `.` is allowed inside it. */
+static bool template_name_is_valid(const char *name)
+{
+    if (name == NULL) return false;
+    size_t n = strlen(name);
+    if (n < 4 || n > 64) return false;
+    if (strcmp(name + n - 3, ".md") != 0) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    /* `..` with no other character is the only escape the alphabet allows. */
+    if (strcmp(name, "..md") == 0) return false;
+    return true;
+}
+
+static esp_err_t handle_templates_list(const json_node_t *args, json_node_t *root,
+                                       json_node_t *result)
+{
+    (void)args;
+    static store_entry_t s_entries[SANDBOX_LIST_MAX];
+    size_t n = 0;
+    esp_err_t err = store_list_image_dir("/prompts", s_entries, SANDBOX_LIST_MAX, &n);
+    if (err == ESP_ERR_NOT_FOUND) {
+        /* No `/prompts` at all is an empty list, not a failure: a fresh image need
+         * not ship one (`04` §4.11). */
+        json_add_string(root, "name", "templates.list");
+        json_add_bool(root, "ok", true);
+        json_new_array(result, "templates");
+        return ESP_OK;
+    }
+    if (err != ESP_OK) return err;
+
+    json_add_string(root, "name", "templates.list");
+    json_add_bool(root, "ok", true);
+    json_node_t *arr = json_new_array(result, "templates");
+    for (size_t i = 0; i < n && arr; i++) {
+        if (s_entries[i].dir) continue;
+        /* `system.md` is the agent's own prompt, not a template (§4.11). */
+        if (strcmp(s_entries[i].name, "system.md") == 0) continue;
+        if (!template_name_is_valid(s_entries[i].name)) continue;
+        json_array_push_string(arr, s_entries[i].name);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
+                                     json_node_t *result)
+{
+    const char *name = json_string(json_get(args, "name"));
+    if (!template_name_is_valid(name)) return ESP_ERR_INVALID_ARG;
+
+    /* `/prompts/<name>`: the name is already proven a bare filename, so the
+     * concatenation cannot escape `/prompts`. */
+    char path[80];
+    int n = snprintf(path, sizeof path, "/prompts/%s", name);
+    if (n <= 0 || (size_t)n >= sizeof path) return ESP_ERR_INVALID_ARG;
+
+    /* Static for the same reason as `sandbox.read`: 4097 bytes does not fit on the
+     * 4 KiB link stack (`02-firmware.md` §3.1). */
+    static char s_text[4096 + 1];
+    size_t len = 0;
+    esp_err_t err = store_read_file(path, s_text, sizeof s_text, &len);
+    if (err != ESP_OK) return err;
+
+    json_add_string(root, "name", "template.get");
+    json_add_bool(root, "ok", true);
+    json_add_string(result, "name", name);
+    json_add_int(result, "bytes", (int64_t)len);
+    json_add_string(result, "text", s_text);
+    return ESP_OK;
+}
+
+/* --- fs.put (`04` §4.16) -------------------------------------------------- */
+
+/* Base64 decode into `out`. Returns the byte count, or -1 on a malformed input, a
+ * pad in the wrong place, or output that does not fit. Pure, so a host test can
+ * prove every rejection. */
+static int b64_decode(const char *in, size_t in_len, uint8_t *out, size_t cap)
+{
+    if (in == NULL || out == NULL) return -1;
+    if (in_len % 4 != 0) return -1;
+    size_t n = 0;
+    for (size_t i = 0; i < in_len; i += 4) {
+        int v[4];
+        int pad = 0;
+        for (size_t k = 0; k < 4; k++) {
+            char c = in[i + k];
+            if (c == '=' && k >= 2) {
+                /* Padding is only legal in the last group. */
+                if (i + 4 != in_len) return -1;
+                pad++;
+                v[k] = 0;
+                continue;
+            }
+            if (pad != 0) return -1; /* data after a pad */
+            if (c >= 'A' && c <= 'Z') v[k] = c - 'A';
+            else if (c >= 'a' && c <= 'z') v[k] = c - 'a' + 26;
+            else if (c >= '0' && c <= '9') v[k] = c - '0' + 52;
+            else if (c == '+') v[k] = 62;
+            else if (c == '/') v[k] = 63;
+            else return -1;
+        }
+        uint32_t triple = ((uint32_t)v[0] << 18) | ((uint32_t)v[1] << 12) |
+                          ((uint32_t)v[2] << 6) | (uint32_t)v[3];
+        size_t emit = 3 - (size_t)pad;
+        if (n + emit > cap) return -1;
+        out[n++] = (uint8_t)(triple >> 16);
+        if (emit > 1) out[n++] = (uint8_t)(triple >> 8);
+        if (emit > 2) out[n++] = (uint8_t)triple;
+    }
+    return (int)n;
+}
+
+static bool fs_path_allowed(const char *path)
+{
+    if (path == NULL) return false;
+    if (strcmp(path, "/config.json") == 0 || strcmp(path, "/tasks.json") == 0) return true;
+    /* `04` §4.16's "disallowed extension": the directory fixes it, since each one
+     * carries exactly one file type (`03-config.md` §Storage limits). A name
+     * without the suffix would be listed as a template or tool and never parsed. */
+    static const struct { const char *dir; const char *ext; } k_dirs[] = {
+        { "/skills/",  ".md"   },
+        { "/prompts/", ".md"   },
+        { "/tools/",   ".json" },
+    };
+    for (size_t i = 0; i < sizeof k_dirs / sizeof k_dirs[0]; i++) {
+        size_t n = strlen(k_dirs[i].dir);
+        if (strncmp(path, k_dirs[i].dir, n) != 0 || path[n] == '\0') continue;
+        size_t len = strlen(path), ext = strlen(k_dirs[i].ext);
+        /* The stem must exist: `/prompts/.md` is a dotfile, not a name, and would
+         * list as a template no one can ask for. */
+        return len > n + ext && strcmp(path + len - ext, k_dirs[i].ext) == 0;
+    }
+    return false;
+}
+
+static esp_err_t handle_fs_put(const json_node_t *args, json_node_t *root,
+                               json_node_t *result, const char **code,
+                               const char **message)
+{
+    const char *path = json_string(json_get(args, "path"));
+    const char *data = json_string(json_get(args, "data"));
+    if (path == NULL || data == NULL) return ESP_ERR_INVALID_ARG;
+    if (!fs_path_allowed(path)) {
+        *code = "E_CONFIG";
+        *message = "path is outside /config.json, /tasks.json, /skills/, /prompts/, /tools/";
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* `04` §4.16: an import may not replace a file the userfs image ships. The
+     * registry is empty because this build ships no image, so a blank device is
+     * provisionable through the same command a later image uses — the rule is
+     * enforced by the table, not by refusing a directory wholesale. A prefix check
+     * on `/prompts/`, `/skills/`, `/tools/` or `/config.json` would refuse every
+     * import and leave a blank device with no way to accept one. `build_userfs.py`
+     * (M5, `07-roadmap.md`) fills the table as it writes the image. */
+    static const char *const k_shipped[] = {};
+    for (size_t i = 0; i < sizeof k_shipped / sizeof k_shipped[0]; i++) {
+        if (strcmp(path, k_shipped[i]) == 0) {
+            *code = "E_CONFIG";
+            *message = "a baked-in file wins: import under a different name";
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+    const char *encoding = json_string(json_get(args, "encoding"));
+    bool base64 = encoding != NULL && strcmp(encoding, "base64") == 0;
+    if (encoding != NULL && !base64 && strcmp(encoding, "utf8") != 0) {
+        *code = "E_PROTOCOL";
+        *message = "encoding is base64 or utf8";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* `04` §4.16: one chunk is at most 2048 raw bytes, because base64 turns that
+     * into 2732 characters and the line must stay under the 4 KiB RX cap. */
+    static uint8_t s_chunk[2049];
+    size_t len;
+    if (base64) {
+        int n = b64_decode(data, strlen(data), s_chunk, sizeof s_chunk);
+        if (n < 0) {
+            *code = "E_PROTOCOL";
+            *message = "data is not valid base64, or decodes past 2048 bytes";
+            return ESP_ERR_INVALID_ARG;
+        }
+        len = (size_t)n;
+    } else {
+        len = strlen(data);
+    }
+    if (len > 2048) {
+        *code = "E_PROTOCOL";
+        *message = "chunk is over 2048 bytes";
+        return ESP_ERR_INVALID_SIZE;
+    }
+    /* Copied only once the length is known to fit `s_chunk`: the RX cap admits a
+     * line four times this size, so a copy before the check would write past the
+     * buffer. */
+    if (!base64) {
+        if (len > 0) memcpy(s_chunk, data, len);
+    }
+
+    int64_t offset = 0;
+    bool final = false;
+    json_int(json_get(args, "offset"), &offset);
+    json_bool(json_get(args, "final"), &final);
+    if (offset < 0) {
+        *code = "E_PROTOCOL";
+        *message = "offset is negative";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t bytes = 0;
+    bool created = false;
+    esp_err_t err = store_write_image_chunk(path, s_chunk, len, (size_t)offset,
+                                            final, &bytes, &created);
+    if (err == ESP_ERR_INVALID_STATE) {
+        *code = "E_PROTOCOL";
+        *message = "offset does not match the staged length";
+    } else if (err == ESP_ERR_INVALID_SIZE) {
+        *code = "E_STORAGE";
+        *message = "the assembled file or the entry count exceeds the cap";
+    } else if (err != ESP_OK) {
+        *code = "E_STORAGE";
+        *message = "write failed";
+    } else {
+        json_add_string(root, "name", "fs.put");
+        json_add_bool(root, "ok", true);
+        json_add_string(result, "path", path);
+        json_add_int(result, "bytes", (int64_t)bytes);
+        json_add_bool(result, "created", created);
+        /* `04` §4.16: the running config is not the file until `reload`. */
+        json_add_bool(result, "requires_reboot",
+                      strcmp(path, "/config.json") == 0);
+    }
+    return err;
+}
+
+/* `config.get` (`04` §4.8). The reply carries the document or one value from it;
+ * a `secret_ref` stays a reference string, because nothing here resolves NVS. */
+static esp_err_t handle_config_get(const json_node_t *args, json_node_t *root,
+                                   json_node_t *result)
+{
+    if (!cfg_loaded()) return ESP_ERR_INVALID_STATE;
+
+    const char *path = json_string(json_get(args, "path"));
+    if (path != NULL) {
+        json_node_t *node = cfg_get(path);
+        if (node == NULL) return ESP_ERR_INVALID_ARG;
+        json_add_string(root, "name", "config.get");
+        json_add_bool(root, "ok", true);
+        json_add_string(result, "path", path);
+        return json_add_node(result, "value", node) ? ESP_OK : ESP_ERR_NO_MEM;
+    }
+
+    json_doc_t *copy = cfg_clone();
+    if (copy == NULL) return ESP_ERR_NO_MEM;
+    size_t written = 0;
+    esp_err_t err = cfg_emit(copy, s_cfg_out, sizeof s_cfg_out, &written);
+    json_free(copy);
+    if (err != ESP_OK) return err;
+
+    json_doc_t *canonical = NULL;
+    err = json_parse(s_cfg_out, written, &canonical);
+    if (err != ESP_OK) return err;
+    json_add_string(root, "name", "config.get");
+    json_add_bool(root, "ok", true);
+    bool ok = json_add_node(result, "config", json_root(canonical)) != NULL;
+    json_free(canonical);
+    return ok ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+/* `config.set` (`04` §4.9): validate a copy, write it whole, keep the old document
+ * when anything fails, so a rejected value never leaves the device configless. */
+static esp_err_t handle_config_set(const json_node_t *args, json_node_t *root,
+                                   json_node_t *result, const char **code,
+                                   const char **message)
+{
+    const char *path = json_string(json_get(args, "path"));
+    const json_node_t *value = json_get(args, "value");
+    if (path == NULL || value == NULL) return ESP_ERR_INVALID_ARG;
+    if (!cfg_loaded()) {
+        /* No document means no tree to set into: a fresh device is onboarded by
+         * writing whole arrays, which `reload` then validates (`04` §4.9). */
+        *code = "E_CONFIG";
+        *message = "no config loaded: write the file, then reload";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    json_doc_t *doc = cfg_clone();
+    if (doc == NULL) return ESP_ERR_NO_MEM;
+    if (!cfg_set(doc, path, value)) {
+        json_free(doc);
+        *code = "E_CONFIG";
+        *message = "no such path in config.json; a set never creates a parent key";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char why[96];
+    if (cfg_validate(doc, why, sizeof why) != ESP_OK) {
+        json_free(doc);
+        ESP_LOGW(TAG, "config.set rejected: %s", why);
+        *message = "value rejected by the config schema";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (cfg_validate_refs(doc, why, sizeof why) != ESP_OK) {
+        /* `03-config.md` step 9: a `nvs:` ref whose key is unset is `E_CONFIG` and
+         * the old document is kept, so a typo cannot point at nothing. */
+        json_free(doc);
+        ESP_LOGW(TAG, "config.set rejected: %s", why);
+        *code = "E_CONFIG";
+        *message = "a secret reference in the result does not resolve";
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t written = 0;
+    esp_err_t err = cfg_emit(doc, s_cfg_out, sizeof s_cfg_out, &written);
+    json_free(doc);
+    if (err != ESP_OK) return err;
+
+    size_t bytes = 0;
+    bool created = false;
+    /* A config is larger than one chunk, so it is written in order with `final` on
+     * the last one (`04` §4.16). */
+    for (size_t at = 0; at < written; at += STORE_CHUNK_BYTES) {
+        size_t n = written - at;
+        if (n > STORE_CHUNK_BYTES) n = STORE_CHUNK_BYTES;
+        err = store_write_image_chunk("/config.json", (const uint8_t *)s_cfg_out + at,
+                                      n, at, at + n == written, &bytes, &created);
+        if (err != ESP_OK) break;
+    }
+    if (err != ESP_OK) {
+        *code = "E_STORAGE";
+        *message = "could not write /config.json";
+        return err;
+    }
+
+    /* The written file is now the truth: re-read it so an applied flag cannot
+     * disagree with flash. */
+    err = cfg_load();
+    if (err != ESP_OK) {
+        *code = "E_CONFIG";
+        *message = "written file did not load back";
+        return err;
+    }
+
+    json_add_string(root, "name", "config.set");
+    json_add_bool(root, "ok", true);
+    json_add_string(result, "path", path);
+    json_add_bool(result, "applied", true);
+    /* `wifi.*`, `serial.*` and `ntp.servers` are read at boot only (`04` §4.2). */
+    json_add_bool(result, "requires_reboot", false);
+    return ESP_OK;
+}
+
+/* `secret.set` (`04` §4.10), shared by the command form and the §3.6 shorthand. */
+static esp_err_t handle_secret_set(const char *key, const char *value,
+                                   json_node_t *root, json_node_t *result,
+                                   const char **code, const char **message)
+{
+    if (key == NULL || value == NULL) return ESP_ERR_INVALID_ARG;
+    if (*value == '\0') {
+        *code = "E_CONFIG";
+        *message = "empty value: a secret is never cleared by writing a blank";
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t stored = 0;
+    esp_err_t err = cfg_store_secret(key, value, &stored);
+    if (err != ESP_OK) {
+        *code = (err == ESP_ERR_INVALID_ARG) ? "E_CONFIG" : "E_STORAGE";
+        *message = "secret not stored";
+        return err;
+    }
+    json_add_string(root, "name", "secret.set");
+    json_add_bool(root, "ok", true);
+    json_add_string(result, "key", key);
+    json_add_bool(result, "stored", true);
+    json_add_int(result, "length", (int64_t)stored);
+    return ESP_OK;
 }
 
 static void answer_command(const json_node_t *frame)
@@ -268,10 +676,13 @@ static void answer_command(const json_node_t *frame)
     const char *name = json_string(json_get(frame, "name"));
     if (name == NULL) return;
 
+    s_cmd_start_us = esp_timer_get_time();
     json_doc_t *body = json_new_object();
     if (body == NULL) return;
     json_node_t *root = json_root(body);
 
+    const char *err_code = "E_CONFIG";
+    const char *err_message = "rejected";
     esp_err_t built = ESP_FAIL;
     if (name && strcmp(name, "status") == 0) {
         size_t ufs_used = 0, ufs_total = 0, wfs_used = 0, wfs_total = 0;
@@ -318,6 +729,155 @@ static void answer_command(const json_node_t *frame)
             json_add_bool(result, "safe_mode", s_safe_mode);
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "config.get") == 0) {
+        built = handle_config_get(args, root, json_add_object(root, "result"));
+        if (built != ESP_OK) {
+            /* `04` §10: "bad path" is `E_CONFIG`, not `E_PROTOCOL` — the frame was
+             * well formed, the key was not there. */
+            emit_failure(name, reply_to, "E_CONFIG",
+                         built == ESP_ERR_INVALID_STATE ? "no config loaded" : "no such path");
+            json_free(body); return;
+        }
+    } else if (name && strcmp(name, "config.set") == 0) {
+        json_node_t *result = json_add_object(root, "result");
+        built = handle_config_set(args, root, result, &err_code, &err_message);
+        if (built != ESP_OK) {
+            emit_failure(name, reply_to, err_code, err_message);
+            json_free(body); return;
+        }
+    } else if (name && strcmp(name, "secret.set") == 0) {
+        json_node_t *result = json_add_object(root, "result");
+        built = handle_secret_set(json_string(json_get(args, "key")),
+                                  json_string(json_get(args, "value")),
+                                  root, result, &err_code, &err_message);
+        if (built != ESP_OK) {
+            emit_failure(name, reply_to, err_code, err_message);
+            json_free(body); return;
+        }
+    } else if (name && (strcmp(name, "tasks.list") == 0 ||
+                        strcmp(name, "tasks.run") == 0 ||
+                        strcmp(name, "tasks.set") == 0 ||
+                        strcmp(name, "tasks.delete") == 0)) {
+        /* `07-roadmap.md` M5 delivers `sched` and `tasks.json` execution; until it
+         * lands there is no task store to read, and inventing an empty list would
+         * tell the bridge "no tasks" about a device that has never read one. The
+         * honest answer is the one the catalog gives a missing dependency: the
+         * command is named, the reason is stated. */
+        emit_failure(name, reply_to, "E_INTERNAL",
+                     "tasks are not wired yet: the scheduler lands in M5");
+        json_free(body); return;
+    } else if (name && (strcmp(name, "mqtt.publish") == 0 ||
+                        strcmp(name, "mqtt.status") == 0)) {
+        /* M6 (`07-roadmap.md`). Neither `E_MQTT` nor `E_GEO` fits: both are
+         * documented as retryable broker/provider failures, and "the client does
+         * not exist yet" is not retryable. `E_INTERNAL` is the catalog's code for a
+         * device-side gap, so the bridge reports the truth instead of inviting a
+         * retry that can never succeed. */
+        emit_failure(name, reply_to, "E_INTERNAL",
+                     "mqtt is not wired yet: the client lands in M6");
+        json_free(body); return;
+    } else if (name && strcmp(name, "geo.locate") == 0) {
+        emit_failure(name, reply_to, "E_INTERNAL",
+                     "geo is not wired yet: the providers land in M6");
+        json_free(body); return;
+    } else if (name && strcmp(name, "templates.list") == 0) {
+        esp_err_t r = handle_templates_list(args, root, json_add_object(root, "result"));
+        if (r != ESP_OK) {
+            /* A handler that cannot answer must still answer: silence makes the
+             * bridge time out, which reads as a dead link, not as a bad request. */
+            emit_failure("templates.list", reply_to, "E_STORAGE", "Listing failed");
+            json_free(body); return;
+        }
+        built = ESP_OK;
+    } else if (name && strcmp(name, "template.get") == 0) {
+        esp_err_t r = handle_template_get(args, root, json_add_object(root, "result"));
+        if (r != ESP_OK) {
+            emit_failure("template.get", reply_to,
+                         r == ESP_ERR_INVALID_ARG ? "E_PROTOCOL" : "E_STORAGE",
+                         r == ESP_ERR_INVALID_ARG ? "name is not [A-Za-z0-9._-]+.md"
+                                                 : "template not found or unreadable");
+            json_free(body); return;
+        }
+        built = ESP_OK;
+    } else if (name && strcmp(name, "fs.put") == 0) {
+        err_code = "E_CONFIG";
+        err_message = "rejected";
+        esp_err_t r = handle_fs_put(args, root, json_add_object(root, "result"),
+                                    &err_code, &err_message);
+        if (r != ESP_OK) {
+            emit_failure("fs.put", reply_to, err_code, err_message);
+            json_free(body); return;
+        }
+        built = ESP_OK;
+    } else if (name && strcmp(name, "reload") == 0) {
+        /* `04` §4.2: re-read the files. Only `/config.json` exists to re-read until
+         * the scheduler lands, and the reply says so rather than claiming more. */
+        char degraded[96];
+        esp_err_t r = cfg_load_degraded(degraded, sizeof degraded);
+        if (r == ESP_ERR_NOT_FOUND) {
+            emit_failure(name, reply_to, "E_CONFIG", "/config.json is missing");
+            json_free(body); return;
+        }
+        if (r != ESP_OK) {
+            /* The reason, not a category: `reload` is the recovery path
+             * (`02-firmware.md` §3.2), so a refusal that does not name the offending
+             * key leaves the operator with nothing to fix. */
+            char why[96];
+            snprintf(why, sizeof why, "%s",
+                     r == ESP_ERR_INVALID_SIZE ? "/config.json is too large"
+                                               : (degraded[0] ? degraded
+                                                              : "config rejected; see the log"));
+            emit_failure(name, reply_to, "E_CONFIG", why);
+            json_free(body); return;
+        }
+        /* `02-firmware.md` §3.2: `reload` is the way out of safe mode. A successful
+         * re-read is the operator saying the cause is repaired, so the counter goes
+         * back to zero and the flag clears without a reboot. This is the only
+         * command that does it, which is why the guard cannot be cleared by simply
+         * reconnecting the bridge. */
+        if (store_nvs_set_int("boot_failures", 0) == ESP_OK) {
+            s_boot_failures = 0;
+            s_safe_mode = false;
+        } else {
+            ESP_LOGW(TAG, "boot counter not cleared on reload");
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "reload");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_node_t *list = json_new_array(result, "reloaded");
+            if (list) json_array_push_string(list, "config");
+            json_node_t *warnings = json_new_array(result, "warnings");
+            if (warnings && degraded[0] != '\0') {
+                /* `04` §4.2: the config loaded, and this is why it is not fully
+                 * usable. An empty array means the document is clean. */
+                json_node_t *w = json_array_push_object(warnings);
+                if (w) {
+                    json_add_string(w, "scope", "config");
+                    json_add_string(w, "message", degraded);
+                }
+            }
+        }
+        built = ESP_OK;
+    } else if (name && strcmp(name, "reboot") == 0) {
+        /* `04` §4.3: reply first, then reset, so the frame leaves the CDC buffer. */
+        int64_t delay_ms = 250;
+        json_int(json_get(args, "delay_ms"), &delay_ms);
+        if (delay_ms < 0 || delay_ms > 5000) delay_ms = 250;
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "reboot");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_add_bool(result, "rebooting", true);
+            json_add_int(result, "grace_ms", delay_ms);
+        }
+        json_add_int(root, "duration_ms", cmd_duration_ms());
+        esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
+        (void)e;
+        json_free(body);
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)delay_ms));
+        esp_restart();
+        return;
     } else if (name && strncmp(name, "sandbox.", 8) == 0) {
         built = handle_sandbox(name, args, reply_to, body);
         if (built != ESP_OK) {
@@ -329,6 +889,7 @@ static void answer_command(const json_node_t *frame)
     }
 
     if (built == ESP_OK) {
+        json_add_int(root, "duration_ms", cmd_duration_ms());
         esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
         if (e == ESP_ERR_INVALID_SIZE) {
             emit_failure(name, reply_to, "E_STORAGE", "Frame too large");
@@ -361,8 +922,47 @@ static void on_link_frame(const json_node_t *frame)
         return;
     }
 
+    if (strcmp(type, "ping") == 0) {
+        /* §3.7: the pong carries the ping's own `ts`, so the bridge measures one
+         * clock and one round trip. */
+        int64_t ts = 0;
+        json_int(json_get(frame, "ts"), &ts);
+        link_emit_pong(json_string(json_get(frame, "id")), ts);
+        return;
+    }
+
+    if (strcmp(type, "ack") == 0 || strcmp(type, "cancel") == 0) {
+        /* §3.8: `ack` is advisory and an unknown `ack_of` is ignored. §3.5: a
+         * `cancel` with no run in flight has nothing to stop. Both are no-ops
+         * until the agent loop (M4) retains frames or runs — logging them would
+         * turn a normal handshake into warning noise. */
+        return;
+    }
+
     if (strcmp(type, "command") == 0) {
         answer_command(frame);
+        return;
+    }
+
+    if (strcmp(type, "secret.set") == 0) {
+        /* `04` §3.6: the shorthand and the command are behaviourally identical, so
+         * both go through `handle_secret_set` rather than two write paths. */
+        const char *reply_to = json_string(json_get(frame, "id"));
+        const char *code = "E_CONFIG";
+        const char *message = "rejected";
+        json_doc_t *body = json_new_object();
+        if (body == NULL) return;
+        json_node_t *root = json_root(body);
+        esp_err_t err = handle_secret_set(json_string(json_get(frame, "key")),
+                                          json_string(json_get(frame, "value")),
+                                          root, json_add_object(root, "result"),
+                                          &code, &message);
+        if (err != ESP_OK) {
+            emit_failure("secret.set", reply_to, code, message);
+        } else {
+            link_emit_body("command.result", link_next_id(), 0, reply_to, body);
+        }
+        json_free(body);
         return;
     }
 
@@ -445,6 +1045,18 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "store: /fs and /workspace mounted");
+
+    /* `03-config.md` §config.json: load after the mounts, before anything reads a
+     * setting. A missing file is not fatal, so `config.get` answers `E_CONFIG`
+     * rather than the device refusing to boot. */
+    err = cfg_load();
+    if (err == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "config: /config.json is missing: every config command is E_CONFIG");
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "config: rejected: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "config: loaded");
+    }
 
     link_set_sink(&s_link_sink);
     err = link_start();

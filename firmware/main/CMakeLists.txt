@@ -2,5 +2,5 @@
 # reaches the boot counter through it rather than calling nvs_flash itself.
 idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS "."
-                       REQUIRES esp_psram spi_flash store sys link
+                       REQUIRES esp_psram spi_flash store sys link cfg
                        PRIV_REQUIRES esp_timer heap)

@@ -345,3 +345,127 @@ json_node_t *json_array_push_object(json_node_t *array)
     cJSON_AddItemToArray((cJSON *)(void *)array, obj);
     return node_out(obj);
 }
+
+/* --- Dotted paths (`04-protocol.md` §4.8) ---------------------------------- */
+
+/* Walk `path` to the node *before* the last segment. A numeric segment indexes an
+ * array, anything else is an object key. Returns NULL on the first miss, so a
+ * caller can tell "no such path" from "wrong type" only by the same NULL: both are
+ * E_CONFIG on the wire. `*last` receives the final segment. */
+static json_node_t *walk_parent(json_doc_t *doc, const char *path,
+                                char *last, size_t last_cap)
+{
+    if (doc == NULL || path == NULL || *path == '\0' || last == NULL || last_cap == 0) {
+        return NULL;
+    }
+    json_node_t *cur = json_root(doc);
+    const char *p = path;
+    for (;;) {
+        const char *dot = strchr(p, '.');
+        size_t seg = (dot == NULL) ? strlen(p) : (size_t)(dot - p);
+        if (seg == 0 || seg >= last_cap) return NULL;
+        if (dot == NULL) {
+            memcpy(last, p, seg);
+            last[seg] = '\0';
+            return json_is_object(cur) || json_is_array(cur) ? cur : NULL;
+        }
+        char key[64];
+        if (seg >= sizeof key) return NULL;
+        memcpy(key, p, seg);
+        key[seg] = '\0';
+        bool numeric = true;
+        for (size_t i = 0; i < seg; i++) {
+            if (key[i] < '0' || key[i] > '9') { numeric = false; break; }
+        }
+        if (numeric) {
+            cur = json_array_at(cur, (size_t)strtoul(key, NULL, 10));
+        } else {
+            cur = json_get(cur, key);
+        }
+        if (cur == NULL) return NULL;
+        p = dot + 1;
+    }
+}
+
+json_node_t *json_path_get(json_doc_t *doc, const char *path)
+{
+    char last[64];
+    json_node_t *parent = walk_parent(doc, path, last, sizeof last);
+    if (parent == NULL) return NULL;
+    bool numeric = true;
+    for (const char *c = last; *c != '\0'; c++) {
+        if (*c < '0' || *c > '9') { numeric = false; break; }
+    }
+    if (numeric) return json_array_at(parent, (size_t)strtoul(last, NULL, 10));
+    return json_get(parent, last);
+}
+
+bool json_path_set(json_doc_t *doc, const char *path, const json_node_t *value)
+{
+    if (value == NULL) return false;
+    char last[64];
+    json_node_t *parent = walk_parent(doc, path, last, sizeof last);
+    if (parent == NULL) return false;
+
+    bool numeric = true;
+    for (const char *c = last; *c != '\0'; c++) {
+        if (*c < '0' || *c > '9') { numeric = false; break; }
+    }
+    /* cJSON owns what it is given, so a copy is made first and destroyed on a
+     * failed insert; the source node stays owned by its own document. */
+    cJSON *copy = cJSON_Duplicate(node_of(value), true);
+    if (copy == NULL) return false;
+    if (numeric) {
+        size_t idx = (size_t)strtoul(last, NULL, 10);
+        if (!cJSON_IsArray((cJSON *)(void *)parent) ||
+            cJSON_GetArraySize((cJSON *)(void *)parent) <= (int)idx) {
+            cJSON_Delete(copy);
+            return false;
+        }
+        cJSON_ReplaceItemInArray((cJSON *)(void *)parent, (int)idx, copy);
+        return true;
+    }
+    cJSON *obj = (cJSON *)(void *)parent;
+    if (!cJSON_IsObject(obj) || cJSON_GetObjectItemCaseSensitive(obj, last) == NULL) {
+        cJSON_Delete(copy);
+        return false;
+    }
+    cJSON_ReplaceItemInObjectCaseSensitive(obj, last, copy);
+    return true;
+}
+
+size_t json_object_len(const json_node_t *obj)
+{
+    const cJSON *n = node_of(obj);
+    if (!cJSON_IsObject(n)) return 0;
+    int len = cJSON_GetArraySize(n);
+    return (len < 0) ? 0 : (size_t)len;
+}
+
+const char *json_object_key(const json_node_t *obj, size_t index)
+{
+    const cJSON *n = node_of(obj);
+    if (!cJSON_IsObject(n)) return NULL;
+    const cJSON *item = cJSON_GetArrayItem(n, (int)index);
+    return (item != NULL && item->string != NULL) ? item->string : "";
+}
+
+json_node_t *json_object_value(const json_node_t *obj, size_t index)
+{
+    const cJSON *n = node_of(obj);
+    if (!cJSON_IsObject(n)) return NULL;
+    return node_out(cJSON_GetArrayItem(n, (int)index));
+}
+
+json_node_t *json_add_node(json_node_t *obj, const char *key, const json_node_t *node)
+{
+    if (obj == NULL || key == NULL || node == NULL || !cJSON_IsObject((cJSON *)(void *)obj)) {
+        return NULL;
+    }
+    /* Deep copy: cJSON owns what it holds, and the source belongs to another
+     * document that may be freed first. */
+    cJSON *copy = cJSON_Duplicate(node_of(node), true);
+    if (copy == NULL) return NULL;
+    cJSON_AddItemToObject((cJSON *)(void *)obj, key, copy);
+    return node_out(copy);
+}

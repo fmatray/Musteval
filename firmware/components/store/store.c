@@ -66,19 +66,22 @@ static int entry_qsort_cmp(const void *a, const void *b)
     return store_entry_cmp((const store_entry_t *)a, (const store_entry_t *)b);
 }
 
-esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap, size_t *count)
+/* An image path is canonicalised for the `06` §6.1 rules and then mapped onto the
+ * mount (`03-config.md` §1). Skipping the map writes to the VFS root, which no
+ * partition is mounted at, so every image import failed with ESP_FAIL. */
+static esp_err_t image_vfs(const char *agent_path, char *out, size_t out_cap)
 {
-    if (agent_path == NULL || out == NULL || count == NULL) return ESP_ERR_INVALID_ARG;
-    char resolved[STORE_PATH_MAX];
-    esp_err_t err = resolve_dir(agent_path, resolved, sizeof resolved);
+    char canon[STORE_PATH_MAX];
+    esp_err_t err = store_resolve_image_path(agent_path, canon, sizeof canon);
     if (err != ESP_OK) return err;
-    /* Static, not a second stack array: `store_map_path` clears its output before
-     * reading the input, so the two cannot alias, and the link task stack is 4 KiB.
-     * Safe because command dispatch is single-threaded (§4.16). */
-    static char s_vfs[STORE_PATH_MAX];
-    err = store_map_path(resolved, s_vfs, sizeof s_vfs);
-    if (err != ESP_OK) return err;
-    const char *vfs = s_vfs;
+    return store_map_path(canon, out, out_cap);
+}
+
+/* Shared by the sandbox listing and the image listing; only the admission rule
+ * differs, so the readdir loop is written once (`04` §4.11, §4.17). */
+static esp_err_t list_canonical(const char *vfs, store_entry_t *out,
+                                size_t cap, size_t *count)
+{
 
     DIR *d = opendir(vfs);
     if (d == NULL) return ESP_ERR_NOT_FOUND;
@@ -107,6 +110,29 @@ esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
     qsort(out, n, sizeof(store_entry_t), entry_qsort_cmp);
     *count = n;
     return ESP_OK;
+}
+
+esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
+                         size_t *count)
+{
+    if (agent_path == NULL || out == NULL || count == NULL) return ESP_ERR_INVALID_ARG;
+    char resolved[STORE_PATH_MAX];
+    esp_err_t err = resolve_dir(agent_path, resolved, sizeof resolved);
+    if (err != ESP_OK) return err;
+    char vfs[STORE_PATH_MAX];
+    err = store_map_path(resolved, vfs, sizeof vfs);
+    if (err != ESP_OK) return err;
+    return list_canonical(vfs, out, cap, count);
+}
+
+esp_err_t store_list_image_dir(const char *agent_path, store_entry_t *out, size_t cap,
+                               size_t *count)
+{
+    if (agent_path == NULL || out == NULL || count == NULL) return ESP_ERR_INVALID_ARG;
+    char vfs[STORE_PATH_MAX];
+    esp_err_t err = image_vfs(agent_path, vfs, sizeof vfs);
+    if (err != ESP_OK) return err;
+    return list_canonical(vfs, out, cap, count);
 }
 
 esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap, size_t *len,
@@ -138,13 +164,46 @@ esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap, size_t 
     return ESP_OK;
 }
 
-esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data, size_t len,
-                            size_t offset, bool final, size_t *out_bytes, bool *out_created)
+esp_err_t store_read_file(const char *agent_path, char *buf, size_t cap, size_t *len)
 {
-    if (agent_path == NULL || (data == NULL && len > 0) || out_bytes == NULL || out_created == NULL) return ESP_ERR_INVALID_ARG;
+    /* The image reader: `/config.json`, `/prompts/<name>.md`. Not confined to the
+     * sandbox, because these are what the firmware ships, and no model path
+     * reaches it (`03-config.md` §1). No truncation: a file that does not fit the
+     * caller's buffer is ESP_ERR_INVALID_SIZE, so a caller never parses half a
+     * config. */
+    if (agent_path == NULL || buf == NULL || len == NULL || cap == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *len = 0;
     char vfs[STORE_PATH_MAX];
-    esp_err_t err = store_resolve_write_path(agent_path, vfs, sizeof vfs);
+    esp_err_t err = image_vfs(agent_path, vfs, sizeof vfs);
     if (err != ESP_OK) return err;
+
+    struct stat st;
+    if (stat(vfs, &st) != 0) return ESP_ERR_NOT_FOUND;
+    if (S_ISDIR(st.st_mode)) return ESP_ERR_INVALID_ARG;
+    if ((size_t)st.st_size >= cap) return ESP_ERR_INVALID_SIZE;
+
+    FILE *f = fopen(vfs, "rb");
+    if (f == NULL) return ESP_FAIL;
+    size_t read_n = fread(buf, 1, cap, f);
+    bool short_read = ferror(f) != 0;
+    fclose(f);
+    if (short_read) return ESP_FAIL;
+
+    buf[read_n] = '\0';
+    *len = read_n;
+    return ESP_OK;
+}
+
+/* Shared by the sandbox and the image writer: the staging protocol, quota check
+ * and rename are identical, only the admission rule differs (`04` §4.16, §4.20). */
+static esp_err_t write_chunk_canonical(const char *agent_path, const char *vfs,
+                                       const uint8_t *data, size_t len,
+                                       size_t offset, bool final,
+                                       size_t *out_bytes, bool *out_created)
+{
+    if (vfs == NULL || (data == NULL && len > 0) || out_bytes == NULL || out_created == NULL) return ESP_ERR_INVALID_ARG;
 
     if (offset == 0) {
         if (s_stage_target[0] != '\0' && strcmp(s_stage_target, vfs) != 0) remove(s_stage_path);
@@ -178,10 +237,18 @@ esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data, size_t 
 
     if (final) {
         if (existed && S_ISDIR(st.st_mode)) { remove(s_stage_path); s_stage_path[0]=0; s_stage_target[0]=0; return ESP_ERR_INVALID_STATE; }
-        store_quota_t q = {0};
-        quota_scan(STORE_VFS_WORKSPACE, &q, 0, s_stage_path);
-        if (existed && !S_ISDIR(st.st_mode)) { q.replacing = true; q.replacing_bytes = (size_t)st.st_size; }
-        if (store_quota_exceeded(&q, s_stage_bytes)) { remove(s_stage_path); s_stage_path[0]=0; s_stage_target[0]=0; return ESP_ERR_INVALID_SIZE; }
+        /* Two budgets, one check site: the workspace quota bounds `/workspace/`,
+         * the per-directory cap bounds an image import (`03-config.md`
+         * §Storage limits). Never both, because no path is in both trees. */
+        size_t cap = store_import_cap(agent_path);
+        if (cap != 0) {
+            if (s_stage_bytes > cap) { remove(s_stage_path); s_stage_path[0]=0; s_stage_target[0]=0; return ESP_ERR_INVALID_SIZE; }
+        } else {
+            store_quota_t q = {0};
+            quota_scan(STORE_VFS_WORKSPACE, &q, 0, s_stage_path);
+            if (existed && !S_ISDIR(st.st_mode)) { q.replacing = true; q.replacing_bytes = (size_t)st.st_size; }
+            if (store_quota_exceeded(&q, s_stage_bytes)) { remove(s_stage_path); s_stage_path[0]=0; s_stage_target[0]=0; return ESP_ERR_INVALID_SIZE; }
+        }
         if (rename(s_stage_path, vfs) != 0) return ESP_FAIL;
         s_stage_path[0] = '\0';
         s_stage_target[0] = '\0';
@@ -193,6 +260,31 @@ esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data, size_t 
     *out_bytes = s_stage_bytes;
     *out_created = (stat(vfs, &st) != 0);
     return ESP_OK;
+}
+
+esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data, size_t len,
+                            size_t offset, bool final, size_t *out_bytes,
+                            bool *out_created)
+{
+    char vfs[STORE_PATH_MAX];
+    esp_err_t err = store_resolve_write_path(agent_path, vfs, sizeof vfs);
+    if (err != ESP_OK) return err;
+    return write_chunk_canonical(agent_path, vfs, data, len, offset, final,
+                                 out_bytes, out_created);
+}
+
+esp_err_t store_write_image_chunk(const char *agent_path, const uint8_t *data,
+                                  size_t len, size_t offset, bool final,
+                                  size_t *out_bytes, bool *out_created)
+{
+    /* The host-only import path (`04` §4.16, `03-config.md` §Storage limits). Not
+     * confined to `/workspace/` on purpose; the caller has already refused a path
+     * that names a built-in file. */
+    char vfs[STORE_PATH_MAX];
+    esp_err_t err = image_vfs(agent_path, vfs, sizeof vfs);
+    if (err != ESP_OK) return err;
+    return write_chunk_canonical(agent_path, vfs, data, len, offset, final,
+                                 out_bytes, out_created);
 }
 
 
@@ -279,6 +371,58 @@ esp_err_t store_nvs_get_int(const char *key, int32_t *out)
         return err;
     }
     err = nvs_get_i32(h, key, out);
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t store_nvs_set_str(const char *namespace, const char *key,
+                            const char *value, size_t *out_len)
+{
+    /* An empty value is never a deletion (`04` §3.6): the caller refuses it before
+     * reaching here, so a blank arrives as ESP_ERR_INVALID_ARG rather than a write. */
+    if (namespace == NULL || key == NULL || *key == '\0' ||
+        value == NULL || *value == '\0' || out_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(namespace, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(h, key, value);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (err == ESP_OK) {
+        *out_len = strlen(value);
+    }
+    return err;
+}
+
+esp_err_t store_nvs_get_str(const char *namespace, const char *key,
+                            char *out, size_t cap, size_t *out_len)
+{
+    if (namespace == NULL || key == NULL || out == NULL || cap == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(namespace, NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    /* Two calls on purpose: the first sizes the value so a short caller buffer is
+     * ESP_ERR_INVALID_SIZE, never a silently truncated secret. */
+    size_t need = 0;
+    err = nvs_get_str(h, key, NULL, &need);
+    if (err == ESP_OK) {
+        if (need > cap) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else {
+            err = nvs_get_str(h, key, out, &need);
+            if (err == ESP_OK && out_len != NULL) *out_len = need - 1;
+        }
+    }
     nvs_close(h);
     return err;
 }

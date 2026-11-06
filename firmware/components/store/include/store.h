@@ -64,6 +64,29 @@ json_node_t *json_array_at(const json_node_t *node, size_t index);
 /* Append a fresh empty object to an array node; NULL when it is not an array. */
 json_node_t *json_array_push_object(json_node_t *array);
 
+/* Deep copy `node` in under `key`. Returns the copy, or NULL when `obj` is not an
+ * object or memory ran out. The copy is owned by `obj` and freed with it. */
+json_node_t *json_add_node(json_node_t *obj, const char *key, const json_node_t *node);
+
+/* Iterate an object's members in document order: the index is 0-based and
+ * `json_object_key` returns "" for a member with no key. A non-object has length 0.
+ * `json_object_value` is the member itself, so a validator can walk an arbitrary
+ * tree without knowing any key in advance. */
+size_t       json_object_len(const json_node_t *obj);
+const char  *json_object_key(const json_node_t *obj, size_t index);
+json_node_t *json_object_value(const json_node_t *obj, size_t index);
+
+/* Resolve a dotted path against `doc` (`04` §4.8): `llm.providers.0.model`. A
+ * numeric segment indexes an array, any other segment is an object key. NULL when
+ * a segment is missing or the node at that point has the wrong shape. */
+json_node_t *json_path_get(json_doc_t *doc, const char *path);
+
+/* Replace the value at `path` with a deep copy of `value`. Every intermediate key
+ * must already exist and be an object (or an array at a numeric segment); a set
+ * never creates a parent, so a typo in a path cannot invent config. Returns false
+ * and leaves the document untouched on any failure. */
+bool json_path_set(json_doc_t *doc, const char *path, const json_node_t *value);
+
 /* --- Paths (`02-firmware.md` §store, `06-security.md` §6.1) ---------------- */
 
 /* Mount points. `esp_vfs_register` rejects a `base_path` ending in `/`
@@ -97,6 +120,12 @@ esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap);
 /* True when `path` is `dir` itself or lies below it. Whole segments are compared,
  * so `/workspace/a` is not under `/workspace/ab`. Pure. */
 bool store_path_is_under(const char *dir, const char *path);
+
+/* Canonicalise a read-only path: reject relative, `.`/`..` escapes, NUL bytes and
+ * over-long input, then return the VFS path. Unlike `store_resolve_write_path` this
+ * accepts anywhere (`/config.json`, `/prompts/brief.md`), because the host commands
+ * read what the image ships; it is never used for a model-supplied path. Pure. */
+esp_err_t store_resolve_image_path(const char *in, char *out, size_t out_cap);
 
 /* Largest VFS path any `store_*` call produces; sized for a full agent path plus
  * the `/fs/` prefix. A caller's buffer may be smaller, which the calls reject. */
@@ -133,6 +162,16 @@ esp_err_t store_init(void);
 
 esp_err_t store_nvs_set_int(const char *key, int32_t value);
 esp_err_t store_nvs_get_int(const char *key, int32_t *out);
+
+/* Namespace `secrets` (`03-config.md` §config.json rule 3). The value is written
+ * verbatim and never read back by any caller that emits it; `store_nvs_get_str`
+ * exists for the modules that resolve a `nvs:<key>` reference internally, and its
+ * out-buffer is the caller's. `E_CONFIG`-shaped refusals are the caller's map:
+ * an empty key or value is ESP_ERR_INVALID_ARG. */
+esp_err_t store_nvs_set_str(const char *namespace, const char *key,
+                            const char *value, size_t *out_len);
+esp_err_t store_nvs_get_str(const char *namespace, const char *key,
+                            char *out, size_t cap, size_t *out_len);
 
 /* --- Workspace quota (`06-security.md` §6.2) ------------------------------ */
 
@@ -185,6 +224,11 @@ typedef struct {
  * name, both ascending (§4.17). More than `cap` entries is ESP_ERR_INVALID_SIZE
  * rather than a truncated list. `*count` is set only on ESP_OK. The sandbox root
  * is legal here even though it is not a legal file target. */
+/* The same listing, but admitted through the image rule rather than the sandbox
+ * rule, so `templates.list` can see `/prompts` (`04` §4.17). */
+esp_err_t store_list_image_dir(const char *agent_path, store_entry_t *out, size_t cap,
+                               size_t *count);
+
 esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
                          size_t *count);
 
@@ -201,6 +245,12 @@ bool store_is_staging_entry(const char *vfs_dir, const char *entry_name,
 esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap,
                           size_t *len, size_t *total, bool *truncated);
 
+/* Read one whole file from anywhere the image ships (`/config.json`,
+ * `/prompts/brief.md`) into `buf`, NUL-terminated. Not confined to the sandbox and
+ * never truncated: a file that does not fit `cap` is ESP_ERR_INVALID_SIZE, so a
+ * caller never parses half a config. `*len` excludes the terminator. */
+esp_err_t store_read_file(const char *agent_path, char *buf, size_t cap, size_t *len);
+
 /* Append one chunk of a staged write (§4.20). `offset == 0` restarts the
  * transfer; any other offset that is not the staged size is
  * ESP_ERR_INVALID_STATE. `final` commits by renaming the staged file over the
@@ -210,6 +260,14 @@ esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap,
 esp_err_t store_write_chunk(const char *agent_path, const uint8_t *data,
                             size_t len, size_t offset, bool final,
                             size_t *out_bytes, bool *out_created);
+
+/* Same protocol as `store_write_chunk`, but for the host-only import path: the
+ * target may be anywhere the image ships (`/config.json`, `/prompts/x.md`), bounded
+ * by `store_import_cap` instead of the workspace quota. The caller refuses a path
+ * naming a built-in file (`04` §4.16). */
+esp_err_t store_write_image_chunk(const char *agent_path, const uint8_t *data,
+                                  size_t len, size_t offset, bool final,
+                                  size_t *out_bytes, bool *out_created);
 
 /* Delete one file, one empty directory, or — with `recursive` — a whole subtree
  * (§4.19). `*entries` is the immediate child count when a populated directory is

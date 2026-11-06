@@ -42,7 +42,11 @@ esp_err_t store_map_path(const char *agent_path, char *out, size_t out_cap)
     return ESP_OK;
 }
 
-esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap)
+/* One canonicaliser, two admissions: `within` NULL accepts anywhere, otherwise the
+ * result must be `within` or strictly below it with a further segment. Static
+ * because both public resolvers are the only callers. */
+static esp_err_t resolve_canonical(const char *in, char *out, size_t out_cap,
+                                   const char *within)
 {
     /* Every refusal below is ESP_ERR_INVALID_ARG; the caller maps it to the wire
      * code E_TOOL (`02-firmware.md` §`store`, `06-security.md` §6.1 step 3). */
@@ -100,15 +104,30 @@ esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap)
         n += seg_len;
     }
 
-    /* Require the literal `/workspace/` prefix plus at least one further segment:
-     * `/workspace` and `/workspace/` both canonicalise to `/workspace` and fail. */
-    if (n <= WS_PREFIX_LEN ||
-        memcmp(out, STORE_ROOT_WORKSPACE, WS_PREFIX_LEN) != 0) {
-        out[0] = '\0';
-        return ESP_ERR_INVALID_ARG;
-    }
     out[n] = '\0';
+    if (within != NULL) {
+        /* Require the literal `/workspace/` prefix plus at least one further
+         * segment: `/workspace` and `/workspace/` both canonicalise to `/workspace`
+         * and fail. */
+        size_t wlen = strlen(within);
+        if (n <= wlen || memcmp(out, within, wlen) != 0) {
+            out[0] = '\0';
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
     return ESP_OK;
+}
+
+esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap)
+{
+    return resolve_canonical(in, out, out_cap, STORE_ROOT_WORKSPACE);
+}
+
+esp_err_t store_resolve_image_path(const char *in, char *out, size_t out_cap)
+{
+    /* No root to confine: the host commands read what the image ships, and no
+     * model-supplied path reaches here (`03-config.md` §1). */
+    return resolve_canonical(in, out, out_cap, NULL);
 }
 bool store_path_is_under(const char *dir, const char *path)
 {

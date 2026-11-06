@@ -568,7 +568,7 @@ reads are never refused.
 | `geo.locate` | `{}` | `{lat, lon, accuracy_m, source, age_s}` | `E_GEO`, `E_CONFIG` (geo disabled) | yes |
 | `mqtt.publish` | `{server_id, topic, payload, qos?, retain?}` | `{published, server_id, topic}` | `E_MQTT` (unknown server/topic, disconnected) | yes |
 | `mqtt.status` | `{}` | `{servers:[{id,connected,subscriptions,last_error}]}` | `E_INTERNAL` | yes |
-| `fs.put` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created}` | `E_CONFIG` (bad path, bad extension, or a built-in target), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
+| `fs.put` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created, requires_reboot}` | `E_CONFIG` (bad path, bad extension, or a built-in target), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
 | `sandbox.list` | `{path?}` | `{path, entries:[{name,dir,bytes}]}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing directory) | yes |
 | `sandbox.read` | `{path}` | `{path, bytes, text, truncated}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing file) | yes |
 | `sandbox.delete` | `{path, recursive?}` | `{path, deleted, entries}` | `E_CONFIG` (path outside `/workspace/`, or a non-empty directory without `recursive`), `E_STORAGE` (missing), `E_BUSY` (recursive while a run is in flight) | yes |
@@ -813,7 +813,7 @@ Files are written in chunks because the RX line cap is 4 KiB and a skill may be
 ```
 
 ```json
-{"v":1,"type":"command.result","id":"d-29","ts":1730572300,"reply_to":"b-21","name":"fs.put","ok":true,"result":{"path":"/skills/led-control.md","bytes":21,"created":true},"duration_ms":48}
+{"v":1,"type":"command.result","id":"d-29","ts":1730572300,"reply_to":"b-21","name":"fs.put","ok":true,"result":{"path":"/skills/led-control.md","bytes":21,"created":true,"requires_reboot":false},"duration_ms":48}
 ```
 
 | Arg | Type | Required | Notes |
