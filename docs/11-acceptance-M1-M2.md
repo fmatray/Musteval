@@ -28,60 +28,33 @@ banner in headless mode.
 
 ### M1.2 `ping`/`pong` round trip under 10 ms
 
-Measure it, do not read it off the TUI: the Status footer shows one sample, and a
-single sample cannot answer a budget. Save as `/tmp/m1_rtt.py`, run
-`.venv/bin/python /tmp/m1_rtt.py`:
+- [ ] `bin/bridge`, press `F3` for Status.
+- [ ] Type `/ping` in the chat bar. The footer changes from `PING  no pong yet` to a
+      number: measured 5.5 ms on an idle link, and every later `/ping` replaces it.
 
-```python
-import asyncio, json, statistics, sys, time
-sys.path.insert(0, "/home/saturne/Dev/Musteval")
-from bridge.link import SerialTransport
-
-async def main():
-    t = SerialTransport("/dev/ttyACM0"); await t.open()
-    await t.write_line(json.dumps({"v": 1, "type": "hello", "id": "b-h", "ts": 0,
-        "client": "x", "client_version": "1", "protocol": 1}).encode())
-    await t.read_line()
-    out = []
-    for i in range(40):                       # burst: no pause between pings
-        ping_id = f"b-p{i}"
-        started = time.monotonic()
-        await t.write_line(json.dumps({"v": 1, "type": "ping", "id": ping_id,
-                                       "ts": 0}).encode())
-        while True:
-            line = await t.read_line()
-            if line and b'"type":"pong"' in line and ping_id.encode() in line:
-                out.append((time.monotonic() - started) * 1000); break
-    await t.close()
-    out.sort()
-    print(f"n={len(out)} median={statistics.median(out):.2f} "
-          f"p90={out[int(.9*len(out))]:.2f} min={out[0]:.2f} max={out[-1]:.2f}")
-
-asyncio.run(main())
-```
-
-- [ ] Run it twice: once as written (burst) and once with `await asyncio.sleep(0.15)`
-      added after the inner loop (idle).
-
-Measured on this board:
+The footer is a live measurement: the heartbeat refreshes it every ten seconds, so
+leave the screen open and the number moves on its own. Two facts about the budget,
+measured on this board with 40 back-to-back pings and 30 with a 150 ms pause between
+them:
 
 | Pattern | median | p90 | min | max |
 |---|---|---|---|---|
-| Burst | 2.0 ms | 33.9 ms | 1.2 ms | 51.4 ms |
-| 150 ms idle between pings | 22.4 ms | 32.0 ms | 1.5 ms | 34.1 ms |
+| Back to back | 2.0 ms | 33.9 ms | 1.2 ms | 51.4 ms |
+| 150 ms between pings | 22.4 ms | 32.0 ms | 1.5 ms | 34.1 ms |
 
-The budget is met when the device is already reading and missed when it is
-asleep. `usb_serial_jtag_read_bytes` blocks for up to 100 ms (`link_task.c`) and
-only returns when bytes arrive, so the idle figure is a wake-up cost, not
-transfer time: a raw pyserial loop with no bridge in the path reproduces it. The
-bridge's own contribution is the floor, about 1.2 ms.
+- [ ] The footer's value falls in the range the table shows for whichever pattern
+      you are producing. One `/ping` typed after a pause is the idle case.
 
-Record both numbers. M1's 10 ms is met in the burst median and missed in the idle
-median; that gap is the device read loop and is M3+ work, not a bridge defect.
+The budget is met when the device is already reading and missed when it is asleep.
+The read call blocks for up to 100 ms and returns only when bytes arrive, so the
+idle figure is a wake-up cost, not transfer time; a raw serial read with no bridge
+in the path reproduces it, and the bridge's own contribution is the floor, about
+1.2 ms. Record both numbers: M1's 10 ms is met back to back and missed at idle, and
+that gap belongs to the device read loop.
 
-`bin/bridge --send /ping` exits `0` and prints nothing: the round trip is a
-heartbeat frame with no `command.result`, so headless has no body to show. That is
-why the measurement above is a script and not a slash command.
+`bin/bridge --send /ping` exits `0` and prints nothing. A pong is a heartbeat
+frame, not a `command.result`, so headless has no body to show. That is why this
+check is a screen and not a command.
 
 ### M1.3 `status` returns device state
 
@@ -90,52 +63,32 @@ why the measurement above is a script and not a slash command.
 
 ### M1.4 Input validation: oversize and malformed lines
 
-The bridge refuses to build these frames itself, so the injection is raw bytes.
-Save as `/tmp/m1_frames.py` and run `.venv/bin/python /tmp/m1_frames.py`:
+The bridge refuses to build these frames, so a user cannot type them and they are
+not hand-testable through the TUI. They are covered by the host suite, which asserts
+both halves of `04` §1.2:
 
-```python
-import asyncio, json, sys
-sys.path.insert(0, "/home/saturne/Dev/Musteval")
-from bridge.link import SerialTransport
+- [ ] `cd firmware/test_host && ./build/musteval_test_host.elf` passes: cases
+      "an oversize line still exposes its id prefix", "an oversize line without an
+      id reports the bytes it dropped" and "a line that is not JSON names the parse
+      offset" are in that binary. Build first with the command in
+      `AGENTS.md`'s Test Strategy table. If the binary is absent,
+      `.venv/bin/python -m pytest bridge/tests/test_docs.py -p no:cacheprovider`
+      covers the protocol examples instead.
 
-async def main():
-    t = SerialTransport("/dev/ttyACM0"); await t.open()
-    await t.write_line(json.dumps({"v": 1, "type": "hello", "id": "b-h", "ts": 0,
-                                   "client": "x", "client_version": "1",
-                                   "protocol": 1}).encode())
-    print("ack:", (await t.read_line())[:60])
-    await t.write_line(b'{"v":1,"type":"command","id":"b-big","ts":0,'
-                       b'"name":"status","args":{"x":"' + b"A" * 5000 + b'"}}')
-    for _ in range(5):
-        line = await t.read_line()
-        if line and b'"reply_to":"b-big"' in line:
-            print("oversize:", line.decode()); break
-    await t.write_line(b'{"v":1,"type":"command","id":"b-bad", nope}')
-    for _ in range(5):
-        line = await t.read_line()
-        if line and b'"reply_to":"b-bad"' in line:
-            print("malformed:", line.decode()); break
-    await t.close()
+On the board, the observable half is that a refused line does not cost the link.
+Run these three in order and watch `boot_id` in `/status` (chat bar, or `F3`):
 
-asyncio.run(main())
-```
+- [ ] `bin/bridge --send "/config set device.log_level loud"` answers a
+      `command.result` with `ok:false` and `E_CONFIG`: the device answered a refusal
+      and stayed up.
+- [ ] `bin/bridge --send /status` still answers and its `boot_id` is unchanged.
+- [ ] `F5` opens Logs; the refusal appears there as a `log` frame with
+      `"level":"warn"` and `"tag":"musteval"`.
 
-- [ ] `oversize:` line is a `command.result` with `"reply_to":"b-big"`,
-      `"ok":false`, `"code":"E_PROTOCOL"`.
-- [ ] `malformed:` line is a `command.result` with `"reply_to":"b-bad"` and
-      `"message":"json at byte 39"` (measured on the board; the offset is where the
-      parser stopped).
-- [ ] `.venv/bin/bridge --send /status` still works afterwards and its `boot_id`
-      equals the one recorded above: the link survived without a reboot.
-
-A line with no recoverable `id` answers with the `protocol.error` event instead;
-`dropped_bytes` is the real length:
-
-```python
-await t.write_line(b'{"v":1,"type":' + b"A" * 6000 + b"}")
-```
-
-- [ ] The event carries `"kind":"protocol.error"` and `"dropped_bytes":6015`.
+The exact bytes for an oversize line, a malformed line and their `dropped_bytes`
+counters are asserted in the host suite rather than typed. If you want to see them
+on the wire, `bridge/tools/test_agent.py` plus `--target test` replays the same
+frames without a board.
 
 ### M1.5 Log hook: `ESP_LOGx` arrives as NDJSON `log`
 
@@ -164,54 +117,23 @@ human line to stderr; `head -1` takes the path.
 
 ### M2.1 An unresolved `secret_ref` loads degraded, naming the key
 
-`config.set` refuses an unresolved reference outright, so the bad document has to
-arrive as a file. Saving `/tmp/m2_bad.py` and running it writes one:
+There is no hand-testable route to this state today, and that is a gap in the
+product rather than in this procedure. `config.set` refuses an unresolved reference
+outright, and the only writer that can place a whole document — `fs.put` — needs its
+bytes built over the wire, which no screen does: the Files screen uploads through
+`sandbox.write` and cannot reach `/config.json`. The degraded path is therefore
+reachable only by a script, and its firmware side has no host test either.
 
-```python
-import asyncio, base64, json, sys
-sys.path.insert(0, "/home/saturne/Dev/Musteval")
-from bridge.link import SerialTransport
+What a user can observe is the refusal, which is the same rule seen from the other
+side:
 
-BAD = {"version": 1,
-       "device": {"name": "board2", "log_level": "info"},
-       "wifi": {"networks": [{"ssid": "t", "password_ref": "nvs:no_such_key"}]},
-       "llm": {"providers": [{"id": "p1", "base_url": "https://a/v1", "model": "m",
-                              "api_key_ref": "nvs:llm_test"}]}}
+- [ ] `bin/bridge --send /config set wifi.networks.0.password_ref nvs:no_such_key`
+      prints `E_CONFIG` with "a secret reference in the result does not resolve".
+- [ ] `bin/bridge --send /config get wifi.networks.0.password_ref` still returns the
+      old value: the rejected write changed nothing.
 
-async def main():
-    t = SerialTransport("/dev/ttyACM0"); await t.open()
-    await t.write_line(json.dumps({"v": 1, "type": "hello", "id": "b-h", "ts": 0,
-        "client": "x", "client_version": "1", "protocol": 1}).encode())
-    await t.read_line()
-    text = json.dumps(BAD, sort_keys=True, separators=(",", ":"))
-    await t.write_line(json.dumps({"v": 1, "type": "command", "id": "b-p", "ts": 0,
-        "name": "fs.put", "args": {"path": "/config.json", "encoding": "base64",
-        "final": True, "data": base64.b64encode(text.encode()).decode()}}).encode())
-    for _ in range(15):
-        line = await t.read_line()
-        if line and b'"reply_to":"b-p"' in line:
-            print(line.decode()); break
-    await t.close()
-
-asyncio.run(main())
-```
-
-- [ ] `python /tmp/m2_bad.py` prints `"ok":true` and `"requires_reboot":true`.
-- [ ] `bin/bridge --send /reload` prints
-      `{'reloaded': ['config'], 'warnings': [{'message': 'password_ref: nvs:no_such_key is not set', 'scope': 'config'}]}`
-      — measured. The key is named, the value is not.
-- [ ] `bin/bridge --send /status` still answers and its `boot_id` is unchanged: the
-      device kept the link instead of refusing to boot.
-
-Restore by writing the good document back — `config.set` cannot express an array,
-so the same script serves, with `password_ref` back to `nvs:wifi_test`:
-
-- [ ] After restoring, `bin/bridge --send /reload` prints
-      `{'reloaded': ['config'], 'warnings': []}`.
-
-Note that a reboot is needed for the *boot* form of this check: `reload` proves the
-degraded path, and the boot path additionally clears nothing but reads the same
-file. `boot_id` changing is the evidence it rebooted.
+Restoring and re-reading a good document is covered by M2.2, which is the same
+`reload` path.
 
 ### M2.2 `secret.set` then `reload`
 
@@ -244,9 +166,11 @@ cannot express one.
 - [ ] `bin/bridge --send "/fs put /prompts/x.md"` prints `no file loaded to upload`
       — measured. The refusal is the bridge's, before anything reaches the wire, so
       this step proves the guard exists and proves nothing about the device.
-- [ ] For the device side, use the Files screen (`F4`): upload a host file into
-      `/workspace/`, then attempt the same file at `/prompts/` and confirm
-      `E_CONFIG` with "bad extension" or the built-in target named in the message.
+- [ ] `F7` for Files, `Ctrl+O` uploads a host file into `/workspace/`; the chat log
+      prints one line naming the destination, and the file appears in the table.
+      The screen browses `/workspace/` only, so `/prompts/` and the other
+      extension-restricted roots cannot be reached from it: the allowlist below
+      them is asserted by the host suite, not hand-checked here.
 
 ### M2.5 Config writes are atomic
 

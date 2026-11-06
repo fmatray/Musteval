@@ -438,11 +438,10 @@ listing on success, so the new entry appears without a manual refresh.
 
 ### 5.8.1 Upload and Download
 
-`W` downloads the selected entry to the host, `O` uploads a host file into the
-directory currently browsed. `Ctrl+U` is already "up one directory", so the download key
-is the mnemonic that did not collide. The two directions are separate keys rather than one
-modal with a direction toggle, because a modal that asks which way round the copy
-goes makes the reader answer a question the keypress already answered.
+`Ctrl+X` downloads the selected entry to the host, `Ctrl+O` uploads a host file into
+the directory currently browsed. The two directions are separate keys rather than one
+modal with a direction toggle, because a modal that asks which way round the copy goes
+makes the reader answer a question the keypress already answered.
 
 Downloading a file asks for a host path, defaulting to the entry's name in the
 working directory, and writes what `sandbox.read` returned. A device reply with
@@ -862,11 +861,11 @@ so the set is learnable once rather than per screen:
 | `Ctrl+M` | Move or rename |
 | `Ctrl+K` | Create a directory |
 | `Ctrl+U` | Up one level, or upload |
-| `Ctrl+O` | Open, or download |
+| `Ctrl+O` | Open, or upload |
 | `Ctrl+F` | Find / filter |
 | `Ctrl+S` | Save (editing only) |
 | `Ctrl+Y` | Toggle (follow mode, enabled state) |
-| `Ctrl+X` | Run or execute |
+| `Ctrl+X` | Run or execute, or download |
 
 A key that would mean two things on one screen is a design error, not a table entry.
 
