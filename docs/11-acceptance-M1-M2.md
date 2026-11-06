@@ -75,20 +75,17 @@ both halves of `04` §1.2:
       `.venv/bin/python -m pytest bridge/tests/test_docs.py -p no:cacheprovider`
       covers the protocol examples instead.
 
-On the board, the observable half is that a refused line does not cost the link.
-Run these three in order and watch `boot_id` in `/status` (chat bar, or `F3`):
+On the board the observable half is recovery: a refused line costs one reply, not
+the link. Watch `boot_id` in `/status` (chat bar, or `F3`):
 
 - [ ] `bin/bridge --send "/config set device.log_level loud"` answers a
       `command.result` with `ok:false` and `E_CONFIG`: the device answered a refusal
       and stayed up.
 - [ ] `bin/bridge --send /status` still answers and its `boot_id` is unchanged.
-- [ ] `F5` opens Logs; the refusal appears there as a `log` frame with
-      `"level":"warn"` and `"tag":"musteval"`.
 
-The exact bytes for an oversize line, a malformed line and their `dropped_bytes`
-counters are asserted in the host suite rather than typed. If you want to see them
-on the wire, `bridge/tools/test_agent.py` plus `--target test` replays the same
-frames without a board.
+The bytes for an oversize line, a malformed line and their `dropped_bytes` counters
+are asserted by the host suite and cannot be typed: the bridge refuses to build such
+a frame, and `test_agent.py` is a peer of the device, not a way around that.
 
 ### M1.5 Log hook: `ESP_LOGx` arrives as NDJSON `log`
 
