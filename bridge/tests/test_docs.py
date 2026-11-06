@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from bridge.protocol import DEVICE_TO_BRIDGE, Frame, ProtocolError, decode_line, encode
+from bridge.ui import app as ui
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 
@@ -316,3 +317,38 @@ def test_the_import_laws_hold_everywhere(module, home):
         if pattern.match(line)
     ]
     assert offenders == [], f"{module} imported outside bridge/{home}/"
+
+
+# -- `05-bridge.md` §6.2 vs `bridge/ui/app.py` --------------------------
+
+
+#: The screen each §6.2 row group belongs to. A row names one screen, so the
+#: table and the class are the same fact said twice.
+SCREEN_CLASSES = {
+    "Chat": "ChatScreen",
+    "Status": "StatusScreen",
+    "Tasks": "TasksScreen",
+    "Logs": "LogsScreen",
+    "MQTT": "MqttScreen",
+    "Settings": "SettingsScreen",
+    "Files": "FilesScreen",
+}
+
+
+def test_the_binding_tables_match_the_screens_they_describe():
+    """A `Ctrl` key in the table is a binding in code, and every binding is in the
+    table. Keys a widget owns (`Up`, `Enter`, `Esc`) are not class bindings, so only
+    `Ctrl` chords are compared — the half that has drifted before."""
+    rows = _table_rows(_section(_read("05-bridge.md"), "6.2 Screen-Specific Bindings"))
+    documented: dict[str, set[str]] = {}
+    for screen, key, *_ in rows:
+        if screen not in SCREEN_CLASSES:  # `Editor` rows describe a modal
+            continue
+        for letter in re.findall(r"`Ctrl\+([A-Z])`", key):
+            documented.setdefault(screen, set()).add(letter.lower())
+    assert documented, "§6.2 documents no Ctrl binding"
+
+    for screen, letters in documented.items():
+        cls = getattr(ui, SCREEN_CLASSES[screen])
+        actual = {b.key[5:] for b in cls.BINDINGS if b.key.startswith("ctrl+")}
+        assert actual == letters, f"{screen}: code {sorted(actual)}, doc {sorted(letters)}"

@@ -52,12 +52,24 @@ def _app(device: Device) -> BridgeApp:
     return BridgeApp(Session(FakeTransport(on_write=device), ack_timeout=1, ping_interval=99))
 
 
-async def _fill(pilot, text: str) -> None:
-    """Type one answer and submit it. An empty `text` submits the pre-filled value."""
-    await pilot.pause(0.15)
-    for char in text:
-        await pilot.press(char)
-    await pilot.press("enter")
+async def _fill(pilot, widget: str, text: str) -> None:
+    """Type `text` into one field of the grouped form (`05` §13.6).
+
+    The form is one dialog, so a test fills fields instead of answering prompts
+    in sequence; the ordering rule is asserted on the wire either way.
+    """
+    await pilot.pause(0.05)
+    app = pilot.app
+    field = app.screen.query_one(widget)
+    field.focus()
+    field.value = text
+    await pilot.pause(0.02)
+
+
+async def _submit(pilot) -> None:
+    await pilot.pause(0.05)
+    pilot.app.screen.query_one("#onboard-ssid").focus()
+    await pilot.press("ctrl+s")
 
 
 async def test_onboard_writes_both_secrets_before_the_config():
@@ -66,8 +78,14 @@ async def test_onboard_writes_both_secrets_before_the_config():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.run_worker(app.onboard())
-        for answer in ("home", "hunter2", "", "sk-test", "gpt-4o-mini"):
-            await _fill(pilot, answer)
+        for widget, answer in (
+            ("#onboard-ssid", "home"),
+            ("#onboard-password", "hunter2"),
+            ("#onboard-api-key", "sk-test"),
+            ("#onboard-model", "gpt-4o-mini"),
+        ):
+            await _fill(pilot, widget, answer)
+        await _submit(pilot)
         await pilot.pause(0.3)
         await pilot.press("y")
         await pilot.pause(0.4)
@@ -96,10 +114,35 @@ async def test_cancelling_the_confirm_writes_nothing():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.run_worker(app.onboard())
-        for answer in ("home", "hunter2", "", "sk-test", "gpt"):
-            await _fill(pilot, answer)
+        for widget, answer in (
+            ("#onboard-ssid", "home"),
+            ("#onboard-password", "hunter2"),
+            ("#onboard-api-key", "sk-test"),
+            ("#onboard-model", "gpt"),
+        ):
+            await _fill(pilot, widget, answer)
+        await _submit(pilot)
         await pilot.pause(0.3)
         await pilot.press("n")
         await pilot.pause(0.3)
     assert not [row for row in device.order()
                 if row.startswith(("secret:", "config.set:"))]
+
+
+async def test_a_half_filled_domain_says_which_pair_it_needs():
+    """`03` `## Full schema` makes `password_ref` required, so an ssid alone
+    writes nothing; the report must name the pair, not call the answer empty."""
+    device = Device()
+    app = _app(device)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        app.run_worker(app.onboard())
+        await _fill(pilot, "#onboard-ssid", "home")
+        await _submit(pilot)
+        for _ in range(40):
+            await pilot.pause(0.05)
+        log = "\n".join(str(line.text) for line in app.query_one("#chat-log").lines)
+    assert "an ssid and a password" in log
+    assert "every answer was empty" not in log
+    # The connect handshake's `status` is the only frame; no write was sent.
+    assert [row for row in device.order() if row != "status:"] == []

@@ -73,6 +73,7 @@ Enforcement: `pytest-cov` for Python, and `firmware/test_host/coverage.sh` for t
 | `04` §2.1's device `→` bridge set equals `05` §10's row set | docs test |
 | every `04` §3 example decodes to the type in its own heading | docs test |
 | every `config.json` example in `03` satisfies the bounds in its `## config.json` §Full schema table (a test-side schema encodes that table) | docs test |
+| the `05` §6.2 keybinding table equals the `Ctrl` bindings on each screen class | docs test |
 | the `09` grep laws: `textual` only under `bridge/ui/`, `pyserial` only under `bridge/link/` | import-graph test, once `bridge/` exists |
 | the `08` dependency law: no same-layer import except the seven enumerated edges (five at L0, two at L2) | source-scan test, once `firmware/` exists |
 

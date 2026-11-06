@@ -7,15 +7,22 @@ holds, which is what makes it testable at this layer at all.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from bridge.ui.render import (
     PROMPT_SEPARATOR,
     UNREACHABLE,
     WIFI_WORDS,
+    binding_pairs,
     format_uptime,
+    hint_bar,
+    key_label,
     render_prompt_bar,
+    render_prompt_text,
 )
+from bridge.ui.render import _bar_segments, _fit
 
 
 def _bar(status, link="connected", ack=None, tokens=0, width=None):
@@ -125,3 +132,51 @@ def test_a_narrow_bar_drops_whole_segments_rather_than_half_a_word():
         # Every word shown is a whole segment of the full bar, never a prefix.
         assert all(part in whole for part in line.split(PROMPT_SEPARATOR))
         assert not line.endswith("…") and not line.endswith(PROMPT_SEPARATOR)
+
+
+# -- `05-bridge.md` §13.2–§13.3: the plain and styled bar are one projection -
+
+
+def test_the_styled_bar_carries_the_same_characters_as_the_plain_one():
+    """Colour is emphasis only; a monochrome terminal must lose nothing (`§13.2`)."""
+    status = {"wifi": {"state": "connected", "ssid": "home", "rssi": -58}}
+    plain = render_prompt_bar("connected", {"device": "m01"}, status, 1234)
+    styled = render_prompt_text("connected", {"device": "m01"}, status, 1234)
+    assert styled.plain == plain
+
+
+def test_a_degraded_link_is_a_warning_slot_and_a_linked_one_is_ok():
+    degraded = dict(_bar_segments("degraded", {}, {}, 0)).values()
+    linked = dict(_bar_segments("connected", {}, {}, 0)).values()
+    assert "warn" in degraded
+    assert "ok" in linked
+
+
+def test_fit_drops_whole_trailing_segments_and_never_the_first():
+    """A half segment reads as a different fact, so only whole ones go."""
+    segments = [("linked", "ok"), (" m01", "muted"), (" 12k", "muted")]
+    assert _fit(segments, 6) == [("linked", "ok")]
+    assert _fit(segments, 1) == [("linked", "ok")]
+    assert _fit(segments, 99) == segments
+
+
+def test_a_key_is_named_as_a_human_writes_it():
+    assert key_label("ctrl+d") == "Ctrl+D"
+    assert key_label("enter") == "Enter"
+    assert key_label("escape") == "Escape"
+
+
+def test_hints_are_derived_from_the_bindings_so_a_dead_key_cannot_be_named():
+    # A stub, not `textual.binding.Binding`: `09` §the grep laws keeps `textual`
+    # under `bridge/ui/`, and this is a pure function over two attributes.
+    bindings = [
+        SimpleNamespace(key="ctrl+r", description="Refresh"),
+        SimpleNamespace(key="ctrl+d", description="Delete"),
+    ]
+    pairs = binding_pairs(bindings)
+    assert pairs == [("Ctrl+R", "Refresh"), ("Ctrl+D", "Delete")]
+    line = hint_bar(pairs)
+    assert "Ctrl+R" in line.plain and "Refresh" in line.plain
+    # The key is bold, the verb is dim: two styles, never one for both.
+    styles = {span.style for span in line.spans if span.style}
+    assert styles

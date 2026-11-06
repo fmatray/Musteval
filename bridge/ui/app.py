@@ -12,6 +12,8 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from rich.text import Text
+
 from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
 
 from ..client import LinkState, Session
@@ -27,6 +29,7 @@ from .modals import (
     ConfirmPrompt,
     FilePrompt,
     FilterPrompt,
+    OnboardPrompt,
     SecretPrompt,
     ValuePrompt,
 )
@@ -44,12 +47,15 @@ from .splash import SPLASH_SECONDS, pick_tip, render_splash
 from . import onboard
 from .render import (
     LINK_WORDS,
+    binding_pairs,
     UNREACHABLE,
     SlashHighlighter,
     clip,
     render_diag,
     render_json_block,
+    hint_bar,
     render_prompt_bar,
+    render_prompt_text,
     render_status,
     render_tool_call,
     render_tool_result,
@@ -202,14 +208,15 @@ class ChatScreen(Vertical):
     def write(self, text: str) -> None:
         self.query_one("#chat-log", RichLog).write(text)
 
-    def render_bar(self, line: str) -> None:
+    def render_bar(self, line: str, styled: Text | None = None) -> None:
         """`05` §5.1: the fact line above the composer.
 
         The text is held here as well: textual 8's `Static` keeps no readable
-        renderable, and a test needs the line, not the widget.
+        renderable, and a test needs the line, not the widget. `styled` carries
+        the same characters with the §13.2 slots applied.
         """
         self.bar_line = line
-        self.query_one("#prompt-bar", Static).update(line)
+        self.query_one("#prompt-bar", Static).update(styled if styled is not None else line)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # OMP applies the selected row and then submits the applied value, which
@@ -322,7 +329,7 @@ class ChatScreen(Vertical):
 class StatusScreen(VerticalScroll):
     """`05-bridge.md` §5.2: the health grid, refreshed from `status`."""
 
-    BINDINGS = [Binding("r", "refetch", "Refresh", show=False)]
+    BINDINGS = [Binding("ctrl+r", "refetch", "Refresh", show=False)]
     # Focusable so its own bindings fire: otherwise the hidden Chat composer
     # keeps focus and swallows the key.
     can_focus = True
@@ -333,31 +340,34 @@ class StatusScreen(VerticalScroll):
         self.focus()
 
     def compose(self) -> ComposeResult:
-        yield Static("no status yet", id="status-body")
+        yield Static("no status yet: Ctrl+R asks the device", id="status-body")
 
     def action_refetch(self) -> None:
         self.app.run_worker(self.app._request("status"))  # type: ignore[attr-defined]
 
     def render_status(self, status: dict[str, Any]) -> None:
-        self.query_one("#status-body", Static).update("\n".join(render_status(status)))
+        self.query_one("#status-body", Static).update(
+            Text.from_markup("\n".join(render_status(status)))
+        )
 
 
 class TasksScreen(Vertical):
     """`05-bridge.md` §5.3. Every mutation re-issues `tasks.list`."""
 
+    # `05` §13.1: `Ctrl` + a letter, never a bare printable one, so a keystroke
+    # meant for the table cannot fire an action on the way past.
     BINDINGS = [
-        Binding("space", "toggle_enabled", "Enable", show=False),
-        Binding("e", "edit_task", "Edit", show=False),
-        Binding("d", "delete_task", "Delete", show=False),
-        Binding("n", "new_task", "New", show=False),
-        Binding("r", "refetch", "Refresh", show=False),
+        Binding("ctrl+x", "run_selected", "Run", show=False),
+        Binding("ctrl+y", "toggle_enabled", "Enable/disable", show=False),
+        Binding("ctrl+e", "edit_task", "Edit", show=False),
+        Binding("ctrl+d", "delete_task", "Delete", show=False),
+        Binding("ctrl+n", "new_task", "New", show=False),
+        Binding("ctrl+r", "refetch", "Refresh", show=False),
     ]
 
     def compose(self) -> ComposeResult:
-        yield DataTable(id="task-table", cursor_type="row")
-        yield Static(
-            "[Enter] Run [Space] Enable [D] Delete [R] Refresh", id="task-hint"
-        )
+        yield DataTable(id="task-table", cursor_type="row", zebra_stripes=True)
+        yield Static("", id="task-hint", markup=False)
 
     def on_mount(self) -> None:
         table = self.query_one("#task-table", DataTable)
@@ -365,24 +375,34 @@ class TasksScreen(Vertical):
 
     def on_show(self) -> None:
         self.query_one("#task-table", DataTable).focus()
+        self.query_one("#task-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS, [("Enter", "Run")]))
+        )
 
     def render_tasks(self, tasks: list[dict[str, Any]]) -> None:
         table = self.query_one("#task-table", DataTable)
         table.clear()
         for task in tasks:
             trigger = (task.get("trigger") or {}).get("type", "-")
+            # `05` §13.2: the word carries the fact; the colour only speeds it up.
+            state = Text("Enabled", style="green") if task.get("enabled") else Text(
+                "Disabled", style="yellow"
+            )
             table.add_row(
-                task.get("id", "-"),
+                Text(str(task.get("id", "-")), style="bold"),
                 task.get("description", "-"),
-                trigger,
-                "Enabled" if task.get("enabled") else "Disabled",
-                str(task.get("next_fire_at", "-")),
-                key=task.get("id"),
+                Text(trigger, style="dim"),
+                state,
+                Text(str(task.get("next_fire_at", "-")), style="dim"),
+                key=str(task.get("id")),
             )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         event.stop()
         self.app.run_worker(self.app.run_task(str(event.row_key.value)))  # type: ignore[attr-defined]
+
+    def action_run_selected(self) -> None:
+        self.app.run_worker(self.app.run_selected_task())  # type: ignore[attr-defined]
 
     def action_toggle_enabled(self) -> None:
         self.app.run_worker(self.app.toggle_task())  # type: ignore[attr-defined]
@@ -417,9 +437,9 @@ class LogsScreen(Vertical):
     """
 
     BINDINGS = [
-        Binding("slash", "edit_filter", "Filter", show=False),
-        Binding("c", "clear", "Clear", show=False),
-        Binding("s", "toggle_follow", "Follow", show=False),
+        Binding("ctrl+f", "edit_filter", "Filter", show=False),
+        Binding("ctrl+l", "clear", "Clear", show=False),
+        Binding("ctrl+y", "toggle_follow", "Follow", show=False),
     ]
     can_focus = True
 
@@ -492,14 +512,12 @@ class SettingsScreen(Vertical):
 
     # `Enter` is not bound here: `DataTable` consumes it as `select_cursor`, so
     # the edit is driven by `RowSelected` instead of a shadowed ancestor binding.
-    BINDINGS = [Binding("r", "refetch", "Fetch", show=False)]
+    BINDINGS = [Binding("ctrl+r", "refetch", "Fetch", show=False)]
 
     def compose(self) -> ComposeResult:
-        yield Static("no config yet: press R to fetch", id="settings-header")
-        yield DataTable(id="settings-table", cursor_type="row")
-        yield Static(
-            "[Enter] Edit  [R] Fetch from device", id="settings-hint", markup=False
-        )
+        yield Static("no config yet: Ctrl+R fetches it from the device", id="settings-header")
+        yield DataTable(id="settings-table", cursor_type="row", zebra_stripes=True)
+        yield Static("", id="settings-hint", markup=False)
 
     def on_mount(self) -> None:
         table = self.query_one("#settings-table", DataTable)
@@ -510,7 +528,7 @@ class SettingsScreen(Vertical):
         table = self.query_one("#settings-table", DataTable)
         table.clear()
         self.query_one("#settings-header", Static).update(
-            "device config" if values else "no config yet: press R to fetch"
+            "device config" if values else "no config yet: Ctrl+R fetches it from the device"
         )
         for row in ROWS:
             current = lookup(values, row.path) if values else None
@@ -526,6 +544,9 @@ class SettingsScreen(Vertical):
         # The table is the only thing here that takes keys; without this the
         # screen appears with focus left on the previous view and ignores Enter.
         self.query_one("#settings-table", DataTable).focus()
+        self.query_one("#settings-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS, [("Enter", "Edit")]))
+        )
 
     def selected_path(self) -> str | None:
         table = self.query_one("#settings-table", DataTable)
@@ -551,29 +572,30 @@ class FilesScreen(Vertical):
     """`05-bridge.md` §5.8. Browsing the agent sandbox, `/workspace/` only."""
 
     BINDINGS = [
-        Binding("e", "edit_file", "Edit", show=False),
-        Binding("d", "delete_entry", "Delete", show=False),
-        Binding("n", "new_file", "New", show=False),
-        Binding("m", "move_entry", "Move", show=False),
-        Binding("k", "new_directory", "Mkdir", show=False),
-        Binding("u", "go_up", "Up", show=False),
-        Binding("r", "refetch", "Refresh", show=False),
-        Binding("o", "upload_entry", "Upload", show=False),
-        Binding("w", "download_entry", "Download", show=False),
+        Binding("ctrl+e", "edit_file", "Edit", show=False),
+        Binding("ctrl+d", "delete_entry", "Delete", show=False),
+        Binding("ctrl+n", "new_file", "New", show=False),
+        Binding("ctrl+m", "move_entry", "Move", show=False),
+        Binding("ctrl+k", "new_directory", "Mkdir", show=False),
+        Binding("ctrl+u", "go_up", "Up", show=False),
+        Binding("ctrl+r", "refetch", "Refresh", show=False),
+        Binding("ctrl+o", "upload_entry", "Upload", show=False),
+        Binding("ctrl+x", "download_entry", "Download", show=False),
+        Binding("ctrl+f", "search", "Search", show=False),
     ]
 
     def compose(self) -> ComposeResult:
         yield Static("/workspace/", id="files-path")
-        yield DataTable(id="files-table", cursor_type="row")
-        yield Static(
-            "[Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir\n"
-            "[U] Up [R] Refresh [O] Upload [W] Download",
-            id="files-hint",
-        )
+        yield Static("", id="files-header", markup=False)
+        yield DataTable(id="files-table", cursor_type="row", zebra_stripes=True)
+        yield Static("", id="files-hint", markup=False)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.path: str = SANDBOX_ROOT
+        #: The unfiltered listing, kept so clearing the filter is instant.
+        self._all_entries: list[dict[str, Any]] = []
+        self._needle: str = ""
 
     def on_mount(self) -> None:
         table = self.query_one("#files-table", DataTable)
@@ -581,23 +603,66 @@ class FilesScreen(Vertical):
 
     def on_show(self) -> None:
         self.query_one("#files-table", DataTable).focus()
+        self.query_one("#files-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS, [("Enter", "Open")]))
+        )
 
     def render_entries(self, path: str, entries: list[dict[str, Any]]) -> None:
         table = self.query_one("#files-table", DataTable)
         table.clear()
+        if path != self.path:
+            # A filter names rows in one directory; carrying it into the next would
+            # hide entries the reader never asked about (`05` §13.5).
+            self._needle = ""
         self.path = path
         self.query_one("#files-path", Static).update(path)
-        if path != SANDBOX_ROOT:
+        self._all_entries = list(entries)
+        self._render_filtered()
+        self._render_header()
+
+    def _render_header(self) -> None:
+        """`05` §13.5: the applied filter is shown, so a hidden entry is explained."""
+        count = len(self._all_entries)
+        # The `..` row is navigation, not an entry, so it is not counted.
+        shown = len(self._shown_names())
+        needle = self._needle
+        if needle:
+            note = f"  filter {needle!r}: {shown} of {count}"
+        else:
+            note = f"  {count} entr" + ("y" if count == 1 else "ies")
+        self.query_one("#files-header", Static).update(Text(note, style="dim"))
+
+    def _shown_names(self) -> list[dict[str, Any]]:
+        needle = self._needle.lower()
+        return [
+            entry
+            for entry in getattr(self, "_all_entries", [])
+            if not needle or needle in str(entry.get("name", "")).lower()
+        ]
+
+    def _render_filtered(self) -> None:
+        table = self.query_one("#files-table", DataTable)
+        table.clear()
+        if self.path != SANDBOX_ROOT:
             table.add_row("d", "..", "-", key="..")
-        for entry in entries:
+        for entry in self._shown_names():
             name = str(entry.get("name", "-"))
             is_directory = bool(entry.get("dir"))
             table.add_row(
                 "d" if is_directory else "f",
                 name,
                 "-" if is_directory else str(entry.get("bytes", 0)),
-                key=f"{path.rstrip('/')}/{name}",
+                key=f"{self.path.rstrip('/')}/{name}",
             )
+
+    def needle(self) -> str:
+        return self._needle
+
+    def set_needle(self, needle: str) -> None:
+        """Narrow the listing without another `sandbox.list` (`05` §13.5)."""
+        self._needle = needle
+        self._render_filtered()
+        self._render_header()
 
     def current_path(self) -> str:
         return self.path
@@ -644,12 +709,17 @@ class FilesScreen(Vertical):
     def action_download_entry(self) -> None:
         self.app.run_worker(self.app.download_entry())  # type: ignore[attr-defined]
 
+    def action_search(self) -> None:
+        self.app.run_worker(self.app.search_files())  # type: ignore[attr-defined]
+
 
 class MqttScreen(Vertical):
     """`05-bridge.md` §5.5: read-only broker state and traffic."""
 
     BINDINGS = [
-        Binding("r", "refetch", "Refresh", show=False),
+        Binding("ctrl+r", "refetch", "Refresh", show=False),
+        # Arrows stay: §13.1 bans bare *printable* letters as actions, and an
+        # arrow cannot be mistaken for text.
         Binding("up", "move(-1)", "Up", show=False),
         Binding("down", "move(1)", "Down", show=False),
     ]
@@ -658,10 +728,14 @@ class MqttScreen(Vertical):
     def on_show(self) -> None:
         self.focus()
 
-    def compose(self) -> ComposeResult:
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # `05` §13.4: state belongs in the constructor; `compose` may run again.
         self.selected = 0
         self._brokers: list[dict[str, Any]] = []
-        yield Static("no brokers reported", id="mqtt-brokers")
+
+    def compose(self) -> ComposeResult:
+        yield Static("no brokers reported: Ctrl+R asks the device", id="mqtt-brokers")
         yield RichLog(id="mqtt-traffic", wrap=True, markup=False, highlight=False)
 
     def action_refetch(self) -> None:
@@ -676,15 +750,26 @@ class MqttScreen(Vertical):
     def render_brokers(self, servers: list[dict[str, Any]]) -> None:
         self._brokers = servers
         if not servers:
-            self.query_one("#mqtt-brokers", Static).update("no brokers reported")
+            self.query_one("#mqtt-brokers", Static).update(
+                "no brokers reported: Ctrl+R asks the device"
+            )
             return
-        lines = [
-            f"{'>' if index == self.selected else ' '} {s.get('id')}  "
-            f"{'connected' if s.get('connected') else 'disconnected'}  "
-            f"{len(s.get('subscriptions') or [])} subs"
-            for index, s in enumerate(servers)
-        ]
-        self.query_one("#mqtt-brokers", Static).update("\n".join(lines))
+        lines = []
+        for index, broker in enumerate(servers):
+            cursor = ">" if index == self.selected else " "
+            # `05` §13.2: the word carries the state, the colour speeds it up.
+            state = (
+                "[green]connected[/green]"
+                if broker.get("connected")
+                else "[red]disconnected[/red]"
+            )
+            subs = len(broker.get("subscriptions") or [])
+            lines.append(
+                f"[b]{cursor}[/b] {broker.get('id')}  {state}  [dim]{subs} subs[/dim]"
+            )
+        self.query_one("#mqtt-brokers", Static).update(
+            Text.from_markup("\n".join(lines))
+        )
 
     def write_traffic(self, body: dict[str, Any]) -> None:
         stamp = time.strftime("%H:%M:%S", time.localtime(body.get("received_ts") or 0))
@@ -893,6 +978,14 @@ class BridgeApp(App):
     async def run_task(self, task_id: str) -> None:
         await self._request("tasks.run", {"id": task_id})
 
+    async def run_selected_task(self) -> None:
+        """`05` §13.1: `Ctrl+X` runs the row under the cursor, same path as Enter."""
+        task_id = self._tasks_screen().selected_task_id()
+        if task_id is None:
+            self._chat().write("no task selected")
+            return
+        await self.run_task(task_id)
+
     async def toggle_task(self) -> None:
         task = self._task_by_id(self._tasks_screen().selected_task_id())
         if task is None:
@@ -958,6 +1051,17 @@ class BridgeApp(App):
             path += "/"
         self._files_path = path
         await self._request("sandbox.list", {"path": path})
+
+    async def search_files(self) -> None:
+        """`05` §13.5: narrow the listing locally, seeded with what is applied."""
+        screen = self._files()
+        typed = await self.push_screen_wait(
+            FilterPrompt(screen.needle(), "find in files", "name contains")
+        )
+        if typed is None:
+            screen.set_needle("")
+            return
+        screen.set_needle(typed)
 
     async def open_entry(self) -> None:
         """Enter: descend into a directory, or view a file."""
@@ -1232,16 +1336,18 @@ class BridgeApp(App):
         chat = self.query("#chat")
         if not chat:
             return
+        width = max(self.size.width - 4, 20)
         bar = render_prompt_bar(
-            self.session.state.value,
-            self._state,
-            self._last_status,
-            self._usage_total,
-            width=max(self.size.width - 4, 20),
+            self.session.state.value, self._state, self._last_status,
+            self._usage_total, width=width,
+        )
+        styled = render_prompt_text(
+            self.session.state.value, self._state, self._last_status,
+            self._usage_total, width=width,
         )
         # One row: the bar drops whole trailing segments rather than wrapping, so
         # a narrow terminal loses the rightmost facts, never the composer.
-        self._chat().render_bar(bar)
+        self._chat().render_bar(bar, styled)
 
     def on_resize(self) -> None:
         # The bar truncates to the width in force when it was drawn, so a narrow
@@ -1588,7 +1694,13 @@ class BridgeApp(App):
             return
         plan = onboard.writes(answers)
         if not plan:
-            self._chat().write("nothing to write: every answer was empty")
+            # Not "every answer was empty": an ssid with no password is a real
+            # answer that writes nothing, and telling the reader otherwise
+            # hides the rule they just broke (`03` §Full schema).
+            self._chat().write(
+                "nothing to write: a network needs an ssid and a password, "
+                "and a provider needs a base url, an api key and a model"
+            )
             return
         lines = onboard.narration(answers, self._config)
         if not await self.push_screen_wait(
@@ -1605,33 +1717,8 @@ class BridgeApp(App):
         await self._request("config.get")
 
     async def _onboard_prompts(self) -> onboard.Answers | None:
-        """The wizard. `None` means Esc at any step, and nothing is written."""
-        ssid = await self.push_screen_wait(ValuePrompt("Wifi SSID", ""))
-        if ssid is None:
-            return None
-        password = await self.push_screen_wait(
-            SecretPrompt(f"Wifi password for {ssid} (Esc to skip)")
-        )
-        if password is None:
-            password = ""
-        base_url = await self.push_screen_wait(
-            ValuePrompt("Provider base URL", "https://api.openai.com/v1")
-        )
-        if base_url is None:
-            return None
-        api_key = await self.push_screen_wait(SecretPrompt("Provider API key (Esc to skip)"))
-        if api_key is None:
-            api_key = ""
-        model = await self.push_screen_wait(ValuePrompt("Model", ""))
-        if model is None:
-            return None
-        return onboard.Answers(
-            ssid=ssid.strip(),
-            password=password.strip(),
-            base_url=base_url.strip(),
-            api_key=api_key.strip(),
-            model=model.strip(),
-        )
+        """`05` §13.6: one form for both domains. `None` means Esc, nothing written."""
+        return await self.push_screen_wait(OnboardPrompt(self._config))
 
     async def _onboard_secret(self, key: str, value: str) -> None:
         """One `secret.set`, via the existing path so redaction stays in one place."""

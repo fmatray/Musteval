@@ -216,7 +216,7 @@ Displays real-time device health.
 **Mockup:**
 ```text
 +-----------------------------------------------------------------------+
-| [Status]                                                   [R to Refre|
+| [Status]                                          [Ctrl+R] Refresh    |
 +-----------------------------------------------------------------------+
 | WIFI: connected (home-2g) | RSSI: -58dBm | IP: 192.168.1.42           |
 | TIME: 2026-11-02 12:00:15 | TZ: UTC | Synced: Yes                     |
@@ -234,14 +234,15 @@ Displays real-time device health.
 Lists scheduled and triggered tasks.
 
 - **Source**: `tasks.list` command.
-- **Interaction**: Arrow keys select a task. Enter runs it, `E` edits it, `Space`
-  toggles enabled, `D` deletes it after confirmation, `N` adds a new one. Mutations
-  re-issue `tasks.list` on `command.result` so the table never shows a stale row.
+- **Interaction**: Arrow keys select a task. Enter or `Ctrl+X` runs it, `Ctrl+E`
+  edits it, `Ctrl+Y` toggles enabled, `Ctrl+D` deletes it after confirmation,
+  `Ctrl+N` adds a new one, `Ctrl+R` re-lists. Mutations re-issue `tasks.list` on
+  `command.result` so the table never shows a stale row.
 
 **Mockup:**
 ```text
 +-----------------------------------------------------------------------+
-| [Tasks]                                              [R to Refresh]   |
+| [Tasks]                                     [Ctrl+R] Refresh          |
 +-----------------------------------------------------------------------+
 | ID        Description         Trigger       Status      Next Fire     |
 | --------  ------------------  ------------  ----------  -----------   |
@@ -250,8 +251,8 @@ Lists scheduled and triggered tasks.
 | nightly   Nightly backup      schedule      Disabled    -             |
 | > sensor  Temp check          gpio (pin 3)  Enabled     -             |
 +-----------------------------------------------------------------------+
-| [Enter] Run [E] Edit [Space] Enable [D] Delete [N] New [R] Refresh    |
-+-----------------------------------------------------------------------+
+| [Ctrl+X] Run  [Ctrl+E] Edit  [Ctrl+Y] Enable  [Ctrl+D] Delete         |
+| [Ctrl+N] New  [Ctrl+R] Refresh                                        |
 ```
 
 ### 5.4 Logs Screen (`/logs`, F5)
@@ -268,10 +269,10 @@ passes it, so widening the filter shows what already arrived instead of only wha
 arrives next. A line carries its level in brackets (`[warn]`), which is what both
 the colouring and the level filter read; a line with no bracket counts as `info`,
 and an unrecognised token such as `[trace]` also counts as `info` so it is never
-mistaken for a warning. `/` opens a one-line prompt holding the current filter,
-`tag` or `tag:level`; an unknown level names itself and changes nothing. `C` clears
-the buffer, `S` turns follow mode off so the view stays where the reader scrolled
-while lines keep arriving.
+mistaken for a warning. `Ctrl+F` opens a one-line prompt seeded with the current
+filter, `tag` or `tag:level`; an unknown level names itself and changes nothing.
+`Ctrl+L` clears the buffer, `Ctrl+Y` turns follow mode off so the view stays where
+the reader scrolled while lines keep arriving.
 
 **Mockup:**
 ```text
@@ -296,12 +297,12 @@ Chat input (`/mqtt publish`) or by the agent; the screen has no composer.
   - Scrolling log of inbound messages: time, topic, payload (single line).
   - Sanitised rendering: control characters are stripped and payloads are clipped
     for display. Payload text is never interpreted as a terminal escape sequence.
-  - `R` refreshes the broker list.
+  - `Ctrl+R` refreshes the broker list.
 
 **Mockup:**
 ```text
 +-----------------------------------------------------------------------+
-| [MQTT]  2 brokers                                    [R to Refresh]   |
+| [MQTT]  2 brokers                               [Ctrl+R] Refresh      |
 +-----------------------------------------------------------------------+
 | home   connected    4 subs                                            |
 | lab    disconnected 2 subs                                            |
@@ -335,9 +336,8 @@ each form moves to its own line with the summary indented beneath it. The result
 never exceeds 78 columns, so no line wraps on a narrow terminal.
 
 ```text
-F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files
-Ctrl+R Reconnect | Ctrl+Q Quit
-Esc Closes a modal and cancels a run
+F1 Help  | F2 Chat   | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files
+Ctrl+R Reconnect | Ctrl+Q Quit | Esc Closes a modal and cancels a run
 ```
 
 The modal itself, over whatever screen was open:
@@ -364,13 +364,15 @@ children) are not rows, because they need a form rather than a line.
 
 Opening the screen sends `config.get` with no `path` once and renders
 the reply through `flatten`, which indexes arrays so a dotted row finds its value
-(`04` §4.8). Until a config has been fetched the value column reads `-` and a note
-says so; nothing here invents a default and presents it as the device's answer.
+(`04` §4.8). Until a config has been fetched the value column reads `-` and the
+heading reads `no config yet: Ctrl+R fetches it from the device`, so the screen names
+the key that fills it; nothing here invents a default and presents it as the device's
+answer.
 
 Fetched is recorded separately from what came back, because an empty config and a
 config never asked for are both an empty mapping. A device that reports no config
-must therefore be fetched once, not on every return to the screen; `R` is the only
-thing that asks again.
+must therefore be fetched once, not on every return to the screen; `Ctrl+R` is the
+only thing that asks again.
 
 `Enter` on a row opens a pre-filled prompt. The typed text is coerced to the row's
 kind and checked against the bounds column before sending, so an out-of-range value
@@ -388,7 +390,7 @@ shows what the device actually holds.
 | wifi.connect_timeout_ms      15000              15000      1000..     |
 | llm.max_calls_per_hour       100                100        0..100000  |
 +-----------------------------------------------------------------------+
-| [Enter] Edit [R] Fetch from device                                    |
+| [Enter] Edit  [Ctrl+R] Fetch from device                              |
 +-----------------------------------------------------------------------+
 ```
 
@@ -426,18 +428,18 @@ An empty directory asks without a count, because there is nothing to lose, and t
 frame omits `recursive` (`04` §4.19). The destructive form of the command is never
 sent for a directory the reader was not told the size of.
 
-`M` moves or renames the selected entry through `sandbox.move`, with the prompt
+`Ctrl+M` moves or renames the selected entry through `sandbox.move`, with the prompt
 pre-filled with the current path so a rename is an edit rather than retyping. The
 target is normalised locally by `sandbox_normalise`, so a path outside `/workspace/`
-is refused before a frame is sent. `K` creates a directory via `sandbox.mkdir`, in
-the directory currently browsed. `N` creates a new empty file through `sandbox.write`
-with an empty body, then opens it for editing. Both `N` and `K` re-request the
+is refused before a frame is sent. `Ctrl+K` creates a directory via `sandbox.mkdir`, in
+the directory currently browsed. `Ctrl+N` creates a new empty file through `sandbox.write`
+with an empty body, then opens it for editing. Both `Ctrl+N` and `Ctrl+K` re-request the
 listing on success, so the new entry appears without a manual refresh.
 
 ### 5.8.1 Upload and Download
 
 `W` downloads the selected entry to the host, `O` uploads a host file into the
-directory currently browsed. `U` is already "up one directory", so the download key
+directory currently browsed. `Ctrl+U` is already "up one directory", so the download key
 is the mnemonic that did not collide. The two directions are separate keys rather than one
 modal with a direction toggle, because a modal that asks which way round the copy
 goes makes the reader answer a question the keypress already answered.
@@ -477,20 +479,23 @@ keybinding nobody can discover is not a feature.
 
 ```text
 +-----------------------------------------------------------------------+
-| /workspace/runs                                                       |
+| /workspace/runs                              3 entries                |
 |Type  Name                              Bytes                          |
 | d     ..                               -                              |
 | d     2026-11-02                       -                              |
 | f     notes.md                         412                            |
 | f     run_7.json                       1834                           |
 +-----------------------------------------------------------------------+
-| [Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir           |
-| [U] Up [R] Refresh [O] Upload [W] Download                            |
+| Ctrl+E Edit  Ctrl+D Delete  Ctrl+M Move  Ctrl+N New  Ctrl+K Mkdir     |
+| Ctrl+U Up  Ctrl+R Refresh  Ctrl+O Upload  Ctrl+X Download             |
+| Ctrl+F Find  Enter Open                                               |
 +-----------------------------------------------------------------------+
 ```
 
-`U` goes up one directory, and stops at `/workspace/`, which is the root this
-screen can see. `R` re-requests the listing for the current path.
+`Ctrl+U` goes up one directory and stops at `/workspace/`, the root this screen
+can see. `Ctrl+R` re-requests the listing for the current path. `Ctrl+F` narrows
+the rows already held, without another `sandbox.list`; the heading then reads
+`filter 'x': 2 of 9`, so a missing entry is explained rather than mysterious.
 
 ### 5.9 Splash Screen
 
@@ -512,8 +517,9 @@ dismissing it needs no screen-stack plumbing.
     viewer as a blob whatever it was meant to be. Drawing the name is the part
     that is legible by construction.
   - **The art is a side profile, not a face.** What survives at this size is the
-    long low body, the tail sweeping up behind it, two ear tufts, one eye and four
-    short legs. A head alone reads as a cat; a head with tall ears reads as a bat;
+    long low body, the tail sweeping up behind it, two tufted ears, one eye and
+    four short legs. It is seven rows and 34 columns, so wordmark and art stack
+    inside the 78-column budget. A head alone reads as a cat; a head with tall ears reads as a bat;
     both were drawn and rejected before this shape was kept. The eye stays a
     literal `o` rather than a block so it survives the half-block merge.
   - **Solid blocks, not line art.** An outline made of `/ \ _ |` reads as scratches
@@ -549,6 +555,17 @@ its own `DEFAULT_CSS` with `layout: vertical`, and the more specific rule wins. 
 symptom is a box pinned to the top-left while the stylesheet still reads correctly,
 so a parametrised test measures each modal's rendered region and requires it within
 one cell of centre on both axes.
+
+Width follows content rather than a constant: a one-line prompt is narrow, the
+editor takes most of the screen because a file is not a sentence, and every box
+carries `max-width: 100%` so a 40-column terminal still shows the whole of it.
+Textual has no CSS `min()`, so this is a clamp applied in the stylesheet, not a
+measured `max-content`; a very narrow terminal clips rather than overflows.
+
+State a modal needs — the selected row, the brokers already known, the answers
+being edited — is set in `__init__`, never in `compose()`. A `compose()` that mutates
+the screen re-applies its initial value on every mount, so a modal dismissed and
+reopened loses what the reader had chosen.
 
 ## 6. Keybindings
 
@@ -587,42 +604,44 @@ future that is never resolved.
 | Screen | Key | Action |
 |---|---|---|
 | Chat | `Enter` | Send prompt |
-| Chat | `Ctrl+J` | Insert newline in input |
+| Chat | `Ctrl+J` / `Shift+Enter` | Insert newline in input |
 | Chat | `Right`/`Tab` | Accept the autocomplete suggestion in the composer. With no suggestion pending, `Tab` does nothing: it never moves focus, because a keystroke landing in the conversation log is silently lost |
 | Chat | `Up`/`Down` | Recall a submitted prompt; `Down` past the newest returns to the draft |
 | Chat | `Esc` | No modal and no other screen on top: cancel the current agent run (`cancel` message) |
 | Chat | `Ctrl+L` | Clear current session scrollback |
-| Status | `R` | Request `status` command |
+| Status | `Ctrl+R` | Request `status` command |
 | Tasks | `Up`/`Down` | Navigate task list |
 | Tasks | `Enter` | Send `tasks.run` for selected ID |
-| Tasks | `E` | Edit selected task in a JSON modal, send `tasks.set` |
-| Tasks | `Space` | Toggle `enabled` on selected task, send `tasks.set` |
-| Tasks | `D` | Delete selected task after `y`/`n`, send `tasks.delete` |
-| Tasks | `N` | Add a new task from a blank JSON modal, send `tasks.set` |
-| Tasks | `R` | Request `tasks.list` command |
-| Logs | `/` | Open filter search box |
-| Logs | `C` | Clear log buffer |
-| Logs | `S` | Toggle follow-mode (auto-scroll) |
+| Tasks | `Ctrl+E` | Edit selected task in a JSON modal, send `tasks.set` |
+| Tasks | `Ctrl+Y` | Toggle `enabled` on selected task, send `tasks.set` |
+| Tasks | `Ctrl+D` | Delete selected task after `y`/`n`, send `tasks.delete` |
+| Tasks | `Ctrl+N` | Add a new task from a blank JSON modal, send `tasks.set` |
+| Tasks | `Ctrl+R` | Request `tasks.list` command |
+| Tasks | `Ctrl+X` | Run the selected task, send `tasks.run` |
+| Logs | `Ctrl+F` | Open the filter line, seeded with the applied filter |
+| Logs | `Ctrl+L` | Clear log buffer |
+| Logs | `Ctrl+Y` | Toggle follow-mode (auto-scroll) |
 | MQTT | `Up`/`Down` | Navigate broker/ message list |
-| MQTT | `R` | Request `mqtt.status` command |
+| MQTT | `Ctrl+R` | Request `mqtt.status` command |
 | Settings | `Up`/`Down` | Move between config rows |
 | Settings | `Enter` | Edit the selected row in a pre-filled prompt, then send `config.set` |
-| Settings | `R` | Re-request `config.get` |
+| Settings | `Ctrl+R` | Re-request `config.get` |
 | Settings | `Esc` | Cancel the edit prompt; on no prompt, back to Chat |
 | Files | `Up`/`Down` | Move between entries |
 | Files | `Enter` | Open the selected directory, or view the selected file |
-| Files | `E` | Edit the selected file in a `TextArea` modal, send `sandbox.write` on `Ctrl+S` |
-| Files | `D` | Delete the selected entry after `y`/`n`, send `sandbox.delete`; a directory is listed first and its entry count named |
-| Files | `M` | Move or rename the selected entry through `sandbox.move`, prompt pre-filled with its current path |
-| Files | `N` | Create an empty file at a prompted name, send `sandbox.write`, then edit it |
-| Files | `K` | Create a directory at a prompted name, send `sandbox.mkdir` |
+| Files | `Ctrl+E` | Edit the selected file in a `TextArea` modal, send `sandbox.write` on `Ctrl+S` |
+| Files | `Ctrl+D` | Delete the selected entry after `y`/`n`, send `sandbox.delete`; a directory is listed first and its entry count named |
+| Files | `Ctrl+M` | Move or rename the selected entry through `sandbox.move`, prompt pre-filled with its current path |
+| Files | `Ctrl+N` | Create an empty file at a prompted name, send `sandbox.write`, then edit it |
+| Files | `Ctrl+K` | Create a directory at a prompted name, send `sandbox.mkdir` |
 | Editor | `Ctrl+F` | Search: first `Enter` finds, second replaces every match in one undo step |
 | Editor | `F3` | Jump to the next match, wrapping at the end of the buffer |
 | Editor | `Ctrl+Z` / `Ctrl+Y` | Undo and redo |
-| Files | `O` | Upload a host file or directory into the browsed directory, send `sandbox.mkdir` and `sandbox.write` |
-| Files | `W` | Download the selected entry to a prompted host path, one `sandbox.read` per file |
-| Files | `U` | Go up one directory, stopping at `/workspace/` |
-| Files | `R` | Re-request `sandbox.list` for the current path |
+| Files | `Ctrl+O` | Upload a host file or directory into the browsed directory, send `sandbox.mkdir` and `sandbox.write` |
+| Files | `Ctrl+X` | Download the selected entry to a prompted host path, one `sandbox.read` per file |
+| Files | `Ctrl+U` | Go up one directory, stopping at `/workspace/` |
+| Files | `Ctrl+R` | Re-request `sandbox.list` for the current path |
+| Files | `Ctrl+F` | Find: narrow the listing by name substring, locally |
 
 ## 7. Slash Commands
 
@@ -668,7 +687,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
 | `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
-| `/onboard` | `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard: six modals for SSID, password, provider URL, API key, model, then a confirm. Writes both secrets first, then `wifi.networks` and `llm.providers` as whole arrays, then `llm.model`, then re-reads `config.get`. Refuses at once on `down`, `linking` or `refused` |
+| `/onboard` | `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard: one form per domain — network (SSID, password) and LLM (base URL, API key, model) — each pre-filled from the current config, then a confirm. One `Ctrl+S` submits all five fields, so an answer can be revised after reading a later one. Writes both secrets first, then `wifi.networks` and `llm.providers` as whole arrays, then `llm.model`, then re-reads `config.get`. Refuses at once on `down`, `linking` or `refused` |
 | `/quit` | (Local) | none | Exits TUI |
 
 Commands marked `(Local)` render from state the bridge already holds from
@@ -701,8 +720,9 @@ refusal rather than retrying under another name.
 `/tasks add` takes no `<id>`: the id is a field inside the task body, so a blank
 modal with every field empty is the only unambiguous starting point. Typing
 `/tasks add morning` and getting a modal that pre-fills one field would leave the
-other eleven to guesswork. Both `/tasks add` and the Tasks screen's `N` open the same
-modal; `/tasks set <id>` and the screen's `E` open the same cached-entry modal.
+other eleven to guesswork. Both `/tasks add` and the Tasks screen's `Ctrl+N` open the
+same modal; `/tasks set <id>` and the screen's `Ctrl+E` open the same cached-entry
+modal.
 
 `/tasks enable|disable` are shorthands, not a separate protocol operation: the
 bridge takes the entry from its last `tasks.list` result, flips `enabled`, and sends
@@ -811,3 +831,132 @@ It proves nothing about firmware. The validation ladder, the reply table, the
 scenario flags and the limits of the fake peer are in `10-test-agent.md`; they
 are not restated here, because a second copy of a reply table is a second table
 to keep true.
+
+## 13. UX Rules
+
+These are the rules a new screen, modal or keybinding is held to. They exist because
+the screens grew one at a time and each solved the same problem slightly differently:
+nine screens, three spellings of the same hint line, and a mnemonic key that meant
+"delete" on one screen and "download" on another. A rule that is only in a reviewer's
+head does not survive the next screen.
+
+### 13.1 Keys
+
+| Rule | Why |
+|---|---|
+| **`Ctrl` + a letter for every action.** A single printable letter is never an action while a table or a text field has focus. | The same letter meant different things per screen, so muscle memory from Files destroyed a task, and no key could be pressed while typing a filename into a prompt. |
+| Function keys remain as **aliases** for the seven screens only (`F1`–`F7`). | They are in the muscle memory of the first users and cost nothing, but they are not the documented route: §6.1 lists them second. |
+| `Enter` and `Esc` keep their platform meaning. | `Enter` activates the focused row and `Esc` leaves; remapping either to a letter's job makes every widget fight the screen. |
+| A destructive action is confirmed by `y`/`n` **only in its own confirmation modal**, never on the screen itself. | A screen-level `y` would fire while the cursor sits on a row, so a stray keystroke deletes. A modal routes the key to the question. |
+| Two actions never share a key on one screen. | `W`/`O` were chosen because `U` was taken; that is a collision being discovered after the fact, not a design. |
+
+The `Ctrl` letters are chosen per screen and reused across screens for the same job,
+so the set is learnable once rather than per screen:
+
+| Letter | Job, wherever it appears |
+|---|---|
+| `Ctrl+R` | Refresh / re-fetch the thing this screen shows |
+| `Ctrl+N` | New |
+| `Ctrl+E` | Edit |
+| `Ctrl+D` | Delete |
+| `Ctrl+M` | Move or rename |
+| `Ctrl+K` | Create a directory |
+| `Ctrl+U` | Up one level, or upload |
+| `Ctrl+O` | Open, or download |
+| `Ctrl+F` | Find / filter |
+| `Ctrl+S` | Save (editing only) |
+| `Ctrl+Y` | Toggle (follow mode, enabled state) |
+| `Ctrl+X` | Run or execute |
+
+A key that would mean two things on one screen is a design error, not a table entry.
+
+### 13.2 Colour
+
+Colour is an **enhancement, never the only carrier of a fact.** Every rule below
+keeps the plain text identical when colour is unavailable, so a monochrome terminal
+and a screen reader lose no information. This is the same rule as §5's syntax
+highlighting, applied to the chrome.
+
+| Slot | Meaning | Fallback |
+|---|---|---|
+| `$success` | healthy: `linked`, `up`, `Enabled`, a stored value | the word itself |
+| `$warning` | degraded but working: `flaky`, `wifi failed`, `SAFE MODE`, `Disabled` | the word itself |
+| `$error` | broken: `down`, `refused`, `llm down`, an error code | the word itself |
+| `$text-muted` | context that must not compete with the value: units, defaults, bounds, hints | dim text |
+| `$accent` | the heading that names what the panel is, and the selected row's marker | bold |
+
+Semantic slots come from the application theme (`THEME` in `bridge/ui/app.py`), not
+from hard-coded hex in a widget, so a terminal in a light theme gets a light palette
+and a contrast that still holds. The one fixed colour is the splash gradient, which
+is the identity mark rather than chrome.
+
+### 13.3 Hint lines
+
+Every screen ends in a **hint line**, and every hint line is built by one function,
+`hint_bar()` in `bridge/ui/render.py`, from the same `(key, label)` pairs the screen's
+`BINDINGS` already declare. Three rules follow from that:
+
+- **The hint cannot drift from the binding.** It is not a hand-written string; if a
+  key changes, the hint changes in the same edit. A hint that names a key the screen
+  no longer binds is a lie the user acts on.
+- **The key is styled, the label is muted.** `Ctrl+D` in `$accent` and `Delete` in
+  `$text-muted` reads as a key and a verb at a glance in a line of eight.
+- **It wraps rather than truncating.** A screen with more than a terminal's worth of
+  keys loses the last one silently if it is clipped; wrapping costs a row and keeps
+  every key discoverable.
+
+`Enter` and `Esc`, where the screen acts on them, are written into the same line as
+if they were bindings, because from the reader's side they are.
+
+### 13.4 Modals
+
+- **Width follows the content, bounded by the terminal.** A one-line prompt is not
+  widened to 90 columns to match the editor, and the editor is not pinned to 90 on a
+  60-column terminal. Width is `min(content, terminal - margin)`.
+- **A modal that edits a document is wide.** The file editor takes at least 80% of
+  the terminal width, because a document wrapped at 60 columns is unreadable and the
+  wrap point is not the file's.
+- **Vertical is content-sized** unless the content is a document, which takes a
+  fraction of the screen and scrolls inside itself.
+- **State is set in `__init__`, never in `compose()`.** `compose` may run more than
+  once and is a pure description of the tree; a constructor assignment inside it
+  resets the screen on a re-mount.
+- **`Esc` always leaves**, per §5.10 and §6.1.
+
+### 13.5 Search and filtering
+
+A list longer than a screen needs a way to narrow it without leaving the screen.
+
+- `Ctrl+F` opens the screen's filter, seeded with what is currently applied, so
+  refining beats retyping.
+- The filter is a **case-insensitive substring** over the columns a reader would
+  search by name, not a regex: a terminal user typing `run_7` should not have to
+  escape a `_`.
+- Filtering never re-orders what it keeps. The rows are the device's order, narrowed.
+- The applied filter is **shown**, in the screen's heading, so a reader who forgot it
+  is not left wondering where an entry went.
+- Clearing the filter is one key (`Esc` in the filter bar, or an emptied field), and
+  restoring the full list is instant because the rows are all still held.
+
+### 13.6 Onboarding
+
+`/onboard` groups its questions **by domain** in one form — a `Wi-Fi` section, an
+`LLM` section, then a confirmation that lists every write — rather than one dialog
+per value. Six
+sequential one-value prompts ask the reader to answer a question before they can see
+the next one, so they cannot change their mind about the first answer once they see
+the third, and there is no surface that says how many steps remain. `OnboardPrompt`
+in `bridge/ui/modals.py` is that form: a scrolling box with a `Wi-Fi` section and an
+`LLM` section, both pre-filled from the config already held, secrets masked, and one
+`Ctrl+S` to submit the whole page.
+
+Within a domain the fields are shown together, each labelled with the config path it
+writes, so the reader sees the whole of `wifi.*` before committing any of it.
+
+### 13.7 Empty and loading states
+
+A screen with no data says **which command would fill it**, not only that it is
+empty. `no config yet: Ctrl+R to fetch` tells the reader the next action; `no config`
+leaves them to guess whether the device is silent, the screen is broken, or they are
+on the wrong screen. No screen may present a spinner or a blank panel where a word
+and a key would do.

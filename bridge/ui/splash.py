@@ -21,12 +21,13 @@ from rich.text import Text
 #: `05-bridge.md` §5.9: stored unpadded, padded to the block width when drawn, so
 #: the panel never jitters and the literals carry no meaningless trailing spaces.
 MASCOT: tuple[str, ...] = (
-    '   ▄▄▄▄▄▄▄',
-    '   ▀███████▄                ▄▄ ▄▄',
-    '      ▀▀▀▀▀██▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄██▄██',
-    '          █████████████████████o▄█▀',
-    '           ▀▀██▀▀▀▀██▀▀▀██▀██',
-    '             ██    ██   ██ ██',
+    '         ▄▄▄▄▄▄▄',
+    '   ▄▄▄▄▄▀▀███████▄         ▄▄▄ ▄▄▄',
+    '  ████████████████▄▄▄▄▄▄▄▄▄███▄███',
+    ' ▀▀▀▀▀▀▀▀▀▀█████████████████o███▀',
+    '             ▀▀██▀▀▀▀██▀▀▀██▀██',
+    '               ██    ██   ██ ██',
+    '               ▀▀    ▀▀   ▀▀ ▀▀',
 )
 
 #: The name in half-block letters, the same form the omp lockup uses. At this
@@ -54,7 +55,7 @@ _STOPS: tuple[tuple[int, int, int], ...] = (
 #: `05-bridge.md` §5.9. Every `/name` here must be in `help.COMMANDS`; the
 #: drift test holds the two together.
 TIPS: tuple[str, ...] = (
-    "/onboard walks through wifi, the provider key and the model, one modal at a time",
+    "/onboard asks for wifi and the provider in one form, grouped by domain",
     "/settings edits every scalar in config.json without memorising a dotted path",
     "/secret set api_key prompts masked and stores the value in NVS, never in a file",
     "/tasks add schedules a recurring prompt that runs on the device, not here",

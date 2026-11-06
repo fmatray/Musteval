@@ -14,7 +14,7 @@ from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
 from bridge.ui.app import FilesScreen, SANDBOX_ROOT
-from bridge.ui.modals import FilePrompt
+from bridge.ui.modals import FilePrompt, FilterPrompt
 
 from .test_ui import _reply
 from .test_ui_input import _connected
@@ -164,7 +164,7 @@ async def test_u_at_the_root_stays_at_the_root():
     async with app.run_test() as pilot:
         screen = await _open_files(pilot, app)
         screen.query_one("#files-table").focus()
-        await pilot.press("u")
+        await pilot.press("ctrl+u")
         await pilot.pause(0.2)
         assert screen.current_path() == "/workspace/"
 
@@ -216,7 +216,7 @@ async def test_d_then_y_deletes_one_entry_and_y_at_the_root_is_impossible():
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=1)
-        await pilot.press("d")
+        await pilot.press("ctrl+d")
         await pilot.pause(0.2)
         assert not _device.deleted  # asked first
         await pilot.press("y")
@@ -236,7 +236,7 @@ async def test_d_on_a_populated_directory_names_the_count_before_deleting():
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=0)  # runs/
-        await pilot.press("d")
+        await pilot.press("ctrl+d")
         await pilot.pause(0.2)
         assert not _device.deleted  # type: ignore[attr-defined]
         question = app.screen.question
@@ -259,7 +259,7 @@ async def test_an_empty_directory_deletes_without_recursive():
             table = screen.query_one("#files-table")
             table.focus()
             table.move_cursor(row=0)
-            await pilot.press("d")
+            await pilot.press("ctrl+d")
             await pilot.pause(0.2)
             assert "empty directory" in app.screen.question
             await pilot.press("y")
@@ -276,9 +276,9 @@ async def test_d_then_n_at_the_confirmation_sends_nothing():
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=0)
-        await pilot.press("d")
+        await pilot.press("ctrl+d")
         await pilot.pause(0.2)
-        await pilot.press("n")
+        await pilot.press("ctrl+n")
         await pilot.pause(0.2)
         assert not _device.deleted  # type: ignore[attr-defined]
 
@@ -290,7 +290,7 @@ async def test_m_moves_the_selected_file_through_the_move_command():
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=1)  # notes.txt
-        await pilot.press("m")
+        await pilot.press("ctrl+m")
         await pilot.pause(0.2)
         # The prompt starts at the current path, so a rename is an edit.
         value = app.screen.query_one("#value-input").value
@@ -314,7 +314,7 @@ async def test_w_downloads_the_selected_file_to_the_chosen_host_path(tmp_path):
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=1)  # notes.txt
-        await pilot.press("w")
+        await pilot.press("ctrl+x")
         await pilot.pause(0.2)
         value = app.screen.query_one("#value-input").value
         for _ in range(len(value)):
@@ -335,7 +335,7 @@ async def test_w_refuses_a_truncated_read_instead_of_writing_a_prefix(tmp_path):
         table.focus()
         table.move_cursor(row=1)
         _device.truncated = {"/workspace/notes.txt"}  # type: ignore[attr-defined]
-        await pilot.press("w")
+        await pilot.press("ctrl+x")
         await pilot.pause(0.2)
         value = app.screen.query_one("#value-input").value
         for _ in range(len(value)):
@@ -358,7 +358,7 @@ async def test_w_downloads_a_directory_as_a_tree(tmp_path):
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=0)  # runs/ sorts before notes.txt
-        await pilot.press("w")
+        await pilot.press("ctrl+x")
         await pilot.pause(0.2)
         value = app.screen.query_one("#value-input").value
         for _ in range(len(value)):
@@ -381,7 +381,7 @@ async def test_o_uploads_a_host_file_into_the_browsed_directory(tmp_path):
     async with app.run_test() as pilot:
         await _open_files(pilot, app)
         app.query_one(FilesScreen).query_one("#files-table").focus()
-        await pilot.press("o")
+        await pilot.press("ctrl+o")
         await pilot.pause(0.2)
         await pilot.press(*str(source))
         await pilot.press("enter")
@@ -396,7 +396,7 @@ async def test_m_refuses_a_target_outside_the_sandbox_locally():
         table = screen.query_one("#files-table")
         table.focus()
         table.move_cursor(row=1)
-        await pilot.press("m")
+        await pilot.press("ctrl+m")
         await pilot.pause(0.2)
         value = app.screen.query_one("#value-input").value
         for _ in range(len(value)):
@@ -415,7 +415,7 @@ async def test_k_creates_a_directory_in_the_current_directory():
     async with app.run_test() as pilot:
         screen = await _open_files(pilot, app)
         screen.query_one("#files-table").focus()
-        await pilot.press("k")
+        await pilot.press("ctrl+k")
         await pilot.pause(0.2)
         await pilot.press(*"archive")
         await pilot.press("enter")
@@ -428,7 +428,7 @@ async def test_n_creates_a_file_in_the_current_directory():
     async with app.run_test() as pilot:
         screen = await _open_files(pilot, app)
         screen.query_one("#files-table").focus()
-        await pilot.press("n")
+        await pilot.press("ctrl+n")
         await pilot.pause(0.2)
         await pilot.press(*"new.txt")
         await pilot.press("enter")
@@ -485,3 +485,59 @@ async def test_a_file_above_the_chunk_cap_is_staged_in_several_frames():
         assert [f["final"] for f in frames] == [False, False, True]
         # `bytes` is the decoded length, so the sum is the file the user typed.
         assert _device.buffers["/workspace/big.txt"].decode() == body  # type: ignore[attr-defined]
+
+
+async def test_ctrl_f_narrows_the_listing_without_a_refetch():
+    """`05` §13.5: a filter is local, shown, and cleared in one key."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        before = len([n for n in _device.lists])  # type: ignore[attr-defined]
+        await pilot.press("ctrl+f")
+        for _ in range(60):
+            if isinstance(app.screen, FilterPrompt):
+                break
+            await pilot.pause(0.02)
+        app.screen.query_one("#filter-input").value = "not"
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert _names(screen) == ["notes.txt"]
+        assert "1 of 2" in str(screen.query_one("#files-header").content)
+        assert len([n for n in _device.lists]) == before  # type: ignore[attr-defined]
+
+        screen.query_one("#files-table").focus()
+        await pilot.press("ctrl+f")
+        for _ in range(60):
+            if isinstance(app.screen, FilterPrompt):
+                break
+            await pilot.pause(0.02)
+        # Seeded with what is applied, so refining beats retyping (§13.5).
+        assert app.screen.query_one("#filter-input").value == "not"
+        app.screen.query_one("#filter-input").value = ""
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert _names(screen) == ["runs", "notes.txt"]
+
+
+async def test_the_filter_is_dropped_when_the_directory_changes():
+    """`05` §13.5: a filter names rows in one directory, so it dies with it."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        screen.set_needle("notes")
+        assert _names(screen) == ["notes.txt"]
+        await app.browse("/workspace/runs")
+        await pilot.pause(0.2)
+        assert _names(screen) == ["..", "last.jsonl"]
+        assert "filter" not in str(screen.query_one("#files-header").content)
+
+
+async def test_the_header_counts_entries_and_not_the_parent_row():
+    """The `..` row is navigation; counting it makes `2 entries` name one."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        assert "2 entries" in str(screen.query_one("#files-header").content)
+        await app.browse("/workspace/runs")
+        await pilot.pause(0.2)
+        assert "1 entry" in str(screen.query_one("#files-header").content)

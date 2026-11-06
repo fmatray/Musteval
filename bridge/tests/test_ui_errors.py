@@ -291,7 +291,7 @@ async def test_deleting_a_directory_asks_before_sending_anything():
         # A directory is now listed and its count named before the confirmation;
         # the delete is only sent after `y` (`05` §5.8). Driven by the key rather
         # than the method because `push_screen_wait` needs the binding's worker.
-        await pilot.press("d")
+        await pilot.press("ctrl+d")
         await pilot.pause(0.2)
         assert "sandbox.delete" not in sent
         assert app.screen.question

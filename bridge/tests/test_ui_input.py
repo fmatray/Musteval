@@ -441,7 +441,7 @@ async def test_a_log_frame_reaches_the_buffer_with_its_level_visible_to_the_filt
         await session.close()
 
 
-async def test_clear_empties_the_log_buffer():
+async def test_ctrl_l_clears_the_log_buffer():
     session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
@@ -451,20 +451,20 @@ async def test_clear_empties_the_log_buffer():
         for level in ("warn", "info"):
             app._on_log(Frame(type="log", id="d-1", ts=0,
                               body={"level": level, "tag": "net", "msg": "x"}))
-        await pilot.press("c")
+        await pilot.press("ctrl+l")
         await pilot.pause(0.1)
         assert len(app.query_one("#logs").buffer) == 0
         await session.close()
 
 
-async def test_follow_toggles_and_the_header_says_so():
+async def test_ctrl_y_toggles_follow_and_the_header_says_so():
     session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.action_show("logs")
         await pilot.pause(0.1)
-        await pilot.press("s")
+        await pilot.press("ctrl+y")
         await pilot.pause(0.1)
         assert "OFF" in str(app.query_one("#log-header").content)
         await session.close()
@@ -473,7 +473,7 @@ async def test_follow_toggles_and_the_header_says_so():
 # -- Status and MQTT refresh -------------------------------------------
 
 
-async def test_r_on_status_reissues_the_status_request():
+async def test_ctrl_r_on_status_reissues_the_status_request():
     transport = FakeTransport(on_write=_reply)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
@@ -482,7 +482,7 @@ async def test_r_on_status_reissues_the_status_request():
         app.action_show("status")
         await pilot.pause(0.1)
         before = sum(b'"name":"status"' in line for line in transport.written)
-        await pilot.press("r")
+        await pilot.press("ctrl+r")
         await pilot.pause(0.3)
         after = sum(b'"name":"status"' in line for line in transport.written)
         assert after == before + 1
@@ -568,14 +568,14 @@ async def test_enter_on_a_task_runs_it():
         await session.close()
 
 
-async def test_space_toggles_the_selected_task_only():
+async def test_ctrl_y_toggles_the_selected_task_only():
     transport = FakeTransport(on_write=_reply_with_tasks)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _tasks_screen(app, pilot)
-        await pilot.press("space")
+        await pilot.press("ctrl+y")
         await pilot.pause(0.3)
         task = _sent(transport, "tasks.set")[0]["args"]["task"]
         assert task["id"] == "morning"
@@ -583,14 +583,14 @@ async def test_space_toggles_the_selected_task_only():
         await session.close()
 
 
-async def test_d_asks_before_deleting_and_a_refusal_sends_nothing():
+async def test_ctrl_d_asks_before_deleting_and_a_refusal_sends_nothing():
     transport = FakeTransport(on_write=_reply_with_tasks)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _tasks_screen(app, pilot)
-        await pilot.press("d")
+        await pilot.press("ctrl+d")
         for _ in range(60):
             if isinstance(app.screen, ConfirmPrompt):
                 break
@@ -601,14 +601,14 @@ async def test_d_asks_before_deleting_and_a_refusal_sends_nothing():
         await session.close()
 
 
-async def test_d_confirmed_sends_the_delete():
+async def test_ctrl_d_confirmed_sends_the_delete():
     transport = FakeTransport(on_write=_reply_with_tasks)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _tasks_screen(app, pilot)
-        await pilot.press("d")
+        await pilot.press("ctrl+d")
         for _ in range(60):
             if isinstance(app.screen, ConfirmPrompt):
                 break
@@ -619,14 +619,14 @@ async def test_d_confirmed_sends_the_delete():
         await session.close()
 
 
-async def test_e_edits_the_selected_task_through_the_json_modal():
+async def test_ctrl_e_edits_the_selected_task_through_the_json_modal():
     transport = FakeTransport(on_write=_reply_with_tasks)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _tasks_screen(app, pilot)
-        await pilot.press("e")
+        await pilot.press("ctrl+e")
         for _ in range(60):
             if isinstance(app.screen, TaskPrompt):
                 break
@@ -640,14 +640,14 @@ async def test_e_edits_the_selected_task_through_the_json_modal():
         await session.close()
 
 
-async def test_n_starts_from_an_empty_task():
+async def test_ctrl_n_starts_from_an_empty_task():
     transport = FakeTransport(on_write=_reply_with_tasks)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _connected(pilot)
         await _tasks_screen(app, pilot)
-        await pilot.press("n")
+        await pilot.press("ctrl+n")
         for _ in range(60):
             if isinstance(app.screen, TaskPrompt):
                 break
@@ -665,7 +665,7 @@ async def test_follow_off_stops_the_view_chasing_new_lines():
         await _connected(pilot)
         app.action_show("logs")
         await pilot.pause(0.1)
-        await pilot.press("s")
+        await pilot.press("ctrl+y")
         await pilot.pause(0.1)
         body = app.query_one("#log-body")
         assert body.auto_scroll is False
@@ -728,7 +728,7 @@ async def test_a_task_mutation_reissues_tasks_list():
         await _connected(pilot)
         await _tasks_screen(app, pilot)
         before = len(_sent(transport, "tasks.list"))
-        await pilot.press("space")
+        await pilot.press("ctrl+y")
         await pilot.pause(0.4)
         assert len(_sent(transport, "tasks.list")) == before + 1
         await session.close()

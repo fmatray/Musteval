@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static, TabbedContent, TabPane, TextArea
 from textual.widgets.text_area import Selection
+
+from . import onboard
 
 _T = TypeVar("_T")
 
@@ -37,8 +39,11 @@ ModalScreen, * {
     align: center middle;
 }
 
+/* `05` §13.4: width follows the content, bounded by the terminal, so a one-line
+   prompt is not stretched and the editor is not pinned narrower than its text. */
 .prompt-box {
     width: 60;
+    max-width: 100%;
     height: auto;
     border: thick $accent;
     padding: 1 2;
@@ -129,23 +134,37 @@ class ConfirmPrompt(PromptBox[bool]):
 
 
 class FilterPrompt(PromptBox[str | None]):
-    """`/` on the Logs screen: a tag, or `tag:level`, as one line."""
+    """One narrowing line: a log filter, or a file search (`05` §5.4, §13.5).
+
+    The two screens want the same widget with a different seed and title, so the
+    seed is either a `LogFilter` (read for `tag`/`min_level`) or a plain string.
+    """
 
     BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
     CSS = _CSS
     AUTO_FOCUS = "#filter-input"
 
-    def __init__(self, current: object = None) -> None:
+    def __init__(
+        self,
+        current: object = None,
+        title: str = "log filter",
+        placeholder: str = "tag[:level]",
+    ) -> None:
         super().__init__()
         self.current = current
+        self.title = title
+        self.placeholder = placeholder
 
     def compose(self) -> ComposeResult:
-        tag = getattr(self.current, "tag", "") or ""
-        level = getattr(self.current, "min_level", "debug")
-        seeded = f"{tag}:{level}" if level != "debug" else tag
+        if isinstance(self.current, str):
+            seeded = self.current
+        else:
+            tag = getattr(self.current, "tag", "") or ""
+            level = getattr(self.current, "min_level", "debug")
+            seeded = f"{tag}:{level}" if level != "debug" else tag
         with Vertical(classes="prompt-box"):
-            yield Static("log filter", classes="prompt-title")
-            yield Input(value=seeded, placeholder="tag[:level]", id="filter-input")
+            yield Static(self.title, classes="prompt-title")
+            yield Input(value=seeded, placeholder=self.placeholder, id="filter-input")
             yield Static("Enter: apply | Esc: cancel", classes="prompt-hint")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -182,6 +201,98 @@ class ValuePrompt(PromptBox[str | None]):
         self.dismiss(self.query_one("#value-input", Input).value.strip() or None)
 
 
+class OnboardPrompt(PromptBox["onboard.Answers | None"]):
+    """`05` §7 and §13.6: the whole first-run form, grouped by domain.
+
+    One dialog per domain, not one per value: a reader sees everything `wifi.*`
+    will become before committing any of it, can revise an earlier answer after
+    reading a later one, and knows how much is left. `Ctrl+S` writes the whole
+    form; `Esc` writes nothing.
+    """
+
+    BINDINGS = [Binding("ctrl+s", "submit", "Write", show=False)]
+    CSS = (
+        _CSS
+        + """
+.prompt-box.onboard-box {
+    width: 88;
+    max-width: 100%;
+    max-height: 90%;
+}
+.onboard-section {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+}
+.onboard-label {
+    color: $text-muted;
+}
+"""
+    )
+    AUTO_FOCUS = "#onboard-ssid"
+
+    def __init__(self, current: dict[str, Any]) -> None:
+        super().__init__()
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        """The fields, pre-filled from whatever the device already reports.
+
+        Pre-filling is what makes the form revisable: the previous answer is
+        already there, so the reader edits instead of retyping blind.
+        """
+        existing = self.current or {}
+        networks = (existing.get("wifi") or {}).get("networks") or []
+        first = networks[0] if networks else {}
+        providers = (existing.get("llm") or {}).get("providers") or []
+        provider = providers[0] if providers else {}
+
+        with Vertical(classes="prompt-box onboard-box"):
+            yield Static("First run", classes="prompt-title")
+            with VerticalScroll(id="onboard-body"):
+                yield Static("Wi-Fi  → wifi.networks[0]", classes="onboard-section")
+                yield Static("ssid", classes="onboard-label")
+                yield Input(str(first.get("ssid") or ""), id="onboard-ssid")
+                yield Static(
+                    "password (the nvs secret wifi_psk; blank leaves it alone)",
+                    classes="onboard-label",
+                )
+                yield Input(password=True, id="onboard-password")
+
+                yield Static("LLM  → llm.providers[0]", classes="onboard-section")
+                yield Static("base url", classes="onboard-label")
+                yield Input(
+                    str(provider.get("base_url") or "https://api.openai.com/v1"),
+                    id="onboard-base-url",
+                )
+                yield Static(
+                    "api key (the nvs secret llm_api_key; blank leaves it alone)",
+                    classes="onboard-label",
+                )
+                yield Input(password=True, id="onboard-api-key")
+                yield Static("model", classes="onboard-label")
+                yield Input(str(provider.get("model") or ""), id="onboard-model")
+            yield Static(
+                "Ctrl+S: write | Esc: cancel | blank fields are left alone",
+                classes="prompt-hint",
+            )
+
+    def answers(self) -> onboard.Answers:
+        def value(widget_id: str) -> str:
+            return self.query_one(widget_id, Input).value.strip()
+
+        return onboard.Answers(
+            ssid=value("#onboard-ssid"),
+            password=value("#onboard-password"),
+            base_url=value("#onboard-base-url"),
+            api_key=value("#onboard-api-key"),
+            model=value("#onboard-model"),
+        )
+
+    def action_submit(self) -> None:
+        self.dismiss(self.answers())
+
+
 class FilePrompt(PromptBox[str | None]):
     """Text editor for one sandbox file (`05` §5.8).
 
@@ -200,7 +311,8 @@ class FilePrompt(PromptBox[str | None]):
         _CSS
         + """
 .prompt-box.file-box {
-    width: 90;
+    width: 90%;
+    max-width: 160;
     height: 80%;
 }
 #file-find { display: none; height: 3; }

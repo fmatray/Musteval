@@ -69,16 +69,27 @@ def render_status(status: dict[str, Any]) -> list[str]:
     )
     busy = f"Busy ({agent.get('run_id')})" if agent.get("busy") else "Idle"
 
+    def verdict(value: bool | None, good: str = "up", bad: str = "down") -> str:
+        """`05` §13.2: a verdict word, coloured where colour is available."""
+        if value is None:
+            return f"[dim]{bad}[/dim]"
+        return f"[green]{good}[/green]" if value else f"[red]{bad}[/red]"
+
     return [
-        f"WIFI:  {wifi.get('state')} ({wifi.get('ssid')}) | RSSI: {wifi.get('rssi')}dBm | IP: {wifi.get('ip')}",
-        f"TIME:  {clock.get('unix')} | TZ: {clock.get('tz')} | Synced: {clock.get('synced')}",
-        f"LLM:   {llm.get('provider')} ({llm.get('model')}) | Available: {llm.get('available')}",
-        f"AGENT: {busy} | Queue: {agent.get('queue_depth')}/{agent.get('max_queue')}",
-        f"MEM:   Heap: {mem.get('heap_free')} | PSRAM: {mem.get('psram_free')}",
-        f"DISK:  userfs {userfs.get('used_bytes')}/{userfs.get('total_bytes')} | wsfs {wsfs.get('used_bytes')}/{wsfs.get('total_bytes')} (quota {storage.get('workspace_quota_bytes')})",
-        f"MQTT:  {brokers}",
-        f"GEO:   {geo_line}",
-        f"BOOT:  {status.get('boot_id')} | Uptime: {status.get('uptime_s')}s",
+        f"[b]WIFI [/b] {wifi.get('state')} ({wifi.get('ssid')}) "
+        f"| rssi {wifi.get('rssi')}dBm | ip {wifi.get('ip')}",
+        f"[b]TIME [/b] unix {clock.get('unix')} | tz {clock.get('tz')} "
+        f"| synced {verdict(clock.get('synced'), 'yes', 'no')}",
+        f"[b]LLM  [/b] {llm.get('provider')} ({llm.get('model')}) "
+        f"| available {verdict(llm.get('available'), 'yes', 'no')}",
+        f"[b]AGENT[/b] {busy} | queue {agent.get('queue_depth')}/{agent.get('max_queue')}",
+        f"[b]MEM  [/b] heap {mem.get('heap_free')} | psram {mem.get('psram_free')}",
+        f"[b]DISK [/b] userfs {userfs.get('used_bytes')}/{userfs.get('total_bytes')} "
+        f"| wsfs {wsfs.get('used_bytes')}/{wsfs.get('total_bytes')} "
+        f"(quota {storage.get('workspace_quota_bytes')})",
+        f"[b]MQTT [/b] {brokers}",
+        f"[b]GEO  [/b] {geo_line}",
+        f"[b]BOOT [/b] {status.get('boot_id')} | uptime {status.get('uptime_s')}s",
     ]
 
 
@@ -128,6 +139,119 @@ def format_uptime(seconds: int) -> str:
     return f"{days}d{rest}h"
 
 
+#: `05` §13.2: the bar's semantic slots. Colour never carries a fact alone — the
+#: plain text is identical with or without it — so a monochrome terminal loses
+#: nothing but the emphasis.
+SEGMENT_STYLES = {
+    "ok": "green",
+    "warn": "yellow",
+    "bad": "red bold",
+    "muted": "dim",
+}
+
+#: The link word's own slot, because it is the one segment that must be legible
+#: before anything else on the bar is read.
+_LINK_SLOTS = {"linked": "ok", "degraded": "warn", "refused": "bad", "down": "bad"}
+
+
+def _bar_segments(
+    link: str,
+    ack: dict[str, Any],
+    status: dict[str, Any],
+    tokens: int,
+) -> list[tuple[str, str]]:
+    """The bar as `(text, slot)` pairs, in drop order.
+
+    One list feeds both the plain string and the styled one, so the fact rules
+    cannot differ between a coloured terminal and a pipe.
+    """
+    llm = status.get("llm") or {}
+    agent = status.get("agent") or {}
+    wifi = status.get("wifi") or {}
+    storage = status.get("storage") or {}
+    wsfs = storage.get("wsfs") or {}
+    sysinfo = status.get("sys") or {}
+
+    word = LINK_WORDS.get(link, link)
+    # Without a link every other fact is stale, and a stale fact printed beside
+    # `down` reads as current. The link word alone is the honest bar.
+    if link in UNREACHABLE:
+        return [(word, _LINK_SLOTS.get(link, "bad"))]
+    segments: list[tuple[str, str]] = [
+        (word, _LINK_SLOTS.get(link, "ok"))
+    ]
+
+    # The bar drops from the right, so the leftmost segments are the ones that
+    # survive a narrow terminal. Safe mode explains a failure better than any
+    # other fact, so it goes first; uptime goes next because it is the fact that
+    # dates every other one.
+    if sysinfo.get("safe_mode"):
+        segments.append(("SAFE MODE", "bad"))
+
+    uptime = status.get("uptime_s")
+    if isinstance(uptime, int) and not isinstance(uptime, bool):
+        segments.append((format_uptime(max(uptime, 0)), "muted"))
+
+    # Nothing is claimed before the device has said it: an empty `status` leaves
+    # the bar with the link state alone rather than "no model", which would blame
+    # the provider for a bridge that has simply not heard back yet.
+    model = llm.get("model")
+    if model:
+        provider = llm.get("provider") or "?"
+        segments.append((f"{provider}/{model}", "muted"))
+        # A provider that is down is a fact worth the space; a working one is not.
+        if not llm.get("available", True):
+            segments.append(("llm down", "bad"))
+
+    if agent:
+        if agent.get("busy"):
+            segments.append((f"busy {agent.get('run_id')}", "warn"))
+        else:
+            segments.append(("idle", "muted"))
+        queue = agent.get("queue_depth") or 0
+        if queue:
+            segments.append((f"queue {queue}/{agent.get('max_queue')}", "warn"))
+
+    # Wifi: the state is its own segment, because a missing rssi used to be the
+    # whole report and silence is not a fault report. The connected word is two
+    # characters: the bar is one line and the 80-column layout is already full,
+    # where a longer word would push the device name off the end.
+    state = wifi.get("state")
+    if state:
+        slot = "ok" if WIFI_WORDS.get(state) == "up" else "bad"
+        segments.append((WIFI_WORDS.get(state, f"wifi {state}"), slot))
+    rssi = wifi.get("rssi")
+    if rssi is not None:
+        segments.append((f"{rssi}dBm", "muted" if int(rssi) > -70 else "warn"))
+    failovers = wifi.get("failovers") or 0
+    if failovers:
+        segments.append(
+            (f"{failovers} failover" + ("s" if failovers > 1 else ""), "warn")
+        )
+
+    quota = storage.get("workspace_quota_bytes")
+    if quota:
+        used = wsfs.get("used_bytes") or 0
+        segments.append((f"workspace {used}/{quota}", "muted"))
+
+    if tokens:
+        segments.append((f"{tokens} tok", "muted"))
+
+    device = ack.get("device")
+    if device:
+        segments.append((str(device), "muted"))
+    return segments
+
+
+def _fit(segments: list[tuple[str, str]], width: int | None) -> list[tuple[str, str]]:
+    """Drop whole trailing segments until the bar fits. Never the first one."""
+    if width is None:
+        return segments
+    while len(segments) > 1 and len(PROMPT_SEPARATOR.join(t for t, _ in segments)) > width:
+        segments.pop()
+    return segments
+
+
 def render_prompt_bar(
     link: str,
     ack: dict[str, Any],
@@ -141,88 +265,70 @@ def render_prompt_bar(
     tracking, the `hello_ack` fields it stored, the last `status` frame and the
     running token total. Nothing here costs a frame, so the bar never turns a
     keystroke into a round trip.
+
+    The plain string is what a test and a pipe see. `render_prompt_text` styles
+    the same segments; neither owns a rule the other lacks.
     """
-    llm = status.get("llm") or {}
-    agent = status.get("agent") or {}
-    wifi = status.get("wifi") or {}
-    storage = status.get("storage") or {}
-    wsfs = storage.get("wsfs") or {}
-    sysinfo = status.get("sys") or {}
+    fitted = _fit(_bar_segments(link, ack, status, tokens), width)
+    return PROMPT_SEPARATOR.join(text for text, _ in fitted)
 
-    word = LINK_WORDS.get(link, link)
-    # Without a link every other fact is stale, and a stale fact printed beside
-    # `down` reads as current. The link word alone is the honest bar.
-    if link in UNREACHABLE:
-        return word
-    segments = [word]
 
-    # The bar drops from the right, so the leftmost segments are the ones that
-    # survive a narrow terminal. Safe mode explains a failure better than any
-    # other fact, so it goes first; uptime goes next because it is the fact that
-    # dates every other one.
-    if sysinfo.get("safe_mode"):
-        segments.append("SAFE MODE")
+def render_prompt_text(
+    link: str,
+    ack: dict[str, Any],
+    status: dict[str, Any],
+    tokens: int,
+    width: int | None = None,
+) -> Text:
+    """The bar as styled text: same characters, same order, same drops."""
+    fitted = _fit(_bar_segments(link, ack, status, tokens), width)
+    out = Text()
+    for index, (text, slot) in enumerate(fitted):
+        if index:
+            out.append(PROMPT_SEPARATOR, style=SEGMENT_STYLES["muted"])
+        out.append(text, style=SEGMENT_STYLES.get(slot, ""))
+    return out
 
-    uptime = status.get("uptime_s")
-    if isinstance(uptime, int) and not isinstance(uptime, bool):
-        segments.append(format_uptime(max(uptime, 0)))
 
-    # Nothing is claimed before the device has said it: an empty `status` leaves
-    # the bar with the link state alone rather than "no model", which would blame
-    # the provider for a bridge that has simply not heard back yet.
-    model = llm.get("model")
-    if model:
-        provider = llm.get("provider") or "?"
-        segments.append(f"{provider}/{model}")
-        # A provider that is down is a fact worth the space; a working one is not.
-        if not llm.get("available", True):
-            segments.append("llm down")
-
-    if agent:
-        if agent.get("busy"):
-            segments.append(f"busy {agent.get('run_id')}")
+def key_label(key: str) -> str:
+    """`ctrl+d` → `Ctrl+D`, `enter` → `Enter`: how a key is written to a reader."""
+    parts = [part for part in key.split("+") if part]
+    spelled = {"ctrl": "Ctrl", "shift": "Shift", "alt": "Alt"}
+    out: list[str] = []
+    for part in parts:
+        if part in spelled:
+            out.append(spelled[part])
+        elif len(part) == 1:
+            out.append(part.upper())
         else:
-            segments.append("idle")
-        queue = agent.get("queue_depth") or 0
-        if queue:
-            segments.append(f"queue {queue}/{agent.get('max_queue')}")
+            out.append(part.capitalize())
+    return "+".join(out)
 
-    # Wifi: the state is its own segment, because a missing rssi used to be the
-    # whole report and silence is not a fault report. The connected word is two
-    # characters: the bar is one line and the 80-column layout is already full,
-    # where a longer word would push the device name off the end.
-    state = wifi.get("state")
-    if state:
-        segments.append(WIFI_WORDS.get(state, f"wifi {state}"))
-    rssi = wifi.get("rssi")
-    if rssi is not None:
-        segments.append(f"{rssi}dBm")
-    failovers = wifi.get("failovers") or 0
-    if failovers:
-        segments.append(f"{failovers} failover" + ("s" if failovers > 1 else ""))
 
-    quota = storage.get("workspace_quota_bytes")
-    if quota:
-        used = wsfs.get("used_bytes") or 0
-        segments.append(f"workspace {used}/{quota}")
+def binding_pairs(
+    bindings: list[Any], extra: list[tuple[str, str]] = ()
+) -> list[tuple[str, str]]:
+    """`05` §13.3: the hint line from a screen's own bindings, plus the keys it
+    handles outside `BINDINGS`. One source, so a hint cannot name a dead key."""
+    pairs = [(key_label(binding.key), binding.description) for binding in bindings]
+    pairs.extend(extra)
+    return pairs
 
-    if tokens:
-        segments.append(f"{tokens} tok")
 
-    device = ack.get("device")
-    if device:
-        segments.append(str(device))
+def hint_bar(pairs: list[tuple[str, str]]) -> Text:
+    """`05` §13.3: the one hint line every screen ends in.
 
-    line = PROMPT_SEPARATOR.join(str(segment) for segment in segments)
-    if width is None or len(line) <= width:
-        return line
-    # Drop whole trailing segments rather than clipping mid-word: a bar ending
-    # `-58dB…` reads as a broken fact. The link word is never dropped.
-    # At least one segment stays: an empty bar would say less than a clipped
-    # one, and the link word is the fact that explains the rest.
-    while len(segments) > 1 and len(PROMPT_SEPARATOR.join(segments)) > width:
-        segments.pop()
-    return PROMPT_SEPARATOR.join(str(segment) for segment in segments)
+    Built from the same `(key, label)` pairs the screen's `BINDINGS` declare, so the
+    hint cannot name a key the screen no longer binds. The key takes `$accent` and
+    the verb `$text-muted`, which reads as a key and a verb at a glance.
+    """
+    out = Text()
+    for index, (key, label) in enumerate(pairs):
+        if index:
+            out.append("  ", style=SEGMENT_STYLES["muted"])
+        out.append(key, style="bold")
+        out.append(f" {label}", style=SEGMENT_STYLES["muted"])
+    return out
 
 
 def render_diag(status: dict[str, Any]) -> list[str]:
