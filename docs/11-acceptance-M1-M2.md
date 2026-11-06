@@ -28,18 +28,60 @@ banner in headless mode.
 
 ### M1.2 `ping`/`pong` round trip under 10 ms
 
-- [ ] `.venv/bin/python -m pytest bridge/tests/test_link.py -p no:cacheprovider -k "short_line or latency"` passes.
+Measure it, do not read it off the TUI: the Status footer shows one sample, and a
+single sample cannot answer a budget. Save as `/tmp/m1_rtt.py`, run
+`.venv/bin/python /tmp/m1_rtt.py`:
 
-This is the only place the 10 ms budget can be *observed*, and it is a host test
-on purpose. Against real hardware the number is dominated by the device's read
-loop, not the bridge: measured here, the same `ping` costs 1.1 ms when pings are
-back to back and 13-33 ms when the host pauses between them, because
-`usb_serial_jtag_read_bytes` blocks for up to 100 ms (`link_task.c`) and the
-device only wakes when bytes arrive. A raw pyserial loop with no bridge in the
-path reproduces the same tail, which is why this is not a bridge regression.
+```python
+import asyncio, json, statistics, sys, time
+sys.path.insert(0, "/home/saturne/Dev/Musteval")
+from bridge.link import SerialTransport
 
-`07-roadmap.md` M1's 10 ms is met in the burst case and missed in the idle case.
-Record which one you measured.
+async def main():
+    t = SerialTransport("/dev/ttyACM0"); await t.open()
+    await t.write_line(json.dumps({"v": 1, "type": "hello", "id": "b-h", "ts": 0,
+        "client": "x", "client_version": "1", "protocol": 1}).encode())
+    await t.read_line()
+    out = []
+    for i in range(40):                       # burst: no pause between pings
+        ping_id = f"b-p{i}"
+        started = time.monotonic()
+        await t.write_line(json.dumps({"v": 1, "type": "ping", "id": ping_id,
+                                       "ts": 0}).encode())
+        while True:
+            line = await t.read_line()
+            if line and b'"type":"pong"' in line and ping_id.encode() in line:
+                out.append((time.monotonic() - started) * 1000); break
+    await t.close()
+    out.sort()
+    print(f"n={len(out)} median={statistics.median(out):.2f} "
+          f"p90={out[int(.9*len(out))]:.2f} min={out[0]:.2f} max={out[-1]:.2f}")
+
+asyncio.run(main())
+```
+
+- [ ] Run it twice: once as written (burst) and once with `await asyncio.sleep(0.15)`
+      added after the inner loop (idle).
+
+Measured on this board:
+
+| Pattern | median | p90 | min | max |
+|---|---|---|---|---|
+| Burst | 2.0 ms | 33.9 ms | 1.2 ms | 51.4 ms |
+| 150 ms idle between pings | 22.4 ms | 32.0 ms | 1.5 ms | 34.1 ms |
+
+The budget is met when the device is already reading and missed when it is
+asleep. `usb_serial_jtag_read_bytes` blocks for up to 100 ms (`link_task.c`) and
+only returns when bytes arrive, so the idle figure is a wake-up cost, not
+transfer time: a raw pyserial loop with no bridge in the path reproduces it. The
+bridge's own contribution is the floor, about 1.2 ms.
+
+Record both numbers. M1's 10 ms is met in the burst median and missed in the idle
+median; that gap is the device read loop and is M3+ work, not a bridge defect.
+
+`bin/bridge --send /ping` exits `0` and prints nothing: the round trip is a
+heartbeat frame with no `command.result`, so headless has no body to show. That is
+why the measurement above is a script and not a slash command.
 
 ### M1.3 `status` returns device state
 
@@ -178,8 +220,9 @@ file. `boot_id` changing is the evidence it rebooted.
 
 - [ ] `bin/bridge`, then type `/secret set wifi_test` in the chat bar.
 - [ ] The prompt masks the value; it never appears on screen or in the terminal.
-- [ ] `/reload` prints `{"reloaded": ["config"], "warnings": []}`: the ref resolves
-      again without a reboot.
+- [ ] `/reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
+      again without a reboot. Measured; `secret.set` answers
+      `{'key': 'wifi_test', 'length': 16, 'stored': true}` and never echoes the value.
 
 ### M2.3 `config.get` redacts
 
@@ -192,14 +235,18 @@ passphrase itself in `value`.
 ### M2.4 Filesystem baselines
 
 `/workspace/` is writable; `/prompts/`, `/skills/` and `/tools/` accept only their
-declared extensions, and `fs.put` into them needs a payload the TUI supplies.
+declared file extensions. `fs.put` takes its bytes over the wire, so a slash command
+cannot express one.
 
-- [ ] `bin/bridge --send /sandbox list` prints `entries` including `r.txt` and `d1.txt`.
-- [ ] `bin/bridge --send /fs put /prompts/x.md` prints `no file loaded to upload`:
-      the slash command has no payload and refuses before the wire, so it proves
-      nothing about the device. Use the Files screen (`F4`) instead: select a
-      host file to upload into `/workspace/`, and confirm a write to `/prompts/`
-      is refused with `E_CONFIG` (bad extension or built-in target).
+- [ ] `bin/bridge --send /sandbox list` prints
+      `{'entries': [{'bytes': 0, 'dir': True, 'name': 'd'}, ...], 'path': '/workspace/'}`
+      — measured; the directory and its files are both listed.
+- [ ] `bin/bridge --send "/fs put /prompts/x.md"` prints `no file loaded to upload`
+      — measured. The refusal is the bridge's, before anything reaches the wire, so
+      this step proves the guard exists and proves nothing about the device.
+- [ ] For the device side, use the Files screen (`F4`): upload a host file into
+      `/workspace/`, then attempt the same file at `/prompts/` and confirm
+      `E_CONFIG` with "bad extension" or the built-in target named in the message.
 
 ### M2.5 Config writes are atomic
 
