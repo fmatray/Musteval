@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import time
 from typing import Any, Callable, Sequence
 
 from ..link import Transport
@@ -77,6 +78,12 @@ class Session:
         self._heartbeat: asyncio.Task[None] | None = None
         self._stopping = False
         self._missed_pongs = 0
+        #: Last measured `ping`→`pong` round trip in milliseconds, or `None` before
+        #: the first answer. `05-bridge.md` §10 says `pong` updates the latency the
+        #: Status screen shows, and §7 maps `/ping` to "tests link latency", so the
+        #: number has to be measured somewhere: it is measured here, where the
+        #: request and its reply are both in hand.
+        self.last_rtt_ms: float | None = None
         self._hello_ack: Frame | None = None
         self._first_attempt: asyncio.Event = asyncio.Event()
 
@@ -330,9 +337,11 @@ class Session:
             ping_id = new_id("b")
             future: asyncio.Future[Frame] = asyncio.get_running_loop().create_future()
             self._pending[ping_id] = future
+            started = time.monotonic()
             try:
                 await self._send(Frame(type="ping", id=ping_id, ts=0, body={}))
                 await asyncio.wait_for(future, timeout=self._pong_timeout)
+                self.last_rtt_ms = (time.monotonic() - started) * 1000
             except (asyncio.TimeoutError, SessionError):
                 self._missed_pongs += 1
                 if self._missed_pongs >= 3:

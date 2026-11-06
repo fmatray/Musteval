@@ -805,7 +805,7 @@ caught mechanically (§7 of `09-bridge-architecture.md`), so the two cannot drif
 | `mqtt.message` | MQTT screen (F6) | Appends to traffic log; no chat entry |
 | `event` | Logs screen (F5) | Log line, `event:<kind>` tag |
 | `command.result` | Originating screen | Resolves the pending command |
-| `pong` | Status screen footer | Updates latency |
+| `pong` | Status screen footer | Updates the `PING` row from `Session.last_rtt_ms`, the measured round trip |
 
 Commands map to surfaces the same way: `geo.locate` updates the Status screen
 GEO row and reports in chat, `mqtt.status` refreshes F6, and `mqtt.publish`

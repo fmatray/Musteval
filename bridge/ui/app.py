@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from textual.app import App, ComposeResult
+from textual.css.query import NoMatches
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from rich.text import Text
@@ -346,9 +347,22 @@ class StatusScreen(VerticalScroll):
         self.app.run_worker(self.app._request("status"))  # type: ignore[attr-defined]
 
     def render_status(self, status: dict[str, Any]) -> None:
-        self.query_one("#status-body", Static).update(
-            Text.from_markup("\n".join(render_status(status)))
+        self._status = status
+        self._paint()
+
+    def show_latency(self, rtt_ms: float) -> None:
+        """`05-bridge.md` §10: `pong` refreshes the latency footer."""
+        self._rtt_ms = rtt_ms
+        if getattr(self, "_status", None) is not None:
+            self._paint()
+
+    def _paint(self) -> None:
+        lines = render_status(self._status)
+        rtt = getattr(self, "_rtt_ms", None)
+        lines.append(
+            f"[b]PING [/b] {rtt:.1f} ms" if rtt is not None else "[b]PING [/b] no pong yet"
         )
+        self.query_one("#status-body", Static).update(Text.from_markup("\n".join(lines)))
 
 
 class TasksScreen(Vertical):
@@ -1425,7 +1439,22 @@ class BridgeApp(App):
         self._logs().write(f"event:{kind} {clip(str(frame.body.get('data')), 200)}")
 
     def _on_pong(self, frame: Frame) -> None:
-        self.title = f"{self.title} · pong"
+        """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
+
+        It used to append "· pong" to the window title, which grew one segment per
+        heartbeat (every 10 s, forever) and told the reader nothing: the number the
+        doc promises lives in `Session.last_rtt_ms`, measured where the round trip
+        is observable. No status frame means no grid to refresh yet, and
+        `on_show`/`_on_status` fill it on the next fetch.
+        """
+        rtt = self.session.last_rtt_ms
+        if rtt is None:
+            return
+        try:
+            screen = self.query_one("#status", StatusScreen)
+        except NoMatches:
+            return
+        screen.show_latency(rtt)
 
     def _on_command_result(self, frame: Frame) -> None:
         body = frame.body

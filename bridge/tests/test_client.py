@@ -47,6 +47,22 @@ def _agent(on_write=None):
     return handler
 
 
+async def test_ping_loop_measures_the_round_trip():
+    """`05-bridge.md` §7 maps `/ping` to "tests link latency", so `Session` measures
+    it: `last_rtt_ms` stays `None` until a pong arrives, then holds the round trip."""
+    session = Session(FakeTransport(on_write=_agent()), **FAST)
+    await session.connect()
+    try:
+        for _ in range(100):
+            if session.last_rtt_ms is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert session.last_rtt_ms is not None
+        assert 0 <= session.last_rtt_ms < 5000
+    finally:
+        await session.close()
+
+
 async def test_connect_reaches_connected_and_records_the_ack():
     session = Session(FakeTransport(on_write=_agent()), **FAST)
     assert await session.connect() is LinkState.CONNECTED

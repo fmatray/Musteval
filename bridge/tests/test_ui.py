@@ -165,6 +165,33 @@ async def test_ui_connects_and_renders_the_greeting():
         await session.close()
 
 
+async def test_status_footer_shows_the_measured_round_trip():
+    """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
+
+    The footer must read from `Session.last_rtt_ms`, which is measured where the
+    request and its reply are both in hand. It previously appended "· pong" to the
+    window title, so the promised number existed nowhere: `/ping` was documented as
+    the latency check and measured nothing.
+    """
+    from bridge.ui import BridgeApp
+
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        session.last_rtt_ms = 4.25
+        screen = app.query_one("#status")
+        screen.show_latency(4.25)
+        await pilot.pause(0.05)
+        assert "PING" in str(screen.query_one("#status-body").render())
+        assert "4.2" in str(screen.query_one("#status-body").render())
+        assert "pong" not in app.title
+        await session.close()
+
+
 async def test_ui_shows_a_prompt_reply():
     from bridge.ui import BridgeApp
 
