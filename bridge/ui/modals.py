@@ -156,7 +156,8 @@ class FilterPrompt(PromptBox[str | None]):
 
 
 class ValuePrompt(PromptBox[str | None]):
-    """Pre-filled editor for one `05-bridge.md` §5.7 config row."""
+    """One line of text under a title: a `05` §5.7 config value, or a host path
+    for the file transfers of §5.8.1. The title is the question, not a key."""
 
     BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
     CSS = _CSS
