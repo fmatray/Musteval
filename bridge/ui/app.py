@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 
 import time
 from typing import Any
@@ -16,6 +17,7 @@ from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
 from ..client import LinkState, Session
 from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
+from .. import transfer
 from ..protocol import Frame, new_id
 from .help import COMMANDS, CommandSuggester, help_tabs, options
 from .history import PromptHistory
@@ -556,13 +558,16 @@ class FilesScreen(Vertical):
         Binding("k", "new_directory", "Mkdir", show=False),
         Binding("u", "go_up", "Up", show=False),
         Binding("r", "refetch", "Refresh", show=False),
+        Binding("o", "upload_entry", "Upload", show=False),
+        Binding("w", "download_entry", "Download", show=False),
     ]
 
     def compose(self) -> ComposeResult:
         yield Static("/workspace/", id="files-path")
         yield DataTable(id="files-table", cursor_type="row")
         yield Static(
-            "[Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir [U] Up [R] Refresh",
+            "[Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir\n"
+            "[U] Up [R] Refresh [O] Upload [W] Download",
             id="files-hint",
         )
 
@@ -632,6 +637,12 @@ class FilesScreen(Vertical):
 
     def action_refetch(self) -> None:
         self.app.run_worker(self.app.browse(self.current_path()))  # type: ignore[attr-defined]
+
+    def action_upload_entry(self) -> None:
+        self.app.run_worker(self.app.upload_entry())  # type: ignore[attr-defined]
+
+    def action_download_entry(self) -> None:
+        self.app.run_worker(self.app.download_entry())  # type: ignore[attr-defined]
 
 
 class MqttScreen(Vertical):
@@ -1051,6 +1062,83 @@ class BridgeApp(App):
             return
         await self._request("sandbox.mkdir", {"path": path})
         await self.browse(self._files_path)
+
+    async def download_entry(self) -> None:
+        """`05` §5.8.1: copy the selected file or tree to the host.
+
+        A directory is collected completely before the first host write, so a
+        refusal leaves no half tree behind: a reader who sees `notes.md` copied and
+        `run_7.json` missing cannot tell that from an empty directory.
+        """
+        chosen = self._files().selected_entry()
+        if chosen is None:
+            return
+        path, kind = chosen
+        if path.rstrip("/") == SANDBOX_ROOT.rstrip("/"):
+            self._chat().write("[warn] /workspace itself is not downloadable")
+            return
+        default = os.path.join(os.getcwd(), os.path.basename(path.rstrip("/")))
+        target = await self.push_screen_wait(ValuePrompt("Download to", default))
+        if not target:
+            return
+        send = self._transfer_send
+        try:
+            if kind == "file":
+                body = await send("sandbox.read", {"path": path})
+                if body is None:
+                    return
+                if body.get("truncated"):
+                    self._chat().write(
+                        f"[warn] {path} is {body.get('bytes')} bytes, above the "
+                        f"{transfer.READ_CAP}-byte read cap; a copy would be a prefix"
+                    )
+                    return
+                nodes = [transfer.FileNode(path, str(body.get("text", "")))]
+            else:
+                nodes = await transfer.collect(send, path)
+        except transfer.TransferError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        try:
+            if kind == "file":
+                written = [transfer.write_file(target, nodes[0].text)]
+            else:
+                written = transfer.write_tree(target, nodes)
+        except OSError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        self._chat().write(
+            f"downloaded {len(written)} file" + ("" if len(written) == 1 else "s")
+            + f" to {target}"
+        )
+
+    async def upload_entry(self) -> None:
+        """`05` §5.8.1: copy a host file or tree into the directory browsed."""
+        source = await self.push_screen_wait(ValuePrompt("Upload from", ""))
+        if not source:
+            return
+        source = os.path.expanduser(source)
+        try:
+            written = await transfer.upload(
+                self._transfer_send, source, self._files_path
+            )
+        except transfer.TransferError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        except OSError as exc:
+            self._chat().write(f"[error] {exc}")
+            return
+        self._chat().write(
+            f"uploaded {len(written)} file" + ("" if len(written) == 1 else "s")
+            + f" to {self._files_path}"
+        )
+        await self.browse(self._files_path)
+
+    async def _transfer_send(
+        self, name: str, args: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """`transfer.Send`: one command, its `result` or `None`."""
+        return await self._request(name, args)
 
     async def new_file(self) -> None:
         name = await self.push_screen_wait(ValuePrompt("New file name", ""))

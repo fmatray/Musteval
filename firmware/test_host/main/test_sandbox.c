@@ -162,6 +162,18 @@ TEST_CASE("a sequence cut by the read cap is a truncation, not an error", "[sand
     TEST_ASSERT_EQUAL_size_t(2, store_utf8_prefix(cut, 4));
 }
 
+TEST_CASE("a file of exactly the cap is complete, not truncated", "[sandbox]")
+{
+    /* 04 §4.18: the cap is what one reply may carry. A full-cap read that consumed
+     * the whole file is the whole file, and reporting it truncated would tell the
+     * bridge to refuse a file it already holds in full. */
+    TEST_ASSERT_FALSE(store_read_truncated(8192, 8192, 8192));
+    TEST_ASSERT_TRUE(store_read_truncated(8192, 8192, 8193));
+    TEST_ASSERT_FALSE(store_read_truncated(10, 8192, 10));
+    /* A short read happens only at end of file, so it is never a truncation. */
+    TEST_ASSERT_FALSE(store_read_truncated(0, 8192, 0));
+}
+
 TEST_CASE("an in-flight staging file is recognised and hidden", "[sandbox]")
 {
     const char *dir = "/ws/";

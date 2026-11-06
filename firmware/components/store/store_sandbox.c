@@ -68,6 +68,11 @@ size_t store_utf8_prefix(const uint8_t *buf, size_t n)
     return valid;
 }
 
+bool store_read_truncated(size_t read_n, size_t cap, size_t total)
+{
+    return read_n == cap && total > cap;
+}
+
 bool store_is_staging_entry(const char *vfs_dir, const char *entry_name,
                             const char *stage_path)
 {

@@ -434,6 +434,39 @@ the directory currently browsed. `N` creates a new empty file through `sandbox.w
 with an empty body, then opens it for editing. Both `N` and `K` re-request the
 listing on success, so the new entry appears without a manual refresh.
 
+### 5.8.1 Upload and Download
+
+`W` downloads the selected entry to the host, `O` uploads a host file into the
+directory currently browsed. `U` is already "up one directory", so the download key
+is the mnemonic that did not collide. The two directions are separate keys rather than one
+modal with a direction toggle, because a modal that asks which way round the copy
+goes makes the reader answer a question the keypress already answered.
+
+Downloading a file asks for a host path, defaulting to the entry's name in the
+working directory, and writes what `sandbox.read` returned. A device reply with
+`truncated:true` is refused: `04` §4.18 caps a read at 8192 raw bytes and forbids a
+second frame, so the file on the host would be a prefix presented as a file. The
+browser says how long the device file is and stops, rather than writing a short
+copy the reader has no way to notice.
+
+Downloading a directory walks it with `sandbox.list` and, for each file, one
+`sandbox.read`, writing the tree under the chosen host directory. It refuses before
+the first write when any file in the tree exceeds the read cap, naming that file:
+a partial tree is worse than no tree, because the reader cannot tell which files
+were clipped. The walk is depth-first in the order the device listed, so the host
+tree matches what the browser showed.
+
+Uploading a file sends its bytes through `sandbox.write` in `04` §4.20 chunks, the
+same path the editor uses. Uploading a directory mirrors the download walk: create
+each directory with `sandbox.mkdir`, then write each file. A host entry the device
+would refuse — a name outside the workspace, a symlink, a socket — aborts the upload
+with the offending path named, rather than being skipped silently.
+
+Both directions run as a worker, one frame at a time on the single session, and
+report one summary line to the chat log when the copy finishes, naming the count and
+the destination. Nothing is printed per frame: a tree of a hundred files would
+otherwise scroll every line that came before it out of the log.
+
 The editor modal holds a `TextArea` and supports `Ctrl+F` to search: the first
 `Enter` sets the needle and selects the first match, the second replaces every
 occurrence with the new text in one edit, so the whole cascade undoes as one step.
@@ -451,8 +484,8 @@ keybinding nobody can discover is not a feature.
 | f     notes.md                         412                            |
 | f     run_7.json                       1834                           |
 +-----------------------------------------------------------------------+
-| [Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir [U] Up    |
-| [R] Refresh                                                           |
+| [Enter] Open [E] Edit [D] Delete [M] Move [N] New [K] Mkdir           |
+| [U] Up [R] Refresh [O] Upload [W] Download                            |
 +-----------------------------------------------------------------------+
 ```
 
@@ -586,6 +619,8 @@ future that is never resolved.
 | Editor | `Ctrl+F` | Search: first `Enter` finds, second replaces every match in one undo step |
 | Editor | `F3` | Jump to the next match, wrapping at the end of the buffer |
 | Editor | `Ctrl+Z` / `Ctrl+Y` | Undo and redo |
+| Files | `O` | Upload a host file or directory into the browsed directory, send `sandbox.mkdir` and `sandbox.write` |
+| Files | `W` | Download the selected entry to a prompted host path, one `sandbox.read` per file |
 | Files | `U` | Go up one directory, stopping at `/workspace/` |
 | Files | `R` | Re-request `sandbox.list` for the current path |
 

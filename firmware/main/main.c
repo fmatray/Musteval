@@ -122,9 +122,30 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
     } else if (strcmp(name, "sandbox.read") == 0) {
         const char *path = json_string(json_get(args, "path"));
         if (path == NULL) { emit_failure("sandbox.read", reply_to, "E_PROTOCOL", "Missing path"); return ESP_ERR_INVALID_ARG; }
-        /* Read not implemented until M2 */
-        emit_failure("sandbox.read", reply_to, "E_INTERNAL", "Read not implemented");
-        return ESP_ERR_NOT_SUPPORTED;
+        /* `04` §4.18: the buffer is static because `link_task` has 4 KiB of stack
+         * and 8193 bytes of local would not fit. Dispatch is single-threaded, so
+         * one buffer is correct; a mutex would be dead weight. The cap matches the
+         * document exactly: a larger read would not fit the 16384-byte TX limit. */
+        static char s_text[SANDBOX_READ_CAP + 1];
+        size_t len = 0, total = 0;
+        bool truncated = false;
+        esp_err_t rerr = store_read_text(path, s_text, SANDBOX_READ_CAP,
+                                         &len, &total, &truncated);
+        if (rerr != ESP_OK) {
+            emit_failure("sandbox.read", reply_to, wire_code(rerr), "Read failed");
+            return rerr;
+        }
+        s_text[len] = '\0';
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "sandbox.read");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_add_string(result, "path", path);
+            json_add_string(result, "text", s_text);
+            json_add_int(result, "bytes", (int64_t)total);
+            json_add_bool(result, "truncated", truncated);
+        }
+        return ESP_OK;
     } else if (strcmp(name, "sandbox.write") == 0) {
         const char *path = json_string(json_get(args, "path"));
         const char *data = json_string(json_get(args, "data"));

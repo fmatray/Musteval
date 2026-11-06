@@ -51,6 +51,14 @@ may import only strictly lower layers, or a port it owns.
 or `client`, which is what makes it testable without an App and is why it is not
 filed under `ui/`.
 
+`bridge/transfer.py` sits at **L2** beside `client/` and `commands.py`: the host-side
+walk of a sandbox tree, in both directions. It imports `protocol` and nothing else
+from the tree. The device calls and the host filesystem calls arrive as callbacks
+(`send`, and a plain path), so the traversal — which entries are visited, in what
+order, and what is refused before the first byte lands — is testable without a
+terminal or a port. `ui` supplies the callbacks. It is not filed under `ui/` for the
+same reason `commands.py` is not: the part that can be wrong has no widgets in it.
+
 `bridge/tools/` is **off-tree and not a layer.** It holds maintainer scripts
 (`build_userfs.py`, `05-bridge.md` §11) that run on a developer machine, and it may
 import anything or nothing. It ships with neither the app nor the library, so it is
@@ -63,6 +71,7 @@ L3   ui/            Textual App, screens, widgets
       |
 L2   client/        Session: correlation, heartbeat, backoff
      commands.py    slash command → frames (leaf at L2)
+     transfer.py    sandbox tree walk, upload and download (leaf at L2)
       |
 L1   link/          Transport ABC, SerialTransport, FakeTransport
       |

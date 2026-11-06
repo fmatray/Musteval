@@ -70,9 +70,10 @@ def _device(line: bytes) -> list[bytes]:
         path = args.get("path")
         if path not in BODIES:
             return result({"error": {"code": "E_STORAGE", "message": "no such file"}}, ok=False)
+        truncated = path in getattr(_device, "truncated", ())
         return result(
             {"result": {"path": path, "text": BODIES[path], "bytes": len(BODIES[path]),
-                        "truncated": False}}
+                        "truncated": truncated}}
         )
     if name == "sandbox.write":
         assert args.get("encoding") == "base64"
@@ -111,6 +112,7 @@ def _app() -> BridgeApp:
     _device.buffers = {}  # type: ignore[attr-defined]
     _device.mkdirs = []  # type: ignore[attr-defined]
     _device.moves = []  # type: ignore[attr-defined]
+    _device.truncated = set()  # type: ignore[attr-defined]
     session = Session(FakeTransport(on_write=_device), ack_timeout=1, ping_interval=99)
     return BridgeApp(session)
 
@@ -298,6 +300,65 @@ async def test_m_moves_the_selected_file_through_the_move_command():
         assert _device.moves == [  # type: ignore[attr-defined]
             ("/workspace/notes.txt", "/workspace/renamed.txt")
         ]
+
+
+async def test_w_downloads_the_selected_file_to_the_chosen_host_path(tmp_path):
+    """`05` §5.8.1: `W` reads the entry and writes it where the prompt said."""
+    app = _app()
+    target = tmp_path / "copy.md"
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        table = screen.query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=1)  # notes.txt
+        await pilot.press("w")
+        await pilot.pause(0.2)
+        value = app.screen.query_one("#value-input").value
+        for _ in range(len(value)):
+            await pilot.press("backspace")
+        await pilot.press(*str(target))
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert target.read_text() == BODIES["/workspace/notes.txt"]
+
+
+async def test_w_refuses_a_truncated_read_instead_of_writing_a_prefix(tmp_path):
+    """A short copy the reader cannot notice is worse than a refusal."""
+    app = _app()
+    target = tmp_path / "copy.md"
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        table = screen.query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=1)
+        _device.truncated = {"/workspace/notes.txt"}  # type: ignore[attr-defined]
+        await pilot.press("w")
+        await pilot.pause(0.2)
+        value = app.screen.query_one("#value-input").value
+        for _ in range(len(value)):
+            await pilot.press("backspace")
+        await pilot.press(*str(target))
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert not target.exists()
+        assert "read cap" in "\n".join(
+            str(line.text) for line in app.query_one("#chat-log").lines
+        )
+
+
+async def test_o_uploads_a_host_file_into_the_browsed_directory(tmp_path):
+    source = tmp_path / "up.txt"
+    source.write_text("hello")
+    app = _app()
+    async with app.run_test() as pilot:
+        await _open_files(pilot, app)
+        app.query_one(FilesScreen).query_one("#files-table").focus()
+        await pilot.press("o")
+        await pilot.pause(0.2)
+        await pilot.press(*str(source))
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert _device.buffers.get("/workspace/up.txt") == b"hello"  # type: ignore[attr-defined]
 
 
 async def test_m_refuses_a_target_outside_the_sandbox_locally():

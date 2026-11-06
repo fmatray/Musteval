@@ -126,7 +126,7 @@ esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap, size_t 
     size_t read_n = fread(buf, 1, cap, f);
     *len = read_n;
     *total = (size_t)st.st_size;
-    *truncated = (read_n == cap && (size_t)st.st_size > cap);
+    *truncated = store_read_truncated(read_n, cap, (size_t)st.st_size);
     fclose(f);
 
     /* The text is cut at `cap`, so an incomplete trailing sequence is a truncation,

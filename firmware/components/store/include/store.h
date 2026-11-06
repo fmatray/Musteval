@@ -271,6 +271,11 @@ bool store_entry_name_ok(const char *name);
 esp_err_t store_decode_chunk(const char *data, const char *encoding,
                              uint8_t *out, size_t cap, size_t *len);
 
+/* True when a `cap`-byte read of a `total`-byte file left bytes behind. `cap` is a
+ * ceiling on what one `sandbox.read` may carry (§4.18), so a file of exactly `cap`
+ * bytes is complete, not truncated. Pure. */
+bool store_read_truncated(size_t read_n, size_t cap, size_t total);
+
 /* Length of the longest valid UTF-8 prefix of `buf`, or 0 when the bytes are not
  * UTF-8 at all (a lone continuation, an overlong form, a surrogate, a code point
  * above U+10FFFF). A prefix shorter than `n` that stops only because a multi-byte
