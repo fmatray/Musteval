@@ -1081,7 +1081,7 @@ class BridgeApp(App):
         target = await self.push_screen_wait(ValuePrompt("Download to", default))
         if not target:
             return
-        send = self._transfer_send
+        send = self._request
         try:
             if kind == "file":
                 body = await send("sandbox.read", {"path": path})
@@ -1119,9 +1119,7 @@ class BridgeApp(App):
             return
         source = os.path.expanduser(source)
         try:
-            written = await transfer.upload(
-                self._transfer_send, source, self._files_path
-            )
+            written = await transfer.upload(self._request, source, self._files_path)
         except transfer.TransferError as exc:
             self._chat().write(f"[error] {exc}")
             return
@@ -1133,12 +1131,6 @@ class BridgeApp(App):
             + f" to {self._files_path}"
         )
         await self.browse(self._files_path)
-
-    async def _transfer_send(
-        self, name: str, args: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        """`transfer.Send`: one command, its `result` or `None`."""
-        return await self._request(name, args)
 
     async def new_file(self) -> None:
         name = await self.push_screen_wait(ValuePrompt("New file name", ""))
