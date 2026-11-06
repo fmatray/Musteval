@@ -84,6 +84,11 @@ class Session:
         #: number has to be measured somewhere: it is measured here, where the
         #: request and its reply are both in hand.
         self.last_rtt_ms: float | None = None
+        #: Send times of pings still awaiting a pong, keyed by frame id. The round
+        #: trip is computed where the reply arrives, not where it was awaited: the
+        #: future resolves on the same call that hands the frame to the sink, so a
+        #: value written after `await` would still be the previous ping's.
+        self._ping_sent: dict[str, float] = {}
         self._hello_ack: Frame | None = None
         self._first_attempt: asyncio.Event = asyncio.Event()
 
@@ -205,7 +210,15 @@ class Session:
             future = self._pending.get(frame.reply_to)
             if future is not None and not future.done():
                 future.set_result(frame)
-                return
+                # A pong is the heartbeat's answer *and* the latency fact
+                # (`05-bridge.md` §10), so it must reach the sink too: resolving
+                # the future is not a reason to hide it.
+                if frame.type != "pong":
+                    return
+        if frame.type == "pong":
+            started = self._ping_sent.pop(frame.reply_to or "", None)
+            if started is not None:
+                self.last_rtt_ms = (time.monotonic() - started) * 1000
         if self._sink is not None:
             self._sink(frame)
 
@@ -340,8 +353,8 @@ class Session:
             started = time.monotonic()
             try:
                 await self._send(Frame(type="ping", id=ping_id, ts=0, body={}))
+                self._ping_sent[ping_id] = started
                 await asyncio.wait_for(future, timeout=self._pong_timeout)
-                self.last_rtt_ms = (time.monotonic() - started) * 1000
             except (asyncio.TimeoutError, SessionError):
                 self._missed_pongs += 1
                 if self._missed_pongs >= 3:
@@ -351,3 +364,4 @@ class Session:
                     return
             finally:
                 self._pending.pop(ping_id, None)
+                self._ping_sent.pop(ping_id, None)

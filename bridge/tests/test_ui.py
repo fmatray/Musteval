@@ -165,29 +165,32 @@ async def test_ui_connects_and_renders_the_greeting():
         await session.close()
 
 
-async def test_status_footer_shows_the_measured_round_trip():
+async def test_status_footer_shows_the_round_trip_a_real_pong_measured():
     """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
 
-    The footer must read from `Session.last_rtt_ms`, which is measured where the
-    request and its reply are both in hand. It previously appended "· pong" to the
-    window title, so the promised number existed nowhere: `/ping` was documented as
-    the latency check and measured nothing.
+    The heartbeat's pong must reach the app, not only resolve the future inside
+    `Session`: before this, `_deliver` returned on resolution, so no pong ever
+    reached `_on_pong` and the footer could only be filled by calling it directly.
+    The test therefore drives a real heartbeat rather than the screen's setter.
     """
     from bridge.ui import BridgeApp
 
-    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1,
+                      ping_interval=0.05, pong_timeout=0.5)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         for _ in range(50):
             if app.session.state.value == "connected":
                 break
             await pilot.pause(0.02)
-        session.last_rtt_ms = 4.25
         screen = app.query_one("#status")
-        screen.show_latency(4.25)
-        await pilot.pause(0.05)
-        assert "PING" in str(screen.query_one("#status-body").render())
-        assert "4.2" in str(screen.query_one("#status-body").render())
+        for _ in range(100):
+            if getattr(screen, "_rtt_ms", None) is not None:
+                break
+            await pilot.pause(0.02)
+        assert session.last_rtt_ms is not None
+        body = str(screen.query_one("#status-body").render())
+        assert "PING" in body and "no pong yet" not in body
         assert "pong" not in app.title
         await session.close()
 

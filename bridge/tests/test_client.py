@@ -47,18 +47,25 @@ def _agent(on_write=None):
     return handler
 
 
-async def test_ping_loop_measures_the_round_trip():
-    """`05-bridge.md` §7 maps `/ping` to "tests link latency", so `Session` measures
-    it: `last_rtt_ms` stays `None` until a pong arrives, then holds the round trip."""
+async def test_ping_loop_measures_the_round_trip_and_hands_the_pong_on():
+    """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
+
+    Two facts, one test, because either alone is a wiring claim: the number must be
+    measured, and the pong must reach the sink or the UI has nothing to paint.
+    """
+    seen: list[str] = []
     session = Session(FakeTransport(on_write=_agent()), **FAST)
+    session.install_sink(lambda frame: seen.append(frame.type))
     await session.connect()
     try:
+        assert session.last_rtt_ms is None
         for _ in range(100):
-            if session.last_rtt_ms is not None:
+            if session.last_rtt_ms is not None and "pong" in seen:
                 break
             await asyncio.sleep(0.01)
         assert session.last_rtt_ms is not None
         assert 0 <= session.last_rtt_ms < 5000
+        assert "pong" in seen
     finally:
         await session.close()
 
@@ -150,7 +157,9 @@ async def test_unsolicited_frames_reach_the_sink():
             return [encode(Frame(type="log", id="d-3", ts=0, body={"msg": "hi", "level": "I", "tag": "t"}))]
         return []
 
-    session = Session(FakeTransport(on_write=_agent(handler)), **FAST)
+    # No heartbeat: this test asserts the exact sink contents, and a pong is a
+    # solicited frame that legitimately reaches the sink too.
+    session = Session(FakeTransport(on_write=_agent(handler)), **{**FAST, "ping_interval": 99})
     session.install_sink(sink_frames.append)
     await session.connect()
     await session.send(Frame(type="ack", id=new_id("b"), ts=0, body={"ack_of": "d-1"}))
@@ -171,7 +180,7 @@ async def test_a_malformed_line_is_dropped_without_desynchronising():
             ]
         return []
 
-    session = Session(FakeTransport(on_write=_agent(handler)), **FAST)
+    session = Session(FakeTransport(on_write=_agent(handler)), **{**FAST, "ping_interval": 99})
     session.install_sink(sink_frames.append)
     await session.connect()
     await session.send(Frame(type="ack", id=new_id("b"), ts=0, body={"ack_of": "d-1"}))
