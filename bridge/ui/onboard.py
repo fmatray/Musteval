@@ -81,11 +81,12 @@ def writes(answers: Answers) -> list[tuple[str, dict[str, object]]]:
         provider = {
             "id": provider_id(answers.base_url),
             "base_url": answers.base_url,
+            "model": answers.model,
             "api_key_ref": f"nvs:{LLM_KEY}",
-            "models": [answers.model],
         }
+        # `03` §Full schema: `model` is a per-provider string and there is no
+        # `llm.model` key, so one write, not two.
         config.append(("config", {"llm.providers": [provider]}))
-        config.append(("config", {"llm.model": answers.model}))
     return secrets + config
 
 
@@ -105,7 +106,7 @@ def narration(answers: Answers, current: dict[str, object]) -> list[str]:
             lines.append(f"replaces llm.providers ({len(providers)} entries → 1)")
         else:
             lines.append("creates llm.providers (1 entry)")
-        lines.append(f"sets llm.model to {answers.model}")
+        lines.append(f"provider model {answers.model}")
     if answers.password:
         lines.append(f"stores nvs:{WIFI_KEY}")
     if answers.api_key:
