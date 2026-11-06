@@ -87,9 +87,12 @@ TEST_CASE("a missing or illegal envelope member is named", "[link]")
         /* `ts` is required and an integer; 0 is legal for an unsynced clock. */
         {"{\"v\":1,\"type\":\"ping\",\"id\":\"b-1\"}", "ts"},
         {"{\"v\":1,\"type\":\"ping\",\"id\":\"b-1\",\"ts\":\"0\"}", "ts"},
-        /* Not an object at all. */
+        /* Not an object at all: parses, so the class is just `json`. */
         {"[]", "json"},
-        {"{\"v\":1,\"type\":\"ping\",\"id\":\"b-1\",\"ts\":0} x", "json"},
+        /* Parses, but trailing garbage follows. `04` §1.2 requires the refusal to
+         * name the parse offset, and that offset is ours (not cJSON's), so it is
+         * exact: the `x` sits at byte 40. */
+        {"{\"v\":1,\"type\":\"ping\",\"id\":\"b-1\",\"ts\":0} x", "json at byte 40"},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

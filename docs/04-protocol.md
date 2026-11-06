@@ -40,8 +40,8 @@ adapters and terminal multiplexers behave identically `[ASSUMPTION]`.
 
 | Condition | Receiver | Observable result |
 |---|---|---|
-| RX line > 4096 bytes | device | line discarded; if `id` recoverable, `command.result` `ok:false` with `E_PROTOCOL`; else `event{kind:"protocol.error"}` |
-| RX line is not valid JSON | device | same as above; `message` names the parse offset |
+| RX line > 4096 bytes | device | line discarded; if `id` recoverable, `command.result` `ok:false` with `E_PROTOCOL`; else `event{kind:"protocol.error"}` whose `dropped_bytes` is the line's real length |
+| RX line is not valid JSON | device | same as above; `message` is `json at byte N`, naming the parse offset |
 | RX envelope has `v` != 1 | device | `command.result` `ok:false` with `E_PROTOCOL` |
 | RX type unknown to device | device | `command.result` `ok:false` with `E_PROTOCOL`, `detail.direction` = `bridge_to_device` |
 | TX serialisation would exceed 16384 bytes | device | `agent.final` (and only that type) truncates `text`, sets `truncated:true` and `full_bytes` |

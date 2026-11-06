@@ -32,6 +32,10 @@ typedef struct {
     char buf[LINK_RX_MAX];
     size_t len;
     bool discarding; /* oversize line: drop bytes until the next newline */
+    /* Bytes of the current line, including those past the cap. An oversize line
+     * keeps counting here after `len` stops growing, so `protocol.error` can report
+     * what was actually dropped instead of a hardcoded 0 (`04` §1.2). */
+    size_t seen;
 } link_reader_t;
 
 void link_reader_reset(link_reader_t *reader);

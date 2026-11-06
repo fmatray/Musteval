@@ -17,7 +17,16 @@ typedef struct json_doc json_doc_t;
 typedef struct json_node json_node_t;
 
 /* Parse `len` bytes of `buf`. Fails with ESP_ERR_INVALID_ARG on anything that is
- * not exactly one JSON value; the caller maps that to a wire error. */
+ * not exactly one JSON value; the caller maps that to a wire error.
+ *
+ * On failure `*error_offset` (when non-NULL) is the 0-based byte offset of the
+ * parse error, or `len` when the bytes parse but trailing non-whitespace follows.
+ * `04-protocol.md` §1.2 requires the refusal `message` to name that offset, so the
+ * caller cannot reconstruct it after the fact. */
+esp_err_t json_parse_at(const char *buf, size_t len, json_doc_t **out,
+                        size_t *error_offset);
+
+/* `json_parse_at` without the offset. */
 esp_err_t json_parse(const char *buf, size_t len, json_doc_t **out);
 
 /* Canonical emit: object keys sorted bytewise, no trailing commas, no whitespace

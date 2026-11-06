@@ -140,17 +140,31 @@ static esp_err_t put_value(sink_t *s, const cJSON *n)
     return ESP_ERR_INVALID_ARG;
 }
 
-esp_err_t json_parse(const char *buf, size_t len, json_doc_t **out)
+esp_err_t json_parse_at(const char *buf, size_t len, json_doc_t **out,
+                        size_t *error_offset)
 {
     if (buf == NULL || len == 0 || out == NULL) return ESP_ERR_INVALID_ARG;
     *out = NULL;
+    if (error_offset != NULL) *error_offset = 0;
     const char *end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(buf, len, &end, false);
-    if (root == NULL) return ESP_ERR_INVALID_ARG;
+    if (root == NULL) {
+        /* cJSON reports where it stopped; clamp because it can be one past the end
+         * for an unexpected end of input. */
+        if (error_offset != NULL) {
+            const char *where = cJSON_GetErrorPtr();
+            if (where == NULL) *error_offset = 0;
+            else if (where < buf) *error_offset = 0;
+            else if (where > buf + len) *error_offset = len;
+            else *error_offset = (size_t)(where - buf);
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
     /* Exactly one value: remainder must be whitespace only. */
     while (end < buf + len) {
         char c = *end;
         if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            if (error_offset != NULL) *error_offset = (size_t)(end - buf);
             cJSON_Delete(root);
             return ESP_ERR_INVALID_ARG;
         }
@@ -164,6 +178,11 @@ esp_err_t json_parse(const char *buf, size_t len, json_doc_t **out)
     doc->root = root;
     *out = doc;
     return ESP_OK;
+}
+
+esp_err_t json_parse(const char *buf, size_t len, json_doc_t **out)
+{
+    return json_parse_at(buf, len, out, NULL);
 }
 
 esp_err_t json_emit(json_doc_t *doc, char *buf, size_t cap, size_t *written)

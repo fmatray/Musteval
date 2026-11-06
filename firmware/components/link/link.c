@@ -27,11 +27,17 @@ static char s_emit[LINK_TX_MAX];
 static uint32_t s_counter = 0;
 static char s_id[16];
 
+/* The refusal message for a malformed line, which must name the byte offset
+ * (`04-protocol.md` §1.2). Static because the link task stack is 4096 bytes and the
+ * frame is built from it (`02-firmware.md` §3.3). */
+static char s_parse_message[32];
+
 static const link_sink_t *s_sink = NULL;
 
 void link_reader_reset(link_reader_t *reader)
 {
     reader->len = 0;
+    reader->seen = 0;
     reader->discarding = false;
     reader->buf[0] = '\0';
 }
@@ -51,20 +57,32 @@ bool link_reader_feed(link_reader_t *reader, char byte, size_t *line_len,
         /* Rule 3 / §1.2: the limit includes the terminator, so content
          * before `\n` may be at most LINK_RX_MAX - 1. One report per line. */
         if (reader->discarding || n > LINK_RX_MAX - 1) {
-            link_reader_reset(reader);
-            *line_len = 0;
+            /* `seen` counts the whole line, so the caller can report the real
+             * length (§1.2). The prefix stays in `buf` on purpose: §1.2 answers an
+             * oversize line with `command.result` when an `id` is recoverable, and
+             * wiping the buffer made that branch unreachable — every oversize line
+             * fell through to the `protocol.error` event instead. */
+            *line_len = reader->seen;
+            reader->len = 0;
+            reader->seen = 0;
+            reader->discarding = false;
             *status = LINK_LINE_OVERSIZE;
             return true;
         }
 
+        *line_len = n;
         reader->buf[n] = '\0'; /* NUL-terminate for link_reader_line */
         reader->len = 0;
+        reader->seen = 0;
         reader->discarding = false;
-        *line_len = n;
         /* An empty line is not a frame (§1.1 rule 1). */
         *status = (n == 0) ? LINK_LINE_BAD_JSON : LINK_LINE_OK;
         return true;
     }
+
+    /* Counted for every content byte, including the ones past the cap, so an
+     * oversize line can report its real length (§1.2) instead of a constant 0. */
+    reader->seen++;
 
     if (reader->discarding) {
         return false; /* rule 3: drop bytes until the next newline */
@@ -74,9 +92,9 @@ bool link_reader_feed(link_reader_t *reader, char byte, size_t *line_len,
      * exceed LINK_RX_MAX - 1. If we reach 4096, it is already oversize. */
     if (reader->len >= LINK_RX_MAX - 1) {
         /* Only set discarding if the 4096th byte is not a newline (handled above).
-         * We must launder the current buffer to avoid leaking old content. */
+         * `len` is kept: the prefix is what `link_recover_id` scans for an `id`, and
+         * the buffer is rewritten from offset 0 by the next line. */
         reader->discarding = true;
-        reader->len = 0;
         return false;
     }
 
@@ -213,8 +231,15 @@ esp_err_t link_frame_parse(const char *line, size_t len, json_doc_t **out,
     }
 
     json_doc_t *doc = NULL;
-    if (json_parse(line, len, &doc) != ESP_OK || doc == NULL) {
-        *bad_field = "json";
+    size_t error_offset = 0;
+    if (json_parse_at(line, len, &doc, &error_offset) != ESP_OK || doc == NULL) {
+        /* §1.2: for a line that is not valid JSON the refusal `message` names the
+         * parse offset. `bad_field` carries only the class, so the offset rides in
+         * a static buffer — the link task is the sole caller and the string is
+         * consumed before the next parse (`02-firmware.md` §3.3). */
+        snprintf(s_parse_message, sizeof s_parse_message, "json at byte %u",
+                 (unsigned)error_offset);
+        *bad_field = s_parse_message;
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -418,6 +443,11 @@ const char *link_recover_id(const char *line, size_t len, char *out,
                             size_t out_cap)
 {
     if (line == NULL || out == NULL || out_cap < 2) return NULL;
+
+    /* An oversize line reports the bytes it *saw*, which can exceed the buffer: the
+     * reader keeps only the first LINK_RX_MAX - 1. Clamping here keeps the scan in
+     * bounds without the caller having to pass two lengths. */
+    if (len > LINK_RX_MAX - 1) len = LINK_RX_MAX - 1;
 
     /* No `strstr`: the line is a byte range, not necessarily NUL-terminated. */
     for (size_t i = 0; i + 4 <= len; i++) {

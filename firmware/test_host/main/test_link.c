@@ -1,6 +1,7 @@
 /* NDJSON framing and envelope rules, asserted byte by byte against the frozen
  * contract in `04-protocol.md` §1.1, §1.2 and §2. */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "unity.h"
@@ -185,6 +186,82 @@ static json_doc_t *sent_doc(void)
     TEST_ASSERT_EQUAL(ESP_OK, json_parse(s_sent, n, &doc));
     TEST_ASSERT_NOT_NULL(doc);
     return doc;
+}
+
+/* `04-protocol.md` §1.2: an oversize line answers `command.result` when an `id` is
+ * recoverable, and the event's `dropped_bytes` reports the real length. Before the
+ * reader kept its prefix this branch was unreachable and `dropped_bytes` was a
+ * hardcoded 0, which the board reproduced: a 5000-byte command answered
+ * `event{protocol.error, dropped_bytes:0}` instead of `command.result`. */
+TEST_CASE("an oversize line still exposes its id prefix", "[link]")
+{
+    link_reader_t reader;
+    link_reader_reset(&reader);
+    const char *head = "{\"v\":1,\"type\":\"command\",\"id\":\"b-77\",\"name\":\"status\",\"args\":{\"x\":\"";
+    size_t line_len = 0;
+    link_line_status_t status = LINK_LINE_OK;
+    bool done = false;
+    for (const char *p = head; *p != '\0'; p++) {
+        done = link_reader_feed(&reader, *p, &line_len, &status);
+        TEST_ASSERT_FALSE(done);
+    }
+    /* Fill past the cap, then terminate the line: the reader only completes on a
+     * newline, so a `while (!done)` here would spin forever. */
+    int extra = 0;
+    while (!reader.discarding) {
+        done = link_reader_feed(&reader, 'A', &line_len, &status);
+        extra++;
+        TEST_ASSERT_FALSE(done);
+    }
+    TEST_ASSERT_FALSE(done); /* still inside the overlong line */
+    done = link_reader_feed(&reader, '\n', &line_len, &status);
+    TEST_ASSERT_TRUE(done);
+    TEST_ASSERT_EQUAL(LINK_LINE_OVERSIZE, status);
+    TEST_ASSERT_EQUAL(strlen(head) + (size_t)extra, line_len);
+
+    char out[33];
+    TEST_ASSERT_EQUAL_STRING("b-77", link_recover_id(link_reader_line(&reader),
+                                                    line_len, out, sizeof out));
+}
+
+TEST_CASE("an oversize line without an id reports the bytes it dropped", "[link]")
+{
+    link_set_writer(capture_writer);
+    const char *head = "{\"v\":1,\"type\":\"";
+    size_t n = 6000;
+    char *line = calloc(n + 1, 1);
+    TEST_ASSERT_NOT_NULL(line);
+    memcpy(line, head, strlen(head));
+    memset(line + strlen(head), 'A', n - strlen(head));
+    line[n] = '\0';
+
+    TEST_ASSERT_EQUAL(ESP_OK, link_refuse_line(line, n, "", "malformed frame", 1000));
+    json_doc_t *doc = sent_doc();
+    json_node_t *root = json_root(doc);
+    TEST_ASSERT_EQUAL_STRING("event", json_string(json_get(root, "type")));
+    int64_t dropped = 0;
+    TEST_ASSERT_TRUE(json_int(json_get(json_get(root, "data"), "dropped_bytes"), &dropped));
+    TEST_ASSERT_EQUAL_INT64((int64_t)n, dropped);
+    json_free(doc);
+    free(line);
+}
+
+TEST_CASE("a line that is not JSON names the parse offset", "[link]")
+{
+    json_doc_t *doc = NULL;
+    const char *bad = "{\"v\":1,\"type\":\"command\", nope}";
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, json_parse_at(bad, strlen(bad), &doc, &offset));
+    TEST_ASSERT_NULL(doc);
+    /* `nope` starts at byte 26. cJSON reports the position it stopped at, which is
+     * that token: assert the location, not cJSON's exact convention, so a version
+     * bump that still points at the bad token does not fail the test. */
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(26, offset);
+    TEST_ASSERT_LESS_THAN_size_t(strlen(bad), offset);
+
+    const char *trailing = "{\"v\":1} junk";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, json_parse_at(trailing, strlen(trailing), &doc, &offset));
+    TEST_ASSERT_EQUAL_size_t(8, offset);
 }
 
 TEST_CASE("a refused line with a recoverable id answers command.result", "[link]")
