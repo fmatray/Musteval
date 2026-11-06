@@ -185,6 +185,15 @@ class Session:
     async def _send(self, frame: Frame) -> None:
         try:
             await self._transport.write_line(encode(frame))
+            if frame.type == "ping":
+                # Recorded here, not in the heartbeat, so a `/ping` typed by the
+                # reader is measured too: `05-bridge.md` §10 calls that the latency
+                # check, and both kinds of ping produce a pong the sink reports.
+                # Bounded so a ping whose pong never arrives cannot accumulate:
+                # a stale entry costs one dict slot, not a leak with a floor.
+                if len(self._ping_sent) > 64:
+                    self._ping_sent.clear()
+                self._ping_sent[frame.id] = time.monotonic()
         except TransportError as exc:
             # `TransportError` already names the operation ("write failed: ..."),
             # so the message is passed through rather than prefixed again.
@@ -350,10 +359,8 @@ class Session:
             ping_id = new_id("b")
             future: asyncio.Future[Frame] = asyncio.get_running_loop().create_future()
             self._pending[ping_id] = future
-            started = time.monotonic()
             try:
                 await self._send(Frame(type="ping", id=ping_id, ts=0, body={}))
-                self._ping_sent[ping_id] = started
                 await asyncio.wait_for(future, timeout=self._pong_timeout)
             except (asyncio.TimeoutError, SessionError):
                 self._missed_pongs += 1

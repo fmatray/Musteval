@@ -47,6 +47,28 @@ def _agent(on_write=None):
     return handler
 
 
+async def test_a_ping_the_reader_sends_is_measured_too():
+    """`05-bridge.md` §10: `/ping` is the latency check, not just the heartbeat.
+
+    A ping typed by the reader goes through `Session.send`, which has no future to
+    resolve, so the send time must be recorded there. Before, only the heartbeat
+    recorded one and `/ping` left `last_rtt_ms` untouched.
+    """
+    session = Session(FakeTransport(on_write=_agent()), **{**FAST, "ping_interval": 99})
+    await session.connect()
+    try:
+        assert session.last_rtt_ms is None
+        await session.send(Frame(type="ping", id=new_id("b"), ts=0, body={}))
+        for _ in range(100):
+            if session.last_rtt_ms is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert session.last_rtt_ms is not None
+        assert 0 <= session.last_rtt_ms < 5000
+    finally:
+        await session.close()
+
+
 async def test_ping_loop_measures_the_round_trip_and_hands_the_pong_on():
     """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
 
