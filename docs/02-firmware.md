@@ -153,12 +153,60 @@ bug it exists to prevent.
   which targets any allowlisted path not shipped in the image (`04-protocol.md`
   §4.16). Every other write target is `wsfs`, and only `task.set` is model-reachable.
 
+### `net` — WiFi and transport
+- `net_init()`: Read `wifi.*`, rank `wifi.networks[]` by `priority` and resolve each
+  `password_ref`. Does not touch the radio: a config error is reported before the
+  station costs power. Returns `E_CONFIG` when no network has both an SSID and a
+  resolvable password.
+- `net_connect()`: Bring the station up and join the best visible AP, highest
+  `priority` first, `retry_backoff_ms` between attempts and `connect_timeout_ms` per
+  attempt. Blocks for at most the sum of those bounds. Returns `E_WIFI` when every
+  configured AP refused; the device stays reachable over the link, which is the point
+  of continuing.
+- `net_connected()`: Whether an IP is assigned right now.
+- `net_status(&st)`: The `wifi` facts `status` reports (`04-protocol.md` §3.9):
+  `state`, `ssid`, `rssi`, `ip`, `failovers`. Nothing is fabricated before an
+  association: `ssid`, `rssi` and `ip` are NULL, which encodes as JSON null.
+- `net_post(url, content_type, authorization, body, body_len, timeout_ms, &resp)`:
+  `POST <url>` over TLS. Verifies the chain against the bundled roots and never falls
+  back to plaintext (`06-security.md` T11); a URL that fails verification returns
+  `ESP_ERR_ESP_TLS_CERTIFICATE_VERIFY_FAILED`, which `llm` maps to
+  `E_LLM_UNAVAILABLE`. Follows no redirect. A body over 16 KiB is refused with
+  `ESP_ERR_INVALID_SIZE` rather than truncated, so `llm` never parses half a reply.
+
+`net` knows nothing about providers: an HTTP POST is transport, and what a body means
+belongs to `llm`. `net_rank()` and `net_backoff_ms()` are pure and host-tested; the
+radio and TLS paths are board-only, because a test against a stubbed `esp_wifi` proves
+nothing about the code that ships.
+
+### `clock` — Wall clock and SNTP
+- `clock_init()`: Read `ntp.servers[]` and the sync interval, and put the wall clock
+  in UTC. Called at boot step 6. A missing `ntp` block is not an error: the device
+  boots with an unsynced clock rather than refusing to start.
+- `clock_sync()`: Wait for the first SNTP reply, up to `ntp.timeout_ms` or the
+  default 3000 ms. Returns `E_TIMEOUT` when no server answered. The caller logs it
+  and boots on; `ntp.synced` fires only on success (§5.1).
+- `clock_synced()`: Whether the clock has been stepped by SNTP at least once since
+  boot. `hello_ack.time_synced` and `time.synced` both report exactly this.
+- `clock_now()`: Unix seconds, UTC. Before a sync this is the boot-relative clock,
+  which is why every consumer that cares checks `clock_synced()` first.
+- `clock_uptime_ms()`: Monotonic milliseconds since boot, from `esp_timer`, **not**
+  `gettimeofday`: the SNTP step moves the wall clock, so a derivative of it would
+  jump and `duration_ms` would be a lie.
+- `clock_tz()` / `clock_utc_offset_s()`: The rendering zone for `time.now` and the
+  tool's `tz` argument. Storage is always UTC; only presentation shifts.
+- `clock_next_interval_ms(interval_s)`: The clamped poll interval, 60 s to 86400 s, so
+  a config typo cannot turn the device into an SNTP flood or silence it for a year.
+
+`clock` is L0 rather than a capability: `llm`, `sched`, `geo` and `agent` all need the
+time, and as a platform service it needs no port.
+
 ### `llm` — Language Model
-- `llm_query(prompt, history, tools_json, response_buf, len)`: Send prompt to
-  current provider. Returns `E_LLM_UNAVAILABLE` on a transport or provider failure,
+- `llm_query(&request, response_buf, len, &provider)`: Send one prompt through the
+  provider chain. Returns `E_LLM_UNAVAILABLE` on a transport or provider failure,
   which triggers provider failover; returns `E_LLM_RATE` when the budget check
   refuses first, which does **not** trigger failover — a different provider would
-  spend the same budget.
+  spend the same budget. `provider` receives the index that answered, or -1.
 - `llm_budget_charge()`: Called once per request *attempt*, before the socket is
   opened. Refuses with `E_LLM_RATE` when either fixed UTC window
   (`llm.max_calls_per_hour`, `llm.max_calls_per_day`) is exhausted, so a fallback
@@ -168,8 +216,22 @@ bug it exists to prevent.
   (`03-config.md` §`llm`).
 - `llm_budget_counters(hour, day)`: Reads the counters for `status`
   (`04-protocol.md` §3.9). Counters live in NVS and survive reboot.
-- `llm_assemble_prompt(system_prompt, history, tools_json, target_buf)`: Merge
-  system prompt, history and the tool array into the request body.
+- `llm_assemble_prompt(&request, extra_body_json, out, cap)`: Merge system prompt,
+  history and the tool array into the request body described below. Returns the
+  length written, or 0 when the body does not fit — a truncated body is a 400 the
+  caller cannot tell from a config mistake, so it is refused instead.
+- `llm_endpoint(base_url, out, cap)`: `base_url` with `/chat/completions` appended
+  verbatim. No normalisation: a base URL that legitimately ends in `/` keeps it.
+- `llm_next_provider(current, count)`: The next index to try, or -1 when the chain is
+  exhausted. The chain is walked once per request and never wraps, so a flapping
+  provider cannot spend the budget in a loop.
+- `llm_counters(&hour, &day)` / `llm_limits(&hour, &day)` / `llm_last_answer(&id,
+  &model)`: The facts `status` reports (`04-protocol.md` §3.9).
+- `llm_last_error()`: Why the chain last failed, for `E_LLM_UNAVAILABLE`'s
+  `error.message`.
+
+The budget, the body and the chain order are pure and host-tested (`llm_budget.c`,
+`llm_body.c`); `llm.c` resolves secrets, reads NVS and posts, and is board-only.
 
 #### Request body
 
@@ -320,9 +382,13 @@ Flow:
  as-is rather than implied precise (`06-security.md` §6).
 
 ### `sys` — Hardware abstraction
-- `sys_init()`: Install the GPIO ISR service (`gpio_install_isr_service()`) and start
-  the task watchdog. Does not install a brownout handler: the brownout threshold is a
-  board constant (`01-hardware.md` §5), not a runtime decision.
+- `sys_board_init()`: Install the GPIO ISR service (`gpio_install_isr_service()`) and
+  start the task watchdog. Does not install a brownout handler: the brownout threshold
+  is a board constant (`01-hardware.md` §5), not a runtime decision. Named
+  `sys_board_init` rather than `sys_init` because lwIP exports a global `sys_init` in
+  `liblwip.a`, and the two collide at link time once anything pulls in the network
+  stack — which M3's `net` does. The prefix also says what the function is: board
+  bring-up, not system policy.
   - `sys` is the only owner of the task watchdog: `CONFIG_ESP_TASK_WDT_INIT` and both
     `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU*` are off in `sdkconfig.defaults`. Left
     on, IDF initializes the watchdog first, `esp_task_wdt_init()` then returns
@@ -412,7 +478,13 @@ The device follows a strict linear boot to ensure dependencies are met.
    asynchronous and does not block boot; a broker that never connects does not
    delay the agent.
 9. **Scheduler**: `sched` loads `tasks.json` → `boot` trigger fires.
-10. **Idle**: `app` enters main loop, waiting for `prompt`, `sched` or `mqtt.message` events. This is the step that clears `boot_failures` (§3.2). At M1 this is not implemented: `app_main` returns after starting the link, so `link_task` is what keeps the device reachable, and the boot counter legitimately stays at its incremented value because the idle step that clears it does not run yet.
+10. **Idle**: `app` enters main loop, waiting for `prompt`, `sched` or `mqtt.message` events. This is the step that clears `boot_failures` (§3.2). It is not implemented before M4: `app_main` returns after steps 1-8, so `link_task` is what keeps the device reachable, and the boot counter legitimately stays at its incremented value because the idle step that clears it does not run yet.
+
+Steps 5-7 log and continue: a radio that will not associate or an NTP server that
+does not answer must not cost the operator the link, because the link is how they
+repair the config. In safe mode (§3.2) they are skipped entirely — the station stays
+down and `time_synced` stays false, so nothing reaches the network before the config
+has been repaired over USB.
 
 ### 3.2 Boot guard and safe mode
 

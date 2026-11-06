@@ -588,23 +588,33 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
     /* A subsystem that does not exist yet reports its idle value, not a plausible
      * one: the bridge prints §3.9 verbatim, so a fabricated field would be a lie
      * the UI shows. */
+    /* A NULL identity is reported as JSON null, not as an empty string: `04` §3.9
+     * types these as nullable, and `""` would read as a network named nothing. */
+#define ADD_NULLABLE(obj_, key_, value_)                                               \
+    ((value_) != NULL ? json_add_string((obj_), (key_), (value_))                      \
+                      : json_add_null((obj_), (key_)))
+
     ok = ok &&
-         json_add_string(wifi, "state", "off") &&
-         json_add_null(wifi, "ssid") &&
-         json_add_null(wifi, "rssi") &&
-         json_add_null(wifi, "ip") &&
-         json_add_int(wifi, "failovers", 0) &&
-         json_add_bool(time, "synced", false) &&
-         json_add_int(time, "unix", 0) &&
-         json_add_string(time, "tz", "UTC") &&
-         json_add_null(llm, "provider") &&
-         json_add_null(llm, "model") &&
-         json_add_bool(llm, "available", false) &&
-         json_add_null(llm, "last_error") &&
-         json_add_int(llm, "calls_hour", 0) &&
-         json_add_int(llm, "calls_day", 0) &&
-         json_add_null(llm, "limit_hour") &&
-         json_add_null(llm, "limit_day") &&
+         json_add_string(wifi, "state", st->wifi_state != NULL ? st->wifi_state : "off") &&
+         ADD_NULLABLE(wifi, "ssid", st->wifi_ssid) &&
+         (st->wifi_rssi != 0 ? json_add_int(wifi, "rssi", st->wifi_rssi)
+                             : json_add_null(wifi, "rssi")) &&
+         ADD_NULLABLE(wifi, "ip", st->wifi_ip) &&
+         json_add_int(wifi, "failovers", st->wifi_failovers) &&
+         json_add_bool(time, "synced", st->time_synced) &&
+         json_add_int(time, "unix", st->time_unix) &&
+         json_add_string(time, "tz", st->tz != NULL ? st->tz : "UTC0") &&
+         ADD_NULLABLE(llm, "provider", st->llm_provider) &&
+         ADD_NULLABLE(llm, "model", st->llm_model) &&
+         json_add_bool(llm, "available", st->llm_available) &&
+         ADD_NULLABLE(llm, "last_error", st->llm_last_error) &&
+         json_add_int(llm, "calls_hour", st->llm_calls_hour) &&
+         json_add_int(llm, "calls_day", st->llm_calls_day) &&
+         (st->llm_limit_hour > 0
+              ? json_add_int(llm, "limit_hour", st->llm_limit_hour)
+              : json_add_null(llm, "limit_hour")) &&
+         (st->llm_limit_day > 0 ? json_add_int(llm, "limit_day", st->llm_limit_day)
+                                : json_add_null(llm, "limit_day")) &&
          json_add_null(obj, "geo") &&
          json_add_bool(agent, "busy", false) &&
          json_add_null(agent, "run_id") &&

@@ -25,7 +25,7 @@ bool    boot_guard_should_enter_safe_mode(int32_t count, int32_t safe_mode_after
  * does not parse. */
 int32_t boot_guard_clamp_threshold(int64_t configured);
 
-esp_err_t sys_init(void);
+esp_err_t sys_board_init(void);
 
 /* Onboard user LED, GPIO21, active-low (`01-hardware.md` §6). The inversion is the
  * point of this call: callers ask for lit or dark, never for a logic level. */

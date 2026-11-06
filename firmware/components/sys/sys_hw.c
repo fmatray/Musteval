@@ -14,14 +14,14 @@
 #define SYS_LED_LEVEL_ON  0
 #define SYS_LED_LEVEL_OFF 1
 
-esp_err_t sys_init(void)
+esp_err_t sys_board_init(void)
 {
     /* The ISR service is installed once here; `sched` adds its own handler after
      * `sys_gpio_edge_config()` so `sys` stays trigger-agnostic (`02` §sys). */
     esp_err_t err = gpio_install_isr_service(0);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         /* INVALID_STATE means another caller already installed it, which is the
-         * idempotent case: `sys_init` is safe to call twice. */
+         * idempotent case: `sys_board_init` is safe to call twice. */
         return err;
     }
 

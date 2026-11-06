@@ -21,6 +21,9 @@
 #include "freertos/task.h"
 
 #include "cfg.h"
+#include "clock.h"
+#include "llm.h"
+#include "net.h"
 #include "link.h"
 #include "store.h"
 #include "sys.h"
@@ -445,14 +448,10 @@ static esp_err_t handle_fs_put(const json_node_t *args, json_node_t *root,
      * on `/prompts/`, `/skills/`, `/tools/` or `/config.json` would refuse every
      * import and leave a blank device with no way to accept one. `build_userfs.py`
      * (M5, `07-roadmap.md`) fills the table as it writes the image. */
+    /* Empty today, so the loop over it is not written: `k_shipped` becomes a table
+     * with entries when the image exists, and the check is added with them. */
     static const char *const k_shipped[] = {};
-    for (size_t i = 0; i < sizeof k_shipped / sizeof k_shipped[0]; i++) {
-        if (strcmp(path, k_shipped[i]) == 0) {
-            *code = "E_CONFIG";
-            *message = "a baked-in file wins: import under a different name";
-            return ESP_ERR_INVALID_ARG;
-        }
-    }
+    (void)k_shipped;
     const char *encoding = json_string(json_get(args, "encoding"));
     bool base64 = encoding != NULL && strcmp(encoding, "base64") == 0;
     if (encoding != NULL && !base64 && strcmp(encoding, "utf8") != 0) {
@@ -691,6 +690,14 @@ static void answer_command(const json_node_t *frame)
             emit_failure("status", reply_to, "E_STORAGE", "Usage failed");
             json_free(body); return;
         }
+        net_status_t net;
+        net_status(&net);
+        int32_t calls_hour = 0, calls_day = 0;
+        llm_counters(&calls_hour, &calls_day);
+        int32_t limit_hour = 0, limit_day = 0;
+        llm_limits(&limit_hour, &limit_day);
+        const char *llm_id = NULL, *llm_model = NULL;
+        bool llm_available = llm_last_answer(&llm_id, &llm_model);
         link_status_t st = {
             .safe_mode = s_safe_mode,
             .boot_failures = s_boot_failures,
@@ -702,6 +709,25 @@ static void answer_command(const json_node_t *frame)
             .wsfs_total = (int64_t)wfs_total,
             .heap_free = (int64_t)esp_get_free_heap_size(),
             .psram_free = 0,
+            .wifi_state = net_connected()      ? "connected"
+                          : net.state == NET_STATE_FAILED    ? "failed"
+                          : net.state == NET_STATE_CONNECTING ? "connecting"
+                                                             : "off",
+            .wifi_ssid = net.ssid,
+            .wifi_rssi = net.rssi,
+            .wifi_ip = net.ip,
+            .wifi_failovers = net.failovers,
+            .time_synced = clock_synced(),
+            .time_unix = clock_now(),
+            .tz = clock_tz(),
+            .llm_provider = llm_id,
+            .llm_model = llm_model,
+            .llm_available = llm_available,
+            .llm_last_error = llm_last_error()[0] != '\0' ? llm_last_error() : NULL,
+            .llm_calls_hour = calls_hour,
+            .llm_calls_day = calls_day,
+            .llm_limit_hour = limit_hour,
+            .llm_limit_day = limit_day,
         };
         json_node_t *result = json_add_object(root, "result");
         json_add_string(root, "name", "status");
@@ -1012,7 +1038,7 @@ void app_main(void)
         ESP_LOGI(TAG, "flash: %" PRIu32 " bytes", flash_size);
     }
 
-    err = sys_init();
+    err = sys_board_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "sys: init failed: %s", esp_err_to_name(err));
     }
@@ -1066,6 +1092,46 @@ void app_main(void)
         return;
     }
     link_log_install("info");
+
+    /* `02-firmware.md` §3.1 steps 4-8. Each step logs and continues: a missing radio
+     * or an unreachable provider must not cost the operator the link, because the
+     * link is how they fix the config. Safe mode skips the radio entirely (§3.2),
+     * which is why the clock is left unsynced and `time_synced` stays false. */
+    if (safe_mode) {
+        ESP_LOGW(TAG, "boot: safe mode: skipping network, clock and model");
+    } else {
+        err = net_init();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "boot: wifi: no usable network: %s", esp_err_to_name(err));
+        } else {
+            err = net_connect();
+            if (err != ESP_OK) {
+                /* `02-firmware.md` §4.2 names the failure `E_WIFI`, and the log is the
+                 * only place an operator sees it: `ESP_ERR_INVALID_STATE` would read as
+                 * a programming error rather than "no network". */
+                ESP_LOGW(TAG, "boot: wifi: %s (E_WIFI)",
+                         err == ESP_ERR_INVALID_STATE ? "no configured network joined"
+                                                      : esp_err_to_name(err));
+            }
+        }
+
+        err = clock_init();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
+            ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
+        }
+        if (net_connected()) {
+            err = clock_sync();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
+            }
+        }
+
+        err = llm_init();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "boot: llm: %s: provider commands answer E_LLM_UNAVAILABLE",
+                     esp_err_to_name(err));
+        }
+    }
 
     ESP_LOGW(TAG, "boot stops before the scheduler: counter stays at %" PRId32,
              count);

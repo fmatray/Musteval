@@ -155,6 +155,28 @@ typedef struct {
     int64_t  userfs_used, userfs_total;
     int64_t  wsfs_used, wsfs_total;
     int64_t  heap_free, psram_free;
+
+    /* `net` (`04-protocol.md` §3.9 `wifi`). `ssid`, `rssi` and `ip` are NULL until the
+     * station associates, because there is nothing truthful to report before that. */
+    const char *wifi_state;      /* "connected" | "connecting" | "off" */
+    const char *wifi_ssid;
+    int32_t  wifi_rssi;
+    const char *wifi_ip;
+    int32_t  wifi_failovers;
+
+    /* `clock` (§3.9 `time`). */
+    bool     time_synced;
+    int64_t  time_unix;
+    const char *tz;
+
+    /* `llm` (§3.9 `llm`). `llm_available` is whether a provider resolved at boot;
+     * `llm_provider`/`llm_model` are the ones that last answered. */
+    const char *llm_provider;
+    const char *llm_model;
+    bool     llm_available;
+    const char *llm_last_error;
+    int32_t  llm_calls_hour, llm_calls_day;
+    int32_t  llm_limit_hour, llm_limit_day;
 } link_status_t;
 
 /* `status` BODY only (§3.9), the single canonical status object. Subsystems absent
