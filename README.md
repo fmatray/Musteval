@@ -43,6 +43,7 @@ The full specification is located in the `docs/` directory:
 - [08 Code Architecture](docs/08-code-architecture.md) - Firmware layering law, ports, extension points, and energy model.
 - [09 Bridge Architecture](docs/09-bridge-architecture.md) - Bridge layering, the protocol module, ports, and reuse boundaries.
 - [10 Test Agent](docs/10-test-agent.md) - Fake device over a pty: validating peer for hardware-free bridge testing.
+- [11 Acceptance M1 M2](docs/11-acceptance-M1-M2.md) - Hand-run procedure for the M1 and M2 criteria.
 - [Tools](docs/tools/README.md) - Per-domain tool contracts: arguments, results, schemas.
 
 ## Quickstart (intended)
