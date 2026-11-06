@@ -29,7 +29,10 @@ TREE = {
     ],
 }
 
-BODIES = {"/workspace/notes.txt": "hello world"}
+BODIES = {
+    "/workspace/notes.txt": "hello world",
+    "/workspace/runs/last.jsonl": '{"a":1}',
+}
 
 SANDBOX_NAMES = (
     "sandbox.list", "sandbox.read", "sandbox.write",
@@ -342,6 +345,31 @@ async def test_w_refuses_a_truncated_read_instead_of_writing_a_prefix(tmp_path):
         await pilot.pause(0.3)
         assert not target.exists()
         assert "read cap" in "\n".join(
+            str(line.text) for line in app.query_one("#chat-log").lines
+        )
+
+
+async def test_w_downloads_a_directory_as_a_tree(tmp_path):
+    """`05` §5.8.1: a directory walk mirrors the device tree under the host root."""
+    app = _app()
+    target = tmp_path / "snapshot"
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        table = screen.query_one("#files-table")
+        table.focus()
+        table.move_cursor(row=0)  # runs/ sorts before notes.txt
+        await pilot.press("w")
+        await pilot.pause(0.2)
+        value = app.screen.query_one("#value-input").value
+        for _ in range(len(value)):
+            await pilot.press("backspace")
+        await pilot.press(*str(target))
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        # The tree mirrors the device path below the chosen root, so the
+        # subtree keeps its name rather than being flattened.
+        assert (target / "runs" / "last.jsonl").read_text() == '{"a":1}'
+        assert "downloaded 1 file" in "\n".join(
             str(line.text) for line in app.query_one("#chat-log").lines
         )
 
