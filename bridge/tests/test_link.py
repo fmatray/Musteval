@@ -195,6 +195,34 @@ async def test_serial_transport_carries_a_line_across_a_real_fd():
                 pass
 
 
+async def test_serial_transport_delivers_a_short_line_without_waiting_for_a_full_buffer():
+    """A reply shorter than the read size must not wait for the read timeout.
+
+    `07-roadmap.md` M1 budgets 10 ms for a whole `ping`/`pong`. With
+    `read(256)` the reader blocked until 256 bytes arrived or the 100 ms timeout
+    expired, so every short frame cost the timeout and the budget was missed by an
+    order of magnitude. Measured here against a real fd with a 50 ms timeout: a
+    correct reader returns in a few ms, the old one in >=50.
+    """
+    master, slave = os.openpty()
+    transport = SerialTransport(os.ttyname(slave), read_timeout=0.05)
+    try:
+        await transport.open()
+        os.write(master, b'{"v":1,"type":"pong"}\n')
+        started = time.monotonic()
+        line = await asyncio.wait_for(transport.read_line(), 2)
+        elapsed_ms = (time.monotonic() - started) * 1000
+        assert line == b'{"v":1,"type":"pong"}'
+        assert elapsed_ms < 20, f"short line took {elapsed_ms:.1f} ms: read is waiting for a full buffer"
+    finally:
+        await transport.close()
+        for fd in (master, slave):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 async def test_serial_transport_opens_a_pty_without_raising():
     """A pty has no modem lines, and opening one must not ask for them."""
     master, slave = os.openpty()

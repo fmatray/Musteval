@@ -108,7 +108,11 @@ class SerialTransport(Transport):
         assert self._serial is not None
         while not self._closed.is_set():
             try:
-                chunk = self._serial.read(256)
+                # Read what is already buffered, not a fixed 256: `read(n)` blocks
+                # until `n` bytes arrive or the timeout expires, so any reply shorter
+                # than 256 bytes waited the full 100 ms and `ping`/`pong` measured
+                # ~99 ms against `07-roadmap.md` M1's 10 ms budget.
+                chunk = self._serial.read(self._serial.in_waiting or 1)
             except (serial.SerialException, OSError) as exc:
                 self._error = str(exc)
                 self._pending.put(None)
@@ -126,7 +130,9 @@ class SerialTransport(Transport):
             try:
                 item = self._pending.get_nowait()
             except queue.Empty:
-                await asyncio.sleep(0.005)
+                # Poll at 1 ms, not 5: this is the tail of every round trip, and
+                # `07-roadmap.md` M1 budgets 10 ms for a whole `ping`/`pong`.
+                await asyncio.sleep(0.001)
                 continue
             if item is None:
                 return None
