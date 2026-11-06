@@ -45,14 +45,44 @@ static net_state_t s_state = NET_STATE_OFF;
 static char s_ip[16];
 static char s_ssid[33];
 static int32_t s_rssi;
+/* True while `net_connect`'s attempt loop is driving the radio. The disconnect
+ * handler must not reconnect then: the loop is trying the next access point, and a
+ * connect from the event task would race it. */
+static bool s_attempting;
+/* Set once the station has held a link. `02-firmware.md` §4.2's `WiFi Lost` row is
+ * about an *established* link dropping; a boot in which every network refused is a
+ * config problem and must stay `failed` rather than spin `connecting` forever. */
+static bool s_ever_connected;
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     (void)base;
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* A drop must downgrade the state, not just raise the flag: otherwise
+         * `net_connected()` keeps answering true and `status` reports the SSID and IP
+         * of a link that is gone (`04-protocol.md` §3.9 types them as the *active*
+         * network). The identity is cleared for the same reason — a stale IP is worse
+         * than none, because it invites a request that cannot be delivered. */
         s_rssi = 0;
-        if (s_events != NULL) xEventGroupSetBits(s_events, NET_FAIL_BIT);
+        s_ip[0] = '\0';
+        s_ssid[0] = '\0';
+        if (s_events != NULL) {
+            xEventGroupClearBits(s_events, NET_GOT_IP_BIT);
+            xEventGroupSetBits(s_events, NET_FAIL_BIT);
+        }
+        if (!s_attempting && s_ever_connected) {
+            /* `02-firmware.md` §4.2 `WiFi Lost`: `net` attempts reconnect. It is the
+             * attempt loop's absence, not the previous state, that says whether this
+             * handler owns the retry — a reconnect that itself fails must try again,
+             * and a `was_live` test would stop after one.
+             * shortcut: the retry is immediate and unbounded, so an AP that stays gone
+             * is retried at the driver's own rate. Upgrade to the `retry_backoff_ms`
+             * schedule if a site ever shows power cost from the retries. */
+            s_state = NET_STATE_CONNECTING;
+            ESP_LOGW(TAG, "wifi: link lost, reconnecting");
+            esp_wifi_connect();
+        }
     } else if (id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     }
@@ -66,7 +96,21 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data
     if (data == NULL) return;
     ip_event_got_ip_t *got = (ip_event_got_ip_t *)data;
     snprintf(s_ip, sizeof s_ip, IPSTR, IP2STR(&got->ip_info.ip));
-    if (s_events != NULL) xEventGroupSetBits(s_events, NET_GOT_IP_BIT);
+    /* The state is set here, not only in `net_connect`'s success path: a reconnect
+     * after a drop arrives through this handler alone, and a state left at CONNECTING
+     * would make `net_connected()` answer false forever on a link that is up. */
+    s_state = NET_STATE_CONNECTED;
+    s_ever_connected = true;
+    s_ssid[0] = '\0';
+    wifi_ap_record_t record;
+    if (esp_wifi_sta_get_ap_info(&record) == ESP_OK) {
+        snprintf(s_ssid, sizeof s_ssid, "%s", (const char *)record.ssid);
+        s_rssi = record.rssi;
+    }
+    if (s_events != NULL) {
+        xEventGroupClearBits(s_events, NET_FAIL_BIT);
+        xEventGroupSetBits(s_events, NET_GOT_IP_BIT);
+    }
 }
 
 esp_err_t net_init(void)
@@ -169,6 +213,7 @@ esp_err_t net_connect(void)
 {
     if (s_ap_count == 0) {
         s_state = NET_STATE_FAILED;
+        s_attempting = false;
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -207,6 +252,7 @@ esp_err_t net_connect(void)
     }
 
     s_state = NET_STATE_CONNECTING;
+    s_attempting = true;
     for (size_t attempt = 0; attempt < s_ap_count; attempt++) {
         net_ap_t *ap = &s_aps[attempt];
         xEventGroupClearBits(s_events, NET_GOT_IP_BIT | NET_FAIL_BIT);
@@ -241,12 +287,15 @@ esp_err_t net_connect(void)
             }
             snprintf(s_ssid, sizeof s_ssid, "%s", ap->ssid);
             s_state = NET_STATE_CONNECTED;
+            s_attempting = false;
             s_failovers = (int32_t)attempt;
             ESP_LOGI(TAG, "wifi: connected to %s, rssi %" PRId32 ", ip %s",
                      s_ssid, s_rssi, s_ip);
             return ESP_OK;
         }
 
+        s_ip[0] = '\0';
+        s_ssid[0] = '\0';
         /* One AP refused. Back off before the next, by the documented schedule. */
         int32_t wait_ms = net_backoff_ms(s_backoff, s_backoff_count, attempt);
         ESP_LOGW(TAG, "wifi: %s: no association (timeout %" PRId32 " ms), backoff %"
@@ -254,6 +303,7 @@ esp_err_t net_connect(void)
         vTaskDelay(pdMS_TO_TICKS(wait_ms));
     }
 
+    s_attempting = false;
     s_state = NET_STATE_FAILED;
     s_failovers = (int32_t)s_ap_count;
     ESP_LOGE(TAG, "wifi: every configured network refused (E_WIFI)");

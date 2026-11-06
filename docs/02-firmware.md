@@ -163,7 +163,14 @@ bug it exists to prevent.
   attempt. Blocks for at most the sum of those bounds. Returns `E_WIFI` when every
   configured AP refused; the device stays reachable over the link, which is the point
   of continuing.
-- `net_connected()`: Whether an IP is assigned right now.
+- `net_connected()`: Whether an IP is assigned right now. A `WIFI_EVENT_STA_DISCONNECTED`
+  clears the state and the reported `ssid`/`ip` before it retries, so a dropped link
+  reads as `connecting` with no identity rather than as a live network with a stale
+  address.
+- `net` reconnects from the disconnect event only once a link has been *held*
+  (`WiFi Lost`, §4.2). A boot in which every configured network refused stays
+  `failed`: retrying there would spin `connecting` against a config that cannot
+  associate, and the operator's next step is the link, not a wait.
 - `net_status(&st)`: The `wifi` facts `status` reports (`04-protocol.md` §3.9):
   `state`, `ssid`, `rssi`, `ip`, `failovers`. Nothing is fabricated before an
   association: `ssid`, `rssi` and `ip` are NULL, which encodes as JSON null.
@@ -596,7 +603,7 @@ The agent process is **serialized**. Only one run is active at a time.
 ### 4.2 Fallback & Error Handling
 | Failure | Response | Code |
 |---|---|---|
-| WiFi Lost | `net` attempts reconnect; `agent` returns error | `E_WIFI` |
+| WiFi Lost | `net` attempts reconnect from the disconnect event; `agent` returns error | `E_WIFI` |
 | LLM Down | Try fallback providers; if all fail → error | `E_LLM_UNAVAILABLE` |
 | LLM call cap reached | No provider is tried; the call is never sent, so the daily budget cannot be exceeded by a fallback chain | `E_LLM_RATE` |
 | Provider 400 (bad model, wrong `token_param`, rejected `extra_body`) | Not retried in place: the next provider is tried, since a 400 is per-entry config, not a transient fault | `E_LLM_UNAVAILABLE` after the chain is exhausted |
