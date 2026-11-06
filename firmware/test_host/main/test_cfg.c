@@ -245,3 +245,102 @@ TEST_CASE("a config round-trips through the canonical writer", "[cfg]")
     json_free(again);
     json_free(doc);
 }
+
+/* --- The loaded document (`cfg_doc.c`) ----------------------------------- */
+
+TEST_CASE("an adopted document is readable by dotted path and cloneable", "[cfg]")
+{
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(k_minimal, strlen(k_minimal), &doc));
+    cfg_adopt(doc);
+    TEST_ASSERT_TRUE(cfg_loaded());
+
+    const char *model = json_string(cfg_get("llm.providers.0.model"));
+    TEST_ASSERT_NOT_NULL(model);
+    TEST_ASSERT_EQUAL_STRING("m", model);
+    /* A key that is not there is NULL, never a borrowed neighbour's value. */
+    TEST_ASSERT_NULL(cfg_get("llm.providers.9.model"));
+    TEST_ASSERT_NULL(cfg_get(""));
+
+    json_doc_t *copy = cfg_clone();
+    TEST_ASSERT_NOT_NULL(copy);
+    /* The clone is independent: mutating it leaves the loaded document alone. */
+    json_node_t *value = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse("\"other\"", 7, &doc));
+    value = json_root(doc);
+    TEST_ASSERT_TRUE(cfg_set(copy, "llm.providers.0.model", value));
+    TEST_ASSERT_EQUAL_STRING("m", json_string(cfg_get("llm.providers.0.model")));
+    TEST_ASSERT_EQUAL_STRING("other", json_string(json_path_get(copy, "llm.providers.0.model")));
+    json_free(doc);
+    json_free(copy);
+    cfg_unload();
+}
+
+TEST_CASE("an unloaded document reads as absent, not as empty", "[cfg]")
+{
+    cfg_unload();
+    TEST_ASSERT_FALSE(cfg_loaded());
+    TEST_ASSERT_NULL(cfg_get("device.name"));
+    TEST_ASSERT_NULL(cfg_clone());
+}
+
+TEST_CASE("adopting a second document releases the first", "[cfg]")
+{
+    /* `reload` replaces the document whole; the old one must not leak and must not
+     * stay reachable through a stale pointer. */
+    json_doc_t *first = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(k_minimal, strlen(k_minimal), &first));
+    cfg_adopt(first);
+
+    const char *second_src = "{\"version\":1,\"device\":{\"name\":\"fresh\"}}";
+    json_doc_t *second = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(second_src, strlen(second_src), &second));
+    cfg_adopt(second);
+
+    TEST_ASSERT_EQUAL_STRING("fresh", json_string(cfg_get("device.name")));
+    TEST_ASSERT_NULL(cfg_get("llm"));
+    cfg_unload();
+}
+
+/* --- Redaction (`06-security.md` §secret handling) ------------------------ */
+
+TEST_CASE("every occurrence of a secret is masked and the tail survives", "[cfg]")
+{
+    /* The offset bug this catches: a moving pointer plus its own offset wrote past
+     * the match and left a stale tail, so a line with two hits lost the text after
+     * them and kept garbage where the mask should have ended. */
+    char line[128];
+    snprintf(line, sizeof line, "key=%s and again %s tail", "s3cret", "s3cret");
+    const char *secrets[] = {"s3cret"};
+    TEST_ASSERT_TRUE(cfg_redact(line, sizeof line, secrets, 1));
+    TEST_ASSERT_EQUAL_STRING("key=[redacted] and again [redacted] tail", line);
+    TEST_ASSERT_NULL(strstr(line, "s3cret"));
+}
+
+TEST_CASE("redaction leaves a line without the secret untouched", "[cfg]")
+{
+    char line[64] = "nothing to hide";
+    const char *secrets[] = {"s3cret"};
+    TEST_ASSERT_FALSE(cfg_redact(line, sizeof line, secrets, 1));
+    TEST_ASSERT_EQUAL_STRING("nothing to hide", line);
+}
+
+TEST_CASE("an empty secret is skipped rather than shredding the line", "[cfg]")
+{
+    /* An empty needle matches at offset 0 of every line, so redacting it would
+     * replace the whole string. */
+    char line[64] = "plain text";
+    const char *secrets[] = {""};
+    TEST_ASSERT_FALSE(cfg_redact(line, sizeof line, secrets, 1));
+    TEST_ASSERT_EQUAL_STRING("plain text", line);
+    TEST_ASSERT_FALSE(cfg_redact(line, sizeof line, NULL, 1));
+}
+
+TEST_CASE("a mask that cannot fit leaves the buffer terminated", "[cfg]")
+{
+    char line[16] = "xx s3cret yy";
+    const char *secrets[] = {"s3cret"};
+    TEST_ASSERT_TRUE(cfg_redact(line, sizeof line, secrets, 1));
+    TEST_ASSERT_EQUAL(strlen(line), strnlen(line, sizeof line));
+    TEST_ASSERT_NULL(strstr(line, "s3cret"));
+}

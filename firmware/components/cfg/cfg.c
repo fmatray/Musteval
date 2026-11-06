@@ -12,18 +12,16 @@
 
 static const char *TAG = "cfg";
 
-/* The whole file, plus the terminator, plus one byte of slack so a file of exactly
- * `CFG_JSON_MAX` bytes still parses. Static, not stack: `link_task` has 4096 bytes
- * and a config load runs on it (`02-firmware.md` §3.1). */
-static char s_text[CFG_JSON_MAX + 1];
-static json_doc_t *s_doc;
+/* The parse buffer for a load. `s_doc` and the document state live in `cfg_doc.c`,
+ * which owns every accessor (`cfg_get`, `cfg_clone`, `cfg_set`). */
+static char s_text_scratch[CFG_JSON_MAX + 1];
 
 esp_err_t cfg_load_degraded(char *degraded, size_t degraded_cap)
 {
     if (degraded == NULL) degraded_cap = 0;
     if (degraded_cap > 0) degraded[0] = '\0';
     size_t len = 0;
-    esp_err_t err = store_read_file("/config.json", s_text, sizeof s_text, &len);
+    esp_err_t err = store_read_file("/config.json", s_text_scratch, sizeof s_text_scratch, &len);
     if (err == ESP_ERR_NOT_FOUND) {
         /* A blank device is not a failure: the caller answers `E_CONFIG` to a
          * command that needs config, and boot continues to the link (`04` §5). */
@@ -40,7 +38,7 @@ esp_err_t cfg_load_degraded(char *degraded, size_t degraded_cap)
     }
 
     json_doc_t *doc = NULL;
-    err = json_parse(s_text, len, &doc);
+    err = json_parse(s_text_scratch, len, &doc);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "parse /config.json: not one JSON value");
         if (degraded_cap > 0) snprintf(degraded, degraded_cap, "/config.json is not valid JSON");
@@ -69,49 +67,13 @@ esp_err_t cfg_load_degraded(char *degraded, size_t degraded_cap)
         }
     }
 
-    cfg_unload();
-    s_doc = doc;
+    cfg_adopt(doc);
     return ESP_OK;
 }
 
 esp_err_t cfg_load(void)
 {
     return cfg_load_degraded(NULL, 0);
-}
-
-void cfg_unload(void)
-{
-    json_free(s_doc);
-    s_doc = NULL;
-}
-
-bool cfg_loaded(void) { return s_doc != NULL; }
-
-json_node_t *cfg_get(const char *path)
-{
-    if (s_doc == NULL || path == NULL || *path == '\0') return NULL;
-    return json_path_get(s_doc, path);
-}
-
-json_doc_t *cfg_clone(void)
-{
-    if (s_doc == NULL) return NULL;
-    size_t written = 0;
-    esp_err_t err = json_emit(s_doc, s_text, sizeof s_text, &written);
-    if (err != ESP_OK) return NULL;
-    json_doc_t *copy = NULL;
-    if (json_parse(s_text, written, &copy) != ESP_OK) return NULL;
-    return copy;
-}
-
-bool cfg_set(json_doc_t *doc, const char *path, const json_node_t *value)
-{
-    return json_path_set(doc, path, value);
-}
-
-esp_err_t cfg_emit(json_doc_t *doc, char *buf, size_t cap, size_t *written)
-{
-    return json_emit(doc, buf, cap, written);
 }
 
 /* --- Secrets (`02-firmware.md` §`cfg`, `04` §4.10) ------------------------ */
@@ -157,49 +119,6 @@ esp_err_t cfg_resolve_secret(const char *ref, char *buf, size_t cap, size_t *len
         return ESP_ERR_NOT_FOUND;
     }
     return err;
-}
-
-bool cfg_redact(char *line, size_t cap, const char *const *secrets, size_t n)
-{
-    if (line == NULL || cap == 0 || n == 0) return false;
-    static const char kMask[] = "[redacted]";
-    const size_t mask_len = sizeof kMask - 1;
-    bool changed = false;
-
-    for (size_t i = 0; i < n; i++) {
-        const char *secret = (secrets != NULL) ? secrets[i] : NULL;
-        /* An empty secret would match at offset 0 of every line, so it is skipped
-         * rather than shredding the string. A short secret is still redacted: a
-         * leaked key is leaked whatever its length. */
-        if (secret == NULL || *secret == '\0') continue;
-        const size_t slen = strlen(secret);
-
-        /* Offsets, not a moving pointer: a pointer into the buffer plus its own
-         * offset double-counts and writes past the match. */
-        size_t from = 0;
-        for (;;) {
-            char *hit = strstr(line + from, secret);
-            if (hit == NULL) break;
-            size_t used = (size_t)(hit - line);
-            size_t rest = strlen(line + used + slen);
-            if (used + mask_len >= cap) {
-                /* No room for even the mask: keep the buffer terminated. */
-                line[cap - 1] = '\0';
-                return true;
-            }
-            size_t keep = rest;
-            if (used + mask_len + keep >= cap) {
-                keep = cap - 1 - used - mask_len;
-            }
-            memmove(line + used + mask_len, line + used + slen, keep);
-            memcpy(line + used, kMask, mask_len);
-            line[used + mask_len + keep] = '\0';
-            from = used + mask_len;
-            changed = true;
-            if (keep < rest) break;
-        }
-    }
-    return changed;
 }
 
 /* --- Validation step 9: secret resolution ---------------------------------

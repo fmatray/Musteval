@@ -457,6 +457,20 @@ json_node_t *json_object_value(const json_node_t *obj, size_t index)
     return node_out(cJSON_GetArrayItem(n, (int)index));
 }
 
+json_doc_t *json_duplicate(const json_doc_t *doc)
+{
+    if (doc == NULL) return NULL;
+    cJSON *root = cJSON_Duplicate(node_of(json_root((json_doc_t *)(void *)doc)), true);
+    if (root == NULL) return NULL;
+    json_doc_t *copy = malloc(sizeof *copy);
+    if (copy == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    copy->root = root;
+    return copy;
+}
+
 json_node_t *json_add_node(json_node_t *obj, const char *key, const json_node_t *node)
 {
     if (obj == NULL || key == NULL || node == NULL || !cJSON_IsObject((cJSON *)(void *)obj)) {

@@ -34,6 +34,10 @@
 esp_err_t cfg_load_degraded(char *degraded, size_t degraded_cap);
 esp_err_t cfg_load(void);
 
+/* Takes ownership of a validated document, replacing the loaded one. Used by
+ * `cfg_load`, which parses the file and hands the result over. */
+void cfg_adopt(json_doc_t *doc);
+
 /* Drop the loaded document. Safe to call when nothing is loaded. */
 void cfg_unload(void);
 

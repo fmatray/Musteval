@@ -27,6 +27,10 @@ esp_err_t json_emit(json_doc_t *doc, char *buf, size_t cap, size_t *written);
 
 void json_free(json_doc_t *doc);
 
+/* A deep copy of a whole document, or NULL. The copy owns its nodes, so freeing the
+ * original first is safe. */
+json_doc_t   *json_duplicate(const json_doc_t *doc);
+
 /* Builders: an empty document and typed members added to an object node. Without
  * these no module could ever construct a frame or a result, only parse one.
  * `json_add_*` return false when the parent is not an object or the value is
