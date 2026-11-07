@@ -822,6 +822,36 @@ static void answer_command(const json_node_t *frame)
             json_add_bool(result, "safe_mode", s_safe_mode);
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "wifi.scan") == 0) {
+        /* §4.24: a scan and a connection attempt cannot share the radio, so a run in
+         * flight means `E_BUSY` rather than a scan that steals the station. */
+        agent_status_t agent;
+        agent_status(&agent);
+        if (agent.busy) {
+            emit_failure("wifi.scan", reply_to, "E_BUSY", "agent run in flight");
+            json_free(body); return;
+        }
+        static net_scan_entry_t s_scan[NET_SCAN_MAX];
+        size_t scan_count = 0;
+        bool scan_truncated = false;
+        esp_err_t serr = net_scan(s_scan, NET_SCAN_MAX, &scan_count, &scan_truncated);
+        if (serr != ESP_OK) {
+            emit_failure("wifi.scan", reply_to, "E_WIFI", "radio unavailable");
+            json_free(body); return;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "wifi.scan");
+        json_add_bool(root, "ok", true);
+        json_node_t *nets = json_new_array(result, "networks");
+        for (size_t i = 0; i < scan_count; i++) {
+            json_node_t *entry = json_array_push_object(nets);
+            if (entry == NULL) break;
+            json_add_string(entry, "ssid", s_scan[i].ssid);
+            json_add_int(entry, "rssi", s_scan[i].rssi);
+            json_add_string(entry, "auth", net_auth_name(s_scan[i].auth));
+        }
+        json_add_bool(result, "truncated", scan_truncated);
+        built = ESP_OK;
     } else if (name && strcmp(name, "config.get") == 0) {
         built = handle_config_get(args, root, json_add_object(root, "result"));
         if (built != ESP_OK) {

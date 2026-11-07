@@ -121,3 +121,37 @@ esp_err_t net_request(const char *method, const char *url,
 /* The wire word for a state, which `04-protocol.md` §3.9 fixes: `off`, `connecting`,
  * `connected`, `failed`. Pure, so `tools` and `status` cannot disagree about it. */
 const char *net_state_name(net_state_t state);
+
+/* --- Scanning (`04-protocol.md` §4.24) ------------------------------------ */
+
+/* `NET_SCAN_MAX` is the §4.24 cap: a reader in a dense block gets what they can
+ * reach, and `truncated` says the cap bit. */
+#define NET_SCAN_MAX 20
+
+typedef struct {
+    char    ssid[33];
+    int32_t rssi;
+    uint8_t auth;  /* `wifi_auth_mode_t`, mapped to the wire word by `net_auth_name` */
+} net_scan_entry_t;
+
+/* Bring the radio up if needed and ask it for the access points in range. Blocks for
+ * up to `wifi.connect_timeout_ms`, because a scan's dwell time is set by the radio.
+ *
+ * Works on a device with no `wifi.networks[]`: `/onboard` scans before one exists.
+ * Returns ESP_ERR_INVALID_STATE when the radio cannot start, ESP_ERR_NO_MEM when the
+ * driver's list cannot be held, ESP_ERR_TIMEOUT when the scan does not finish.
+ *
+ * `out` receives up to `cap` entries, strongest first. Board-only. */
+esp_err_t net_scan(net_scan_entry_t *out, size_t cap, size_t *count, bool *truncated);
+
+/* Condense a raw driver list into what §4.24 promises: drop a hidden or empty SSID,
+ * collapse duplicate SSIDs to the strongest RSSI, sort strongest first, and stop at
+ * `cap` setting `*truncated`. `entries` must be writable; `*count` is both in and
+ * out. Pure, so the three rules are proven on the host rather than by noticing a
+ * network missing from a screen. */
+void net_scan_condense(net_scan_entry_t *entries, size_t *count, size_t cap,
+                       bool *truncated);
+
+/* The wire word for a `wifi_auth_mode_t`: `open`, `wep`, `wpa`, `wpa2`, `wpa3`,
+ * `wpa2_enterprise`, `wpa3_enterprise`, `unknown` (§4.24). Pure. */
+const char *net_auth_name(uint8_t auth);

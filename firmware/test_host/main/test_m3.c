@@ -69,6 +69,101 @@ TEST_CASE("the retry backoff repeats its last entry", "[m3]")
     TEST_ASSERT_EQUAL_INT32(0, net_backoff_ms(table, 0, 0));
 }
 
+/* --- wifi.scan (`04-protocol.md` §4.24) ----------------------------------- */
+
+static net_scan_entry_t ap(const char *ssid, int32_t rssi, uint8_t auth)
+{
+    net_scan_entry_t e = {.rssi = rssi, .auth = auth};
+    strncpy(e.ssid, ssid, sizeof e.ssid - 1);
+    return e;
+}
+
+/* Rule 1: an entry with no name cannot be selected, and an empty string is not a
+ * usable `wifi.networks[].ssid` under `03-config.md`'s 1..32 bound. */
+TEST_CASE("a hidden SSID is dropped from a scan", "[m3]")
+{
+    net_scan_entry_t list[3] = {ap("", -40, 3), ap("home", -50, 3), ap("", -99, 0)};
+    size_t count = 3;
+    bool truncated = true;
+    net_scan_condense(list, &count, NET_SCAN_MAX, &truncated);
+    TEST_ASSERT_EQUAL(1, (int)count);
+    TEST_ASSERT_EQUAL_STRING("home", list[0].ssid);
+    TEST_ASSERT_FALSE(truncated);
+}
+
+/* Rule 2: one record per BSSID, so a router's two radios share a name. Two rows the
+ * reader cannot tell apart are worse than one row with the better signal. */
+TEST_CASE("duplicate SSIDs collapse to the strongest RSSI", "[m3]")
+{
+    net_scan_entry_t list[4] = {ap("home", -80, 3), ap("cafe", -60, 0),
+                                ap("home", -45, 3), ap("home", -70, 3)};
+    size_t count = 4;
+    bool truncated = false;
+    net_scan_condense(list, &count, NET_SCAN_MAX, &truncated);
+    TEST_ASSERT_EQUAL(2, (int)count);
+    TEST_ASSERT_EQUAL_STRING("home", list[0].ssid);
+    TEST_ASSERT_EQUAL_INT32(-45, list[0].rssi);
+    TEST_ASSERT_EQUAL_STRING("cafe", list[1].ssid);
+}
+
+/* Rule 3: strongest first, capped at 20, and `truncated` says the cap bit. */
+TEST_CASE("a scan is sorted strongest first and capped", "[m3]")
+{
+    net_scan_entry_t list[NET_SCAN_MAX + 3];
+    static const char *names[] = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                                  "k", "l", "m", "n", "o", "p", "q", "r", "s", "t",
+                                  "u", "v", "w"};
+    for (size_t i = 0; i < NET_SCAN_MAX + 3; i++) {
+        /* Ascending construction order, descending signal: the sort has real work. */
+        list[i] = ap(names[i], -(int32_t)i - 30, 3);
+    }
+    size_t count = NET_SCAN_MAX + 3;
+    bool truncated = false;
+    net_scan_condense(list, &count, NET_SCAN_MAX, &truncated);
+    TEST_ASSERT_EQUAL(NET_SCAN_MAX, (int)count);
+    TEST_ASSERT_TRUE(truncated);
+    TEST_ASSERT_EQUAL_STRING("a", list[0].ssid);
+    TEST_ASSERT_EQUAL_INT32(-30, list[0].rssi);
+    TEST_ASSERT_EQUAL_STRING("t", list[NET_SCAN_MAX - 1].ssid);
+
+    /* Exactly the cap is not truncation; one fewer keeps the flag clear. */
+    count = 2;
+    truncated = true;
+    net_scan_condense(list, &count, NET_SCAN_MAX, &truncated);
+    TEST_ASSERT_EQUAL(2, (int)count);
+    TEST_ASSERT_FALSE(truncated);
+}
+
+/* A scan with nothing in range is an empty list, not an error and not a stale list. */
+TEST_CASE("an empty scan reports nothing", "[m3]")
+{
+    net_scan_entry_t list[1] = {ap("stale", -40, 3)};
+    size_t count = 0;
+    bool truncated = true;
+    net_scan_condense(list, &count, NET_SCAN_MAX, &truncated);
+    TEST_ASSERT_EQUAL(0, (int)count);
+    TEST_ASSERT_FALSE(truncated);
+}
+
+/* §4.24's auth words. The numbers are `wifi_auth_mode_t`'s ABI; a reader needs to see
+ * `open` and `wep` because those are the two that will not associate. */
+TEST_CASE("auth modes map to the wire words", "[m3]")
+{
+    TEST_ASSERT_EQUAL_STRING("open", net_auth_name(0));
+    TEST_ASSERT_EQUAL_STRING("wep", net_auth_name(1));
+    TEST_ASSERT_EQUAL_STRING("wpa", net_auth_name(2));
+    TEST_ASSERT_EQUAL_STRING("wpa2", net_auth_name(3));
+    TEST_ASSERT_EQUAL_STRING("wpa", net_auth_name(4));
+    TEST_ASSERT_EQUAL_STRING("wpa2_enterprise", net_auth_name(5));
+    TEST_ASSERT_EQUAL_STRING("wpa3", net_auth_name(6));
+    TEST_ASSERT_EQUAL_STRING("wpa2", net_auth_name(7));
+    TEST_ASSERT_EQUAL_STRING("wpa3_enterprise", net_auth_name(8));
+    /* A driver mode added by a newer IDF must read as unknown, not as a word that is
+     * not in the schema. */
+    TEST_ASSERT_EQUAL_STRING("unknown", net_auth_name(9));
+    TEST_ASSERT_EQUAL_STRING("unknown", net_auth_name(255));
+}
+
 /* --- llm budget ----------------------------------------------------------- */
 
 /* One hour is 3600 s. A charge inside the window increments; the next window starts

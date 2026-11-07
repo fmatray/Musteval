@@ -210,7 +210,7 @@ nothing is in flight emits `event{kind:"cancel.noop"}`.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the twenty-three names in §4. |
+| `name` | string | yes | One of the twenty-four names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -546,7 +546,7 @@ generic notification line and MUST NOT error.
 
 ## 4. Command catalog
 
-All twenty-three names, their arguments and their `result` shapes. Unknown names are
+All twenty-four names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -576,6 +576,7 @@ reads are never refused.
 | `sandbox.mkdir` | `{path}` | `{path, created}` | `E_CONFIG` (path outside `/workspace/`, or a parent that is not a directory), `E_STORAGE` (quota or entry cap) | yes |
 | `sandbox.move` | `{from, to}` | `{from, to, moved}` | `E_CONFIG` (either path outside `/workspace/`, or `to` exists), `E_STORAGE` (missing source, or a cross-mount move) | yes |
 | `sys.reset_counter` | `{}` | `{reset, previous, safe_mode}` | `E_INTERNAL` | yes |
+| `wifi.scan` | `{}` | `{networks:[{ssid,rssi,auth}], truncated}` | `E_WIFI` (radio unavailable), `E_BUSY` (run in flight) | no |
 
 ### 4.1 `status`
 
@@ -1066,6 +1067,58 @@ in force when the call returns.
 `previous` is the value before the reset, so a caller can confirm it changed what
 it meant to change. The counter is written to NVS before the reply, so a device
 that reboots immediately after still sees `0`.
+
+### 4.24 `wifi.scan`
+
+Lists the access points the radio can hear, so a bridge can offer them instead of
+asking a reader to type an SSID from memory. This is what `/onboard`'s SSID dropdown
+is fed by (`05-bridge.md` §7).
+
+```json
+{"v":1,"type":"command","id":"b-39","ts":1730572500,"name":"wifi.scan","args":{}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-49","ts":1730572503,"reply_to":"b-39","name":"wifi.scan","ok":true,"result":{"networks":[{"ssid":"HomeLab","rssi":-47,"auth":"wpa2"},{"ssid":"Cafe-FREE","rssi":-71,"auth":"open"},{"ssid":"OldRouter","rssi":-83,"auth":"wep"}],"truncated":false},"duration_ms":2870}
+```
+
+`auth` is one of `open`, `wep`, `wpa`, `wpa2`, `wpa3`, `wpa2_enterprise`,
+`wpa3_enterprise`, or `unknown`. It is the AP's advertised security, reported so the
+reader can tell a protected network from an open one; it is not a promise the device
+can join it. The station is configured with `WIFI_AUTH_WPA2_PSK` as its threshold
+(`02-firmware.md` §Net), so `wep` and `wpa` entries are listed and will fail to
+associate, and `wpa3` entries associate in WPA2-compatible mode when the AP offers
+it.
+
+Three rules bound the result:
+
+1. **A network with a hidden SSID is omitted.** An entry with no name cannot be
+   selected, and an empty string is not a usable `wifi.networks[].ssid` under
+   `03-config.md`'s 1..32 char bound.
+2. **Duplicates are collapsed by SSID, keeping the strongest RSSI.** The radio
+   reports one record per BSSID, so a router with a 2.4 GHz and a 5 GHz radio appears
+   twice with one name. Two rows the reader cannot tell apart is worse than one row
+   with the better signal.
+3. **The list is capped at 20 entries, strongest first, and `truncated` says whether
+   the cap bit.** A reader scanning in a dense block gets the networks they can
+   actually reach instead of a 60-row list, and the flag keeps the omission visible.
+
+The scan blocks the dispatch path for up to `wifi.connect_timeout_ms`
+(`03-config.md`, default 15 s; observed 2.9 s in the example above), because a
+scan's dwell time per channel is fixed by the radio rather than by this call. It is
+therefore `no` in the busy-safe column: a `wifi.scan` sent while an agent run is in
+flight is refused with `E_BUSY`, since a scan and a connection attempt cannot use
+the radio at the same time. A scan does not disturb a live connection's credentials;
+the station resumes its configured network afterwards.
+
+`E_WIFI` is returned when the radio cannot be started at all. A scan does not need a
+configured network: the station interface is brought up by the scan itself, because
+the device `/onboard` is pointed at is exactly the device whose `wifi.networks[]` is
+not right yet. (A config with an empty `wifi.networks[]` fails validation at boot
+anyway — `03-config.md` requires 1..8 entries — so refusing to scan for that reason
+would refuse on the only device that needs it.) The bridge treats `E_WIFI` as
+"nothing to scan" and leaves the manual SSID field as the only route, rather than
+reporting a device fault.
 
 ## 5. Error codes
 

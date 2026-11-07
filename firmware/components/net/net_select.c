@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "net.h"
 
@@ -43,4 +44,71 @@ const char *net_state_name(net_state_t state)
     case NET_STATE_FAILED:     return "failed";
     }
     return "off";
+}
+
+/* --- Scan condensation (`04-protocol.md` §4.24) --------------------------- */
+
+const char *net_auth_name(uint8_t auth)
+{
+    /* The numbers are `wifi_auth_mode_t`, fixed by the driver's ABI; the words are
+     * §4.24's. Two enterprise modes keep their own words because a reader choosing a
+     * network benefits from knowing it wants a username. */
+    switch (auth) {
+    case 0: return "open";             /* WIFI_AUTH_OPEN */
+    case 1: return "wep";              /* WIFI_AUTH_WEP */
+    case 2: return "wpa";              /* WIFI_AUTH_WPA_PSK */
+    case 3: return "wpa2";             /* WIFI_AUTH_WPA2_PSK */
+    case 4: return "wpa";              /* WIFI_AUTH_WPA_WPA2_PSK */
+    case 5: return "wpa2_enterprise";  /* WIFI_AUTH_WPA2_ENTERPRISE */
+    case 6: return "wpa3";             /* WIFI_AUTH_WPA3_PSK */
+    case 7: return "wpa2";             /* WIFI_AUTH_WPA2_WPA3_PSK */
+    case 8: return "wpa3_enterprise";  /* WIFI_AUTH_WPA3_ENT_192 */
+    default: return "unknown";
+    }
+}
+
+void net_scan_condense(net_scan_entry_t *entries, size_t *count, size_t cap,
+                       bool *truncated)
+{
+    if (truncated != NULL) *truncated = false;
+    if (entries == NULL || count == NULL) return;
+
+    size_t kept = 0;
+    for (size_t i = 0; i < *count; i++) {
+        const char *ssid = entries[i].ssid;
+        /* A hidden network has no name, and an empty string is not a usable
+         * `wifi.networks[].ssid` under `03-config.md` (1..32 chars). */
+        if (ssid[0] == '\0') continue;
+
+        size_t at = kept;
+        for (size_t j = 0; j < kept; j++) {
+            if (strcmp(entries[j].ssid, ssid) == 0) { at = j; break; }
+        }
+        if (at == kept) {
+            entries[kept++] = entries[i];
+        } else if (entries[i].rssi > entries[at].rssi) {
+            /* One name per row, carrying the signal the reader can actually use: a
+             * router's 2.4 GHz and 5 GHz radios share an SSID. */
+            entries[at] = entries[i];
+        }
+    }
+
+    /* Insertion sort, strongest first. At most `NET_SCAN_MAX` entries; the list is
+     * already small enough that a sort's asymptotics do not matter and stability is
+     * not required. */
+    for (size_t i = 1; i < kept; i++) {
+        net_scan_entry_t key = entries[i];
+        size_t j = i;
+        while (j > 0 && entries[j - 1].rssi < key.rssi) {
+            entries[j] = entries[j - 1];
+            j--;
+        }
+        entries[j] = key;
+    }
+
+    if (kept > cap) {
+        kept = cap;
+        if (truncated != NULL) *truncated = true;
+    }
+    *count = kept;
 }

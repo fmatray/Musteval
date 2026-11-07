@@ -209,14 +209,16 @@ esp_err_t net_init(void)
     return ESP_OK;
 }
 
-esp_err_t net_connect(void)
+/* Bring the station interface up, once. Returns ESP_ERR_INVALID_STATE when the radio
+ * is not available, which is what `net_scan` reports as `E_WIFI`.
+ *
+ * Split out of `net_connect` because a scan has to work on a device that has no
+ * `wifi.networks[]` yet — that is exactly the device `/onboard` is pointed at, and
+ * `net_init` refuses an empty list before the radio is touched (`03-config.md`
+ * §wifi). Scanning is how the wizard learns an SSID, so the radio must come up
+ * before any SSID is configured. */
+static esp_err_t radio_up(void)
 {
-    if (s_ap_count == 0) {
-        s_state = NET_STATE_FAILED;
-        s_attempting = false;
-        return ESP_ERR_INVALID_STATE;
-    }
-
     if (s_events == NULL) {
         s_events = xEventGroupCreate();
         if (s_events == NULL) return ESP_ERR_NO_MEM;
@@ -229,27 +231,38 @@ esp_err_t net_connect(void)
      * not a failure. */
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
 
-    if (s_sta == NULL) {
-        s_sta = esp_netif_create_default_wifi_sta();
-        if (s_sta == NULL) return ESP_ERR_NO_MEM;
+    if (s_sta != NULL) return ESP_OK;
 
-        wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-        err = esp_wifi_init(&init);
-        if (err != ESP_OK) return err;
+    s_sta = esp_netif_create_default_wifi_sta();
+    if (s_sta == NULL) return ESP_ERR_NO_MEM;
 
-        err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                   &on_wifi_event, NULL, NULL);
-        if (err != ESP_OK) return err;
-        err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                   &on_ip_event, NULL, NULL);
-        if (err != ESP_OK) return err;
-        err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-        if (err != ESP_OK) return err;
-        err = esp_wifi_set_mode(WIFI_MODE_STA);
-        if (err != ESP_OK) return err;
-        err = esp_wifi_start();
-        if (err != ESP_OK) return err;
+    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&init);
+    if (err != ESP_OK) return err;
+
+    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                               &on_wifi_event, NULL, NULL);
+    if (err != ESP_OK) return err;
+    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                               &on_ip_event, NULL, NULL);
+    if (err != ESP_OK) return err;
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK) return err;
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) return err;
+    return esp_wifi_start();
+}
+
+esp_err_t net_connect(void)
+{
+    if (s_ap_count == 0) {
+        s_state = NET_STATE_FAILED;
+        s_attempting = false;
+        return ESP_ERR_INVALID_STATE;
     }
+
+    esp_err_t err = radio_up();
+    if (err != ESP_OK) return err;
 
     s_state = NET_STATE_CONNECTING;
     s_attempting = true;
@@ -313,6 +326,67 @@ esp_err_t net_connect(void)
 bool net_connected(void)
 {
     return s_state == NET_STATE_CONNECTED;
+}
+
+esp_err_t net_scan(net_scan_entry_t *out, size_t cap, size_t *count, bool *truncated)
+{
+    if (out == NULL || count == NULL || cap == 0) return ESP_ERR_INVALID_ARG;
+    *count = 0;
+    if (truncated != NULL) *truncated = false;
+
+    esp_err_t err = radio_up();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "scan: radio unavailable: %s", esp_err_to_name(err));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* `block: true` keeps this synchronous, which is what a command handler needs:
+     * the reply carries the networks or it carries an error, never neither. */
+    wifi_scan_config_t config = {0};
+    err = esp_wifi_scan_start(&config, true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "scan: start failed: %s", esp_err_to_name(err));
+        return (err == ESP_ERR_WIFI_TIMEOUT) ? ESP_ERR_TIMEOUT : ESP_ERR_INVALID_STATE;
+    }
+
+    uint16_t found = 0;
+    err = esp_wifi_scan_get_ap_num(&found);
+    if (err != ESP_OK) return ESP_ERR_INVALID_STATE;
+    if (found == 0) {
+        esp_wifi_clear_ap_list();
+        return ESP_OK;
+    }
+    if (found > NET_SCAN_MAX) found = NET_SCAN_MAX;
+
+    /* The driver's records are ~100 bytes each; on the agent task's stack a 20-entry
+     * array would be 2 KiB, so it is a static. Dispatch is single-threaded
+     * (`02-firmware.md` §4.16) and a scan is not `E_BUSY`-safe against anything else,
+     * so nothing else is in this buffer. */
+    static wifi_ap_record_t s_records[NET_SCAN_MAX];
+    uint16_t got = found;
+    err = esp_wifi_scan_get_ap_records(&got, s_records);
+    /* Free the driver's copy whether or not it was read: a scan that is not cleared
+     * leaks the list until the next one. */
+    esp_wifi_clear_ap_list();
+    if (err != ESP_OK) return ESP_ERR_INVALID_STATE;
+
+    size_t n = 0;
+    for (uint16_t i = 0; i < got && n < cap; i++) {
+        /* The driver's `ssid` is 32 bytes with no guarantee of a terminator, so the
+         * copy is bounded by both fields. */
+        size_t len = strnlen((const char *)s_records[i].ssid,
+                             sizeof s_records[i].ssid);
+        if (len >= sizeof out[n].ssid) len = sizeof out[n].ssid - 1;
+        memcpy(out[n].ssid, s_records[i].ssid, len);
+        out[n].ssid[len] = '\0';
+        out[n].rssi = s_records[i].rssi;
+        out[n].auth = s_records[i].authmode;
+        n++;
+    }
+    *count = n;
+    net_scan_condense(out, count, cap, truncated);
+    ESP_LOGI(TAG, "scan: %u in range, %u reported", (unsigned)got, (unsigned)*count);
+    return ESP_OK;
 }
 
 void net_status(net_status_t *out)
