@@ -442,6 +442,13 @@ the run was never accepted. Contrast with a failed live run, which carries both
 `agent.error` is terminal for a run. Exactly one of `agent.final` or `agent.error`
 is emitted per accepted run.
 
+`message` for `E_LLM_UNAVAILABLE` is the provider's own rejection, not a summary:
+`ollama-cloud: http 400: {"error":{"message":"model ... not found"}}` (`02-firmware.md`
+§llm). The bridge prints it verbatim. A provider's 400 does not say which member of the
+request it disliked, and the body is the only place that does — so a bridge that
+replaced the sentence with a friendlier one would be discarding the one diagnostic that
+distinguishes a wrong model name from a wrong tool array.
+
 ### 3.16 `task.fired` (device → bridge)
 
 | Field | Type | Required | Meaning |

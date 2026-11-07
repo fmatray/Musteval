@@ -23,6 +23,16 @@
  * the module rather than the caller. */
 #define LLM_BODY_MAX 8192
 
+/* How much of a provider's rejection body `llm_last_error()` keeps. The status alone
+ * never names the offending member; the provider's own words do, and the first 192
+ * bytes of an OpenAI-shaped error carry the `message` field. */
+#define LLM_ERROR_CLIP 160
+
+/* The whole message buffer, and it must exceed `LLM_ERROR_CLIP`: the buffer has to
+ * hold `<id>: http <status>: ` as well as the clip, or a long body pushes the prefix
+ * — the only part that is always right — out of the string. */
+#define LLM_ERROR_MAX (LLM_ERROR_CLIP + 64)
+
 /* One fixed UTC window. `bucket` is the hour (`unix / 3600`) or day (`unix / 86400`)
  * index the count belongs to; a mismatch resets the count rather than trusting a
  * stale value (`03-config.md` §llm). */
@@ -119,5 +129,22 @@ bool llm_last_answer(const char **id, const char **model);
 void llm_limits(int32_t *hour, int32_t *day);
 
 /* Human-readable reason the chain last failed, for the `error.message` of
- * `E_LLM_UNAVAILABLE`. Borrowed and stable until the next call. */
+ * `E_LLM_UNAVAILABLE`. Borrowed and stable until the next call. When the last
+ * attempt was rejected with a body, it carries that body's words (`02-firmware.md`
+ * §llm). */
 const char *llm_last_error(void);
+
+/* Format a provider rejection into `out` as `<id>: http <status>: <body>`, the body
+ * clipped to `LLM_ERROR_CLIP` and flattened to one line. Pure: no socket, no clock, so
+ * the shape `E_LLM_UNAVAILABLE`'s message takes is host-tested rather than inferred
+ * from a live 400. A NULL or empty body yields `<id>: http <status>` alone. Returns
+ * the length written. */
+size_t llm_copy_error_detail(const char *body, size_t body_len, const char *id,
+                             int status, char *out, size_t cap);
+
+/* Replace every occurrence of `secret` in `text` with `***`. Third-party text goes
+ * into `agent.error`, and `06-security.md` §7 forbids a resolved key from reaching it;
+ * a provider that echoes the `Authorization` header back in a 400 body would otherwise
+ * print the key into the reader's scrollback. A NULL or empty secret is a no-op, which
+ * is the ordinary case: most providers do not echo. Returns the number of replacements. */
+size_t llm_redact(char *text, const char *secret);

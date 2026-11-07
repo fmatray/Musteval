@@ -32,7 +32,7 @@ static size_t s_provider_count;
 static llm_budget_t s_budget;
 static int32_t s_max_hour = 100;
 static int32_t s_max_day = 1000;
-static char s_last_error[96];
+static char s_last_error[LLM_ERROR_MAX];
 static char s_answered_id[17];
 static char s_answered_model[65];
 /* `04-protocol.md` §3.9: `llm.available` is "last call succeeded", not "a provider
@@ -219,7 +219,16 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
         /* A 4xx/5xx is a provider failure, not a link failure: move to the next
          * provider, which is what `E_LLM_UNAVAILABLE`'s failover means. */
         if (resp.status < 200 || resp.status >= 300) {
-            snprintf(s_last_error, sizeof s_last_error, "%s: http %d", p->id, resp.status);
+            /* The provider's own words are the only thing that names the offending
+             * member: a 400 saying `model` points at the model dropdown, one saying
+             * `reasoning_effort` at the thinking level. Clipped and flattened to one
+             * line so it survives a JSON string in `agent.error` unescaped-looking
+             * and readable in a log. */
+            llm_copy_error_detail(resp.body, resp.body_len, p->id, resp.status,
+                                  s_last_error, sizeof s_last_error);
+            /* A provider that echoes the request back prints the key into the reader's
+             * scrollback; `06-security.md` §7 forbids that reaching `agent.error`. */
+            llm_redact(s_last_error, p->api_key);
             ESP_LOGW(TAG, "llm: %s", s_last_error);
             free(resp.body);
             index = llm_next_provider(index, (int)s_provider_count);

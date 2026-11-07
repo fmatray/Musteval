@@ -973,10 +973,21 @@ highlighting, applied to the chrome.
 | `$text-muted` | context that must not compete with the value: units, defaults, bounds, hints | dim text |
 | `$accent` | the heading that names what the panel is, and the selected row's marker | bold |
 
-Semantic slots come from the application theme (`THEME` in `bridge/ui/app.py`), not
-from hard-coded hex in a widget, so a terminal in a light theme gets a light palette
-and a contrast that still holds. The one fixed colour is the splash gradient, which
-is the identity mark rather than chrome.
+Semantic slots come from the Textual theme the application is running (`app.current_theme`),
+not from hard-coded hex in a widget, so a terminal in a light theme gets a light palette
+and a contrast that still holds. A widget that draws in CSS writes `$error` and lets the
+stylesheet resolve it; a line written into a `RichLog` draws through Rich, which does not
+parse CSS variables, so it resolves `app.current_theme.error` itself. The one fixed colour
+is the splash gradient, which is the identity mark rather than chrome.
+
+**A line the device refused is `$error`, and it carries the device's own words.** An
+error line is the only place the reader learns why a run stopped, so it is written
+with `ChatScreen.write(..., error=True)` and it repeats the `code` and `message`
+verbatim rather than paraphrasing them. `llm`'s message carries the provider's
+rejection body (`02-firmware.md` §llm), which is where a 400 names the offending
+member — the model, the tool array, the thinking level. A bridge that replaced that
+sentence with "network issue" would be discarding the one diagnostic the firmware
+took the trouble to keep, and the `✗` would outlive it as decoration.
 
 ### 13.3 Hint lines
 

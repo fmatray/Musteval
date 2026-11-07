@@ -286,7 +286,7 @@ reference (the literal `nvs:<key>` string) may be printed, logged, or returned.
 
 | Item | May appear in | Rule |
 |---|---|---|
-| API key / PSK / MCP auth header value | RAM only, inside the outbound HTTP header | Never formatted into a log, a `log` message, a `command.result`, an `agent.tool` argument dump, or an `agent.error` message |
+| API key / PSK / MCP auth header value | RAM only, inside the outbound HTTP header | Never formatted into a log, a `log` message, a `command.result`, an `agent.tool` argument dump, or an `agent.error` message. `E_LLM_UNAVAILABLE` carries the provider's rejection body (`02-firmware.md` §llm), which is third-party text, so the firmware scrubs the resolved key from it before the frame is emitted (`llm_redact`) rather than trusting the provider not to echo |
 | `secret_ref` string (`nvs:<key>`) | `config.json`, `config.get` result, diagnostics | Returned verbatim; never substituted with the value |
 | `secret.set` request value | Link RX, NVS write | Not echoed, not logged, not included in the `command.result`; the result carries success/failure only |
 | Resolved header value (`nvs:<key>` from a declarative tool `http.headers`) | Outbound HTTP header only, inserted by the HTTP layer | Resolved after header assembly, so it never exists as a tool argument; redacted in `agent.tool`, `agent.tool_result` and `log`; covered by S12b and S15 |

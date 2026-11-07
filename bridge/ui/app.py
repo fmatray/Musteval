@@ -212,8 +212,19 @@ class ChatScreen(Vertical):
         # switching screens goes to whichever view held focus.
         self.query_one("#chat-input", Input).focus()
 
-    def write(self, text: str) -> None:
-        self.query_one("#chat-log", RichLog).write(text)
+    def write(self, text: str, error: bool = False) -> None:
+        """One line into the pane. `error` paints it in the theme's `$error` (`05` §13.2).
+
+        The flag, not a `Text`: the pane is `markup=False` and the plain string is
+        what a test and a screen reader both read. Colour is the enhancement, the
+        `✗` and the error code are the fact — a monochrome terminal loses nothing.
+        `$error` is CSS syntax and a Rich `Text` does not parse it, so the theme
+        variable is resolved here rather than hard-coded: a light terminal keeps a
+        contrast that holds.
+        """
+        self.query_one("#chat-log", RichLog).write(
+            Text(text, style=f"bold {self.app.current_theme.error}") if error else text
+        )
 
     def render_bar(self, line: str, styled: Text | None = None) -> None:
         """`05` §5.1: the fact line above the composer.
@@ -986,7 +997,7 @@ class BridgeApp(App):
         try:
             value = coerce(row, typed)
         except ValueError as exc:
-            self._chat().write(f"✗ {exc}")
+            self._chat().write(f"✗ {exc}", error=True)
             return
         await self._request("config.set", {"path": row.path, "value": value})
 
@@ -1051,7 +1062,7 @@ class BridgeApp(App):
         try:
             self._logs().apply_filter(tag.strip(), level.strip() or None)
         except ValueError as exc:
-            self._chat().write(f"✗ {exc}")
+            self._chat().write(f"✗ {exc}", error=True)
 
     # -- files (`05` §5.8) ----------------------------------------------
 
@@ -1412,7 +1423,11 @@ class BridgeApp(App):
         self._chat().write(render_tool_call(frame.body))
 
     def _on_agent_tool_result(self, frame: Frame) -> None:
-        self._chat().write(render_tool_result(frame.body))
+        # A failed tool result is an error line for the same reason a failed command
+        # is: it is the only place the reader learns why the agent stopped.
+        self._chat().write(
+            render_tool_result(frame.body), error=not frame.body.get("ok")
+        )
 
     def _on_agent_final(self, frame: Frame) -> None:
         usage = frame.body.get("usage") or {}
@@ -1422,7 +1437,7 @@ class BridgeApp(App):
         self._chat().write(str(frame.body.get("text", "")))
 
     def _on_agent_error(self, frame: Frame) -> None:
-        self._chat().write(f"✗ {frame.body.get('code')}: {frame.body.get('message')}")
+        self._chat().write(f"✗ {frame.body.get('code')}: {frame.body.get('message')}", error=True)
 
     def _on_task_fired(self, frame: Frame) -> None:
         self._chat().write(
@@ -1440,7 +1455,7 @@ class BridgeApp(App):
     def _on_event(self, frame: Frame) -> None:
         kind = frame.body.get("kind")
         if kind == "link.rejected":
-            self._chat().write("✗ link rejected: bad token")
+            self._chat().write("✗ link rejected: bad token", error=True)
             return
         self._logs().write(f"event:{kind} {clip(str(frame.body.get('data')), 200)}")
 
@@ -1473,7 +1488,7 @@ class BridgeApp(App):
         name = body.get("name")
         if not body.get("ok"):
             error = body.get("error") or {}
-            self._chat().write(f"✗ {name}: {error.get('code')} {error.get('message')}")
+            self._chat().write(f"✗ {name}: {error.get('code')} {error.get('message')}", error=True)
             return
         result = body.get("result")
         if name == "status" and isinstance(result, dict):
@@ -1578,10 +1593,10 @@ class BridgeApp(App):
         try:
             reply = await self.session.request(frame)
         except SessionError as exc:
-            self._chat().write(f"✗ {exc}")
+            self._chat().write(f"✗ {exc}", error=True)
             return None
         except asyncio.TimeoutError:
-            self._chat().write("✗ the device did not answer in time")
+            self._chat().write("✗ the device did not answer in time", error=True)
             return None
         if reply.type != "command.result":
             return None
@@ -1605,17 +1620,17 @@ class BridgeApp(App):
         state = self.session.state
         if state.value in UNREACHABLE:
             self._chat().write(
-                f"✗ {LINK_WORDS[state.value]}; the prompt was not sent"
+                f"✗ {LINK_WORDS[state.value]}; the prompt was not sent", error=True
             )
             return
         frame = Frame(type="prompt", id=new_id("b"), ts=0, body={"text": text})
         try:
             reply = await self.session.request(frame)
         except SessionError as exc:
-            self._chat().write(f"✗ {exc}")
+            self._chat().write(f"✗ {exc}", error=True)
             return
         except asyncio.TimeoutError:
-            self._chat().write("✗ the run did not answer in time")
+            self._chat().write("✗ the run did not answer in time", error=True)
             return
         if reply.type == "agent.error":
             self._on_agent_error(reply)
@@ -1640,7 +1655,7 @@ class BridgeApp(App):
             try:
                 target = sandbox_normalise(target)
             except SandboxPathError as exc:
-                self._chat().write(f"✗ {exc}")
+                self._chat().write(f"✗ {exc}", error=True)
                 return
             self._files_target = target
             self.action_show("files")
@@ -1664,7 +1679,7 @@ class BridgeApp(App):
             # `05-bridge.md` §8.1: masked modal, Esc cancels without sending.
             parts = text[1:].split()
             if len(parts) < 3 or parts[1] != "set":
-                self._chat().write("✗ usage: /secret set <key>")
+                self._chat().write("✗ usage: /secret set <key>", error=True)
                 return
             value = await self.push_screen_wait(SecretPrompt(parts[2]))
             if value is None:
@@ -1686,7 +1701,7 @@ class BridgeApp(App):
         try:
             frames = parse(text, state)
         except CommandError as exc:
-            self._chat().write(f"✗ {exc}")
+            self._chat().write(f"✗ {exc}", error=True)
             return
         if any(frame.type == "ping" for frame in frames):
             self._reader_pinged = True
@@ -1712,10 +1727,10 @@ class BridgeApp(App):
         try:
             reply = await self.session.request(outgoing)
         except SessionError as exc:
-            self._chat().write(f"✗ {exc}")
+            self._chat().write(f"✗ {exc}", error=True)
             return
         except asyncio.TimeoutError:
-            self._chat().write("✗ the device did not answer in time")
+            self._chat().write("✗ the device did not answer in time", error=True)
             self._pending_secret = None
             return
         if reply.type == "command.result":
@@ -1749,7 +1764,7 @@ class BridgeApp(App):
         state = self.session.state
         if state.value in UNREACHABLE:
             self._chat().write(
-                f"✗ {LINK_WORDS[state.value]}; /onboard was not sent"
+                f"✗ {LINK_WORDS[state.value]}; /onboard was not sent", error=True
             )
             return
         if not self._config_fetched:

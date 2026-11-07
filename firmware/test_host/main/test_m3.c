@@ -322,6 +322,110 @@ TEST_CASE("a body that does not fit is refused, not truncated", "[m3]")
     TEST_ASSERT_EQUAL_size_t(0, llm_assemble_prompt(&r, NULL, out, sizeof out));
 }
 
+/* --- llm rejection message ------------------------------------------------ */
+
+/* The status alone names no member: a 400 is the same word whether the model, the
+ * token cap or the thinking level was wrong. The provider's body is what says so,
+ * which is why it is kept rather than freed unread. */
+TEST_CASE("a provider rejection keeps the provider's words", "[m3]")
+{
+    const char *body = "{\"error\":{\"message\":\"model \\\"gemma4:31b\\\" not found\"}}";
+    char out[LLM_ERROR_MAX];
+    size_t n = llm_copy_error_detail(body, strlen(body), "ollama-cloud", 400, out,
+                                     sizeof out);
+    TEST_ASSERT_GREATER_THAN(0, n);
+    TEST_ASSERT_EQUAL_STRING(
+        "ollama-cloud: http 400: "
+        "{\"error\":{\"message\":\"model \\\"gemma4:31b\\\" not found\"}}",
+        out);
+}
+
+/* A refusal with no body -- a transport error surfaced as a status, or a provider that
+ * answers 502 with nothing -- still has to read as a sentence. */
+TEST_CASE("a rejection with no body names only the status", "[m3]")
+{
+    char out[LLM_ERROR_MAX];
+    TEST_ASSERT_GREATER_THAN(0, llm_copy_error_detail(NULL, 0, "p1", 502, out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("p1: http 502", out);
+    TEST_ASSERT_EQUAL_STRING("p1: http 502", out);
+}
+
+/* A pretty-printed body would arrive in the chat as its first line and a run of
+ * escapes; the message travels in one JSON string, so it is one line. */
+TEST_CASE("a rejection body is flattened to one line", "[m3]")
+{
+    char out[LLM_ERROR_MAX];
+    llm_copy_error_detail("line one\nline two\there", 24, "p1", 400, out, sizeof out);
+    TEST_ASSERT_NULL(strchr(out, '\n'));
+    TEST_ASSERT_NULL(strchr(out, '\t'));
+    TEST_ASSERT_NOT_NULL(strstr(out, "line one line two here"));
+    /* An ESC in a rejection body would be a terminal escape sequence in the pane. */
+    char esc[] = "bad\x1b[31mred";
+    llm_copy_error_detail(esc, strlen(esc), "p1", 400, out, sizeof out);
+    TEST_ASSERT_NULL(strchr(out, '\x1b'));
+}
+
+/* The body is clipped, never the prefix: a 16 KiB upstream page must not push the
+ * provider id and the status -- the only part that is always right -- out of the
+ * message the reader sees. */
+TEST_CASE("a huge rejection body is clipped after the prefix", "[m3]")
+{
+    static char big[4096];
+    memset(big, 'z', sizeof big);
+    char out[LLM_ERROR_MAX];
+    llm_copy_error_detail(big, sizeof big, "groq", 400, out, sizeof out);
+    TEST_ASSERT_NOT_NULL(strstr(out, "groq: http 400: zzz"));
+    TEST_ASSERT_LESS_THAN_size_t(sizeof out, strlen(out) + 1);
+}
+
+/* A body exactly as long as the clip is not a full message: the prefix and the clip
+ * together must still fit, or the buffer is undersized rather than the body long. */
+TEST_CASE("the message buffer holds the prefix and the whole clip", "[m3]")
+{
+    TEST_ASSERT_GREATER_THAN_size_t(LLM_ERROR_CLIP + 16, LLM_ERROR_MAX);
+    static char body[LLM_ERROR_CLIP];
+    memset(body, 'y', sizeof body);
+    char out[LLM_ERROR_MAX];
+    llm_copy_error_detail(body, sizeof body, "ollama-cloud", 400, out, sizeof out);
+    TEST_ASSERT_EQUAL_size_t(strlen("ollama-cloud: http 400: ") + LLM_ERROR_CLIP,
+                             strlen(out));
+}
+
+/* A provider that echoes the request back in its rejection would otherwise print the
+ * key into scrollback; `06-security.md` §7 says a resolved key never reaches an
+ * `agent.error` message. */
+TEST_CASE("a rejection echoing the key is redacted", "[m3]")
+{
+    char body[] = "{\"error\":\"bad key sk-live-abc123 for model m\",\"key\":\"sk-live-abc123\"}";
+    char out[LLM_ERROR_MAX];
+    llm_copy_error_detail(body, strlen(body), "openai", 401, out, sizeof out);
+    llm_redact(out, "sk-live-abc123");
+    TEST_ASSERT_NULL(strstr(out, "sk-live-abc123"));
+    TEST_ASSERT_NOT_NULL(strstr(out, "***"));
+}
+
+/* The ordinary case: most providers do not echo, and a no-op must not corrupt the
+ * message or read past its end. */
+TEST_CASE("redacting with no secret leaves the message alone", "[m3]")
+{
+    char text[] = "p1: http 502";
+    TEST_ASSERT_EQUAL_size_t(0, llm_redact(text, NULL));
+    TEST_ASSERT_EQUAL_STRING("p1: http 502", text);
+    TEST_ASSERT_EQUAL_size_t(0, llm_redact(text, ""));
+    TEST_ASSERT_EQUAL_STRING("p1: http 502", text);
+    TEST_ASSERT_EQUAL_size_t(0, llm_redact(text, "absent"));
+    TEST_ASSERT_EQUAL_STRING("p1: http 502", text);
+}
+
+/* A short key is where the replacement can outgrow the needle; the text after it must
+ * survive either way. */
+TEST_CASE("redacting a short secret keeps the surrounding text", "[m3]")
+{
+    char text[] = "bad k in key";
+    TEST_ASSERT_EQUAL_size_t(2, llm_redact(text, "k"));
+    TEST_ASSERT_EQUAL_STRING("bad * in *ey", text);
+}
+
 /* `extra_body` members join the request object rather than nesting, and cannot
  * change `model`, `messages`, `tools` or `stream` (`03-config.md` §llm). */
 TEST_CASE("extra_body members join the request object", "[m3]")

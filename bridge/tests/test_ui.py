@@ -599,3 +599,60 @@ def test_a_narrow_bar_drops_whole_segments_and_never_half_a_fact():
 
 def test_the_link_word_survives_any_width():
     assert render_prompt_bar("connected", {}, {}, 0, width=1) == "linked"
+
+
+async def test_an_agent_error_is_written_as_an_error_line():
+    """`05` §13.2: a line the device refused is `$error`, and it repeats the code
+    and message verbatim. The message is the whole diagnostic — `llm` puts the
+    provider's rejection body in it — so a bridge that paraphrased it would have
+    nothing left to show but a colour.
+    """
+    from bridge.ui import BridgeApp
+
+    message = 'ollama-cloud: http 400: {"error":"model not found"}'
+
+    def reply_for(line):
+        frame = json.loads(line)
+        if frame.get("type") == "prompt":
+            return [
+                encode(Frame(type="agent.start", id="d-3", ts=0,
+                             body={"run_id": "r-1", "trigger": "manual",
+                                   "source": "prompt", "provider": "ollama-cloud",
+                                   "model": "m", "input_bytes": 5,
+                                   "queue_depth": 0}, reply_to=frame["id"])),
+                encode(Frame(type="agent.error", id="d-4", ts=0,
+                             body={"code": "E_LLM_UNAVAILABLE", "message": message,
+                                   "retryable": True},
+                             reply_to=frame["id"])),
+            ]
+        return _reply(line)
+
+    session = Session(
+        FakeTransport(on_write=reply_for), ack_timeout=1, ping_interval=99
+    )
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.1)
+        field = app.query_one("#chat-input")
+        field.focus()
+        field.value = "hello"
+        await pilot.pause(0.05)
+        await pilot.press("enter")
+        for _ in range(100):
+            if any("E_LLM_UNAVAILABLE" in str(l.text)
+                   for l in app.query_one("#chat-log").lines):
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.1)
+        line = [
+            l for l in app.query_one("#chat-log").lines
+            if "E_LLM_UNAVAILABLE" in str(l.text)
+        ][-1]
+        styles = " ".join(str(seg.style) for seg in line._segments)
+        assert message in str(line.text)
+        assert app.current_theme.error in styles, (str(line.text), styles)
+        await session.close()

@@ -8,6 +8,60 @@
 
 #include "llm.h"
 
+size_t llm_redact(char *text, const char *secret)
+{
+    if (text == NULL || secret == NULL || secret[0] == '\0') return 0;
+    size_t slen = strlen(secret);
+    size_t count = 0;
+    char *hit;
+    /* `strstr` from the start each time is right here: the replacement is shorter than
+     * the needle for any real key, but it is not shorter for a one-character secret, so
+     * the cursor advances past the replacement rather than trusting length. */
+    char *at = text;
+    while ((hit = strstr(at, secret)) != NULL) {
+        memset(hit, '*', 3 < slen ? 3 : slen);
+        if (slen > 3) {
+            size_t tail = strlen(hit + slen);
+            memmove(hit + 3, hit + slen, tail + 1);
+        }
+        at = hit + (slen > 3 ? 3 : slen);
+        count++;
+    }
+    return count;
+}
+
+size_t llm_copy_error_detail(const char *body, size_t body_len, const char *id,
+                             int status, char *out, size_t cap)
+{
+    if (out == NULL || cap == 0) return 0;
+    const char *who = id != NULL && id[0] != '\0' ? id : "provider";
+
+    /* No body is the ordinary case for a transport-level refusal and for a bare
+     * status; the prefix is still the whole message. */
+    if (body == NULL || body_len == 0) {
+        int n = snprintf(out, cap, "%s: http %d", who, status);
+        return n <= 0 ? 0 : (size_t)n;
+    }
+
+    /* Flattened, because this string travels in a JSON `message` and gets read on one
+     * line: a provider's pretty-printed error would otherwise arrive as the first
+     * line and a run of escapes. */
+    int n = snprintf(out, cap, "%s: http %d: ", who, status);
+    if (n <= 0 || (size_t)n >= cap) { out[cap - 1] = '\0'; return n <= 0 ? 0 : (size_t)n; }
+    size_t used = (size_t)n;
+
+    size_t limit = body_len < LLM_ERROR_CLIP ? body_len : LLM_ERROR_CLIP;
+    for (size_t i = 0; i < limit && used + 1 < cap; i++) {
+        unsigned char c = (unsigned char)body[i];
+        /* Control bytes become spaces rather than reaching the pane: `05` §13 has the
+         * bridge strip them on arrival, but the message also lands in the device log
+         * and a raw ESC in an error body is a terminal escape sequence, not text. */
+        out[used++] = (c < 0x20 || c == 0x7f) ? ' ' : (char)c;
+    }
+    out[used] = '\0';
+    return used;
+}
+
 size_t llm_endpoint(const char *base_url, char *out, size_t cap)
 {
     if (base_url == NULL || out == NULL || cap == 0) return 0;

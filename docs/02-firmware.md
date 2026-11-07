@@ -235,7 +235,14 @@ time, and as a platform service it needs no port.
 - `llm_counters(&hour, &day)` / `llm_limits(&hour, &day)` / `llm_last_answer(&id,
   &model)`: The facts `status` reports (`04-protocol.md` §3.9).
 - `llm_last_error()`: Why the chain last failed, for `E_LLM_UNAVAILABLE`'s
-  `error.message`.
+  `error.message`. When the last attempt got an HTTP status and a body, the message
+  carries the provider's own words, clipped to `LLM_ERROR_CLIP`:
+  `ollama-cloud: http 400: {"error":"model \"gemma4:31b\" not found"}`. The status
+  alone says only that the request was wrong, never which member was wrong, and the
+  provider is the only party that knows — a 400 naming `model` points at the model
+  dropdown, one naming `tools` at the tool array, one naming `reasoning_effort` at
+  the thinking level the wizard wrote. The body is read before it is freed, which is
+  the whole reason this module keeps a copy at all.
 
 The budget, the body and the chain order are pure and host-tested (`llm_budget.c`,
 `llm_body.c`); `llm.c` resolves secrets, reads NVS and posts, and is board-only.
