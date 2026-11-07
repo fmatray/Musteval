@@ -248,10 +248,12 @@ async def test_serial_transport_does_not_block_the_loop_on_a_stalled_write(monke
     """
 
     class StalledPort:
+        # Real `Serial` always exposes this and `read` sizes its call from it; without
+        # it the reader thread dies on AttributeError before reaching `read`.
+        in_waiting = 0
+
         def __init__(self, *args, **kwargs):
             pass
-
-
 
         def write(self, data):
             time.sleep(0.5)  # stands in for a full TX buffer
@@ -291,10 +293,10 @@ async def test_serial_transport_write_and_close_never_meet_on_a_freed_port(monke
     state = {"closed": False, "bad_fd": 0}
 
     class SlowPort:
+        in_waiting = 0  # see `StalledPort`
+
         def __init__(self, *args, **kwargs):
             pass
-
-
 
         def write(self, data):
             time.sleep(0.02)
@@ -335,6 +337,8 @@ async def test_serial_transport_never_touches_the_reset_strap(monkeypatch):
     events = []
 
     class RecordingPort:
+        in_waiting = 0  # see `StalledPort`
+
         def __init__(self, *args, **kwargs):
             events.append("construct")
 
@@ -352,6 +356,7 @@ async def test_serial_transport_never_touches_the_reset_strap(monkeypatch):
 
         def read(self, size):
             return b""
+
 
         def close(self):
             events.append("close")
