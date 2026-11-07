@@ -576,6 +576,16 @@ The agent process is **serialized**. Only one run is active at a time.
      - Check `tools.http_allow_hosts` for declarative HTTP tools.
      - Dispatch: `Built-in` → `Declarative` → `MCP (mcp.<server>.<tool>)`.
      - Collect result → Append to history → Repeat step 3.
+
+   The history that a round sends is the ordered message list, and the order is part
+   of the contract rather than an implementation detail: the `assistant` message
+   carrying `tool_calls` comes before the `role:"tool"` messages that answer it, and
+   each tool message carries the `tool_call_id` of its call. A provider rejects a
+   tool message whose id has no matching call, so the two travel together or not at
+   all. The run's own prompt is the *last* message of the first request only; from
+   the second round on it is already in the history, and `llm_request_t.user_prompt`
+   is NULL. Sending it again would ask the question twice and place the user turn
+   after the tool replies.
 5. **Close-out check**: Before finalizing, inspect the todo tree via
    `agent_todo_phases()` and the rounds used. The check fails in two cases:
 
@@ -611,6 +621,41 @@ The agent process is **serialized**. Only one run is active at a time.
 | Tool Crash | Isolate tool; return `E_TOOL` to LLM | `E_TOOL` |
 | Buffer Full | Truncate oldest history entry in PSRAM | — |
 | Close-out failed at budget end (open tasks, or untracked multi-round work) | Finalize anyway; `agent.final` reports `todo_open: true` | — |
+
+### 4.3 Concurrency, frames and reload
+
+Three rules here are load-bearing and each had a defect found by running the loop
+on a board rather than in the host suite.
+
+**A frame with no `id` is not emitted.** `link_emit_body` rejects a NULL id, and the
+rejection is silent, so a caller that forgets one produces a run that starts and
+then says nothing — indistinguishable from a hang. The agent task numbers its own
+frames `a-<n>` through `agent_frame_id`; it cannot use `link_next_id`, whose scratch
+buffer belongs to the link task.
+
+**Frames are assembled and written under one lock.** `link_emit_body` is called from
+the link task (`command.result`, `hello_ack`, `event`) and from the agent task
+(`agent.start`, `agent.tool`, `agent.final`), and the log hook can fire from either.
+`s_tx` and `s_emit` in `link.c` are shared, so assembling without the lock lets two
+tasks interleave halves of two lines and desynchronise the stream — the one failure
+the NDJSON reader cannot recover from (`04-protocol.md` §1.1). The lock is a
+recursive mutex created by `link_set_writer`, taken by every path that writes either
+buffer.
+
+**The provider chain is walked once, and `-1` ends it.** `llm_next_provider` returns
+`-1` when the chain is exhausted. A walk guarded by `index < count` is *true* for
+`-1`, so it reads `providers[-1]` and then loops forever: the run never returns,
+`agent.busy` stays true, every later prompt is queued and then refused, and the
+budget counter climbs without bound (14,483 calls were charged this way in one
+observed run). The guard is `llm_provider_loop_ok`, host-tested, and every `continue`
+in the walk advances the index.
+
+**`reload` restarts the services, and safe mode is named.** `reload` clears
+`boot_failures` and then calls the same `start_services` the boot path calls, so
+`net`, `clock`, `llm` and `agent_start` run again. Before that it cleared the flag
+and nothing else, leaving `sys.safe_mode: false` while every prompt was still refused
+for a reason no frame carried. A prompt that arrives while the device is in safe mode
+now answers `E_SAFE_MODE` (`04-protocol.md` §4.11) instead of a generic error.
 
 ## 5. Scheduler & Triggers
 
@@ -859,6 +904,8 @@ What the simulator proves and what it does not:
 | `app_main()` reaching `store_mount()` and the fit assertions in §3.1 | `ping` latency, and any code path that needs a real radio |
 
 The seeded `userfs` is a throwaway: three directories and a placeholder
-`config.json`. The real image builder is the M4 `bridge/tools/build_userfs.py`
-(`03-config.md` open question 8); until it lands, a freshly flashed board halts on
-a `userfs` that is blank and cannot be formatted (§3.1).
+`config.json`. The real image builder is M5's `bridge/tools/build_userfs.py`
+(`07-roadmap.md` §M5); until it lands, a freshly flashed board halts on
+a `userfs` that is blank and cannot be formatted (§3.1), and the two declarative
+tools `00-overview.md` §7 ships — `weather_now` and `web_search` — are absent
+because nothing puts them in the image.
