@@ -698,6 +698,21 @@ Validates, writes `/config.json`, and applies what can be applied live. `false` 
 `secret_ref` whose NVS key is missing fails with `E_CONFIG`; the old value is kept
 (no partial write).
 
+**A set creates a missing object parent; it never creates a missing array or array
+index.** `{"path":"ntp.timezone","value":"CET-1CEST,M3.5.0,M10.5.0/3"}` succeeds on a
+device with no `ntp` object at all, creating that object and the one key in it. This
+is what makes `/onboard`'s timezone write possible on a device configured before
+`ntp` existed (`05-bridge.md` §7.1). The array rule is the opposite — a path whose
+parent chain includes an index at or past the array's length is `E_CONFIG` — because
+the value that would fill it is not known: `wifi.networks.3.ssid` on a one-entry
+list says nothing about entries 1 and 2, and `03-config.md` requires each to be
+complete. A whole-array set (`{"path":"wifi.networks","value":[...]}`) replaces the
+array and is the way to add one.
+
+`requires_reboot` is `true` exactly when `04` §4.2 names the key as boot-only —
+`wifi.*`, `serial.*`, and `ntp.servers` — and `false` otherwise. `ntp.timezone` is
+`false`: `clock_init` applies it, and `reload` re-runs `clock_init`.
+
 ```json
 {"v":1,"type":"command","id":"b-14","ts":1730571700,"name":"config.set","args":{"path":"device.log_level","value":"debug"}}
 ```

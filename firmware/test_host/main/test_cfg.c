@@ -207,21 +207,76 @@ TEST_CASE("redaction keeps the buffer terminated when the mask does not fit", "[
     TEST_ASSERT_NOT_NULL(strchr(line, '\0'));
 }
 
-TEST_CASE("a set never creates a parent key", "[cfg]")
+/* `04` §4.9: a set creates a missing object parent, so `ntp.timezone` lands on a
+ * document with no `ntp` block at all. That is the `/onboard` write on a fresh
+ * device, where `config.json` has no `ntp` yet. */
+TEST_CASE("a set creates a missing object parent", "[cfg]")
 {
-    /* `04` §4.9: a typo in a path is E_CONFIG, not a new key in the file. */
     json_doc_t *doc = NULL;
     TEST_ASSERT_EQUAL(ESP_OK, json_parse(k_minimal, strlen(k_minimal), &doc));
 
     json_doc_t *value = NULL;
-    TEST_ASSERT_EQUAL(ESP_OK, json_parse("\"gpt-4o\"", 8, &value));
-    TEST_ASSERT_FALSE(cfg_set(doc, "llm.missing.model", json_root(value)));
-    TEST_ASSERT_TRUE(cfg_set(doc, "llm.providers.0.model", json_root(value)));
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse("\"CET-1CEST\"", 11, &value));
+    TEST_ASSERT_TRUE(cfg_set(doc, "ntp.timezone", json_root(value)));
+    TEST_ASSERT_EQUAL_STRING("CET-1CEST",
+                             json_string(json_path_get(doc, "ntp.timezone")));
 
-    TEST_ASSERT_EQUAL_STRING("gpt-4o",
-                             json_string(json_path_get(doc, "llm.providers.0.model")));
+    /* Two levels deep, and the existing siblings are untouched. */
+    TEST_ASSERT_TRUE(cfg_set(doc, "a.b.c", json_root(value)));
+    TEST_ASSERT_EQUAL_STRING("CET-1CEST", json_string(json_path_get(doc, "a.b.c")));
+    TEST_ASSERT_NOT_NULL(json_path_get(doc, "llm"));
+
     json_free(value);
     json_free(doc);
+}
+
+/* The other half of §4.9, and the reason the rule is "object parent" and not
+ * "create anything": an array index implies an array whose other elements are not
+ * known, and `03-config.md` requires each `wifi.networks[]` entry complete. */
+TEST_CASE("a set never creates an array or an array index", "[cfg]")
+{
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(k_minimal, strlen(k_minimal), &doc));
+
+    json_doc_t *value = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse("\"other\"", 7, &value));
+
+    /* Index 3 of a one-entry array: no array, no element, and nothing written. */
+    TEST_ASSERT_FALSE(cfg_set(doc, "wifi.networks.3.ssid", json_root(value)));
+    TEST_ASSERT_NULL(json_path_get(doc, "wifi.networks.3"));
+    TEST_ASSERT_EQUAL(1, (int)json_array_len(json_path_get(doc, "wifi.networks")));
+
+    /* A missing array is not created either, even though its parent exists. */
+    TEST_ASSERT_FALSE(cfg_set(doc, "ntp.servers.0", json_root(value)));
+    TEST_ASSERT_NULL(json_path_get(doc, "ntp"));
+
+    /* The index that does exist still takes the write. */
+    TEST_ASSERT_TRUE(cfg_set(doc, "wifi.networks.0.ssid", json_root(value)));
+    TEST_ASSERT_EQUAL_STRING("other",
+                             json_string(json_path_get(doc, "wifi.networks.0.ssid")));
+    TEST_ASSERT_EQUAL(1, (int)json_array_len(json_path_get(doc, "wifi.networks")));
+
+    json_free(value);
+    json_free(doc);
+}
+
+/* `04` §4.2: a set to a boot-only field reports `requires_reboot`, and the flag is
+ * derived from the path rather than hardcoded. `ntp.timezone` is the interesting
+ * negative: `clock_init` applies it and `reload` re-runs `clock_init`. */
+TEST_CASE("requires_reboot follows the path prefix", "[cfg]")
+{
+    TEST_ASSERT_TRUE(cfg_needs_reboot("wifi.networks"));
+    TEST_ASSERT_TRUE(cfg_needs_reboot("wifi.connect_timeout_ms"));
+    TEST_ASSERT_TRUE(cfg_needs_reboot("serial.baud"));
+    TEST_ASSERT_TRUE(cfg_needs_reboot("ntp.servers"));
+
+    TEST_ASSERT_FALSE(cfg_needs_reboot("ntp.timezone"));
+    TEST_ASSERT_FALSE(cfg_needs_reboot("llm.providers"));
+    TEST_ASSERT_FALSE(cfg_needs_reboot("device.name"));
+    TEST_ASSERT_FALSE(cfg_needs_reboot(NULL));
+
+    /* A prefix, not a substring: `xwifi.x` is not the `wifi` block. */
+    TEST_ASSERT_FALSE(cfg_needs_reboot("xwifi.networks"));
 }
 
 TEST_CASE("a config round-trips through the canonical writer", "[cfg]")

@@ -56,8 +56,14 @@ json_node_t *cfg_get(const char *path);
 json_doc_t *cfg_clone(void);
 
 /* Replace the value at `path` in the *caller's* document copy. This is the only
- * mutation `config.set` performs; it never creates a parent key. */
+ * mutation `config.set` performs. A missing *object* parent is created; a missing
+ * array or array index is not (`04-protocol.md` §4.9). */
 bool cfg_set(json_doc_t *doc, const char *path, const json_node_t *value);
+
+/* Whether a write to `path` needs a reboot before it takes effect: true for the
+ * boot-only prefixes `04-protocol.md` §4.2 names (`wifi.`, `serial.`, and
+ * `ntp.servers`), false otherwise. Pure, so the rule is unit-tested. */
+bool cfg_needs_reboot(const char *path);
 
 /* Serialise `doc` canonically into `buf` (`03-config.md` §config.json, `AGENTS.md`
  * rule 4). `*written` excludes the terminator. */

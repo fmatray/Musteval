@@ -415,6 +415,99 @@ static json_node_t *walk_parent(json_doc_t *doc, const char *path,
     }
 }
 
+/* Walk to the parent of `path`'s last segment, creating a missing object chain on the
+ * way down. Only called after `path_is_settable`, so every case it meets is one the
+ * check accepted: an existing array is indexed, an existing object key is followed, a
+ * missing key becomes an object. */
+static json_node_t *walk_parent_create(json_doc_t *doc, const char *path,
+                                      char *last, size_t last_cap)
+{
+    if (doc == NULL || path == NULL || *path == '\0' || last == NULL || last_cap == 0) {
+        return NULL;
+    }
+    json_node_t *cur = json_root(doc);
+    for (const char *p = path;; p = strchr(p, '.') + 1) {
+        const char *dot = strchr(p, '.');
+        size_t seg = (dot == NULL) ? strlen(p) : (size_t)(dot - p);
+        if (seg == 0 || seg >= last_cap) return NULL;
+        if (dot == NULL) {
+            memcpy(last, p, seg);
+            last[seg] = '\0';
+            return cur;
+        }
+        char key[64];
+        if (seg >= sizeof key) return NULL;
+        memcpy(key, p, seg);
+        key[seg] = '\0';
+        json_node_t *next;
+        if (json_is_array(cur)) {
+            next = json_array_at(cur, (size_t)strtoul(key, NULL, 10));
+        } else {
+            next = json_get(cur, key);
+            if (next == NULL) next = json_add_object(cur, key);
+        }
+        if (next == NULL) return NULL;
+        cur = next;
+    }
+}
+
+static bool segment_is_numeric(const char *seg, size_t len)
+{
+    if (len == 0) return false;
+    for (size_t i = 0; i < len; i++) {
+        if (seg[i] < '0' || seg[i] > '9') return false;
+    }
+    return true;
+}
+
+/* Is a set to `path` legal? Answered without touching the document, so a refused set
+ * leaves the file unchanged — `04-protocol.md` §4.9 promises a typo is `E_CONFIG` and
+ * nothing written, and a walk that created `ntp` before discovering `ntp.servers.0`
+ * needs an array would leave that half-write behind.
+ *
+ * The rule is §4.9's: a missing *object* parent is created; a missing array or an
+ * out-of-range index is not, because the values that would fill the array are not
+ * known and `03-config.md` requires each entry to be complete. */
+static bool path_is_settable(json_doc_t *doc, const char *path)
+{
+    if (doc == NULL || path == NULL || *path == '\0') return false;
+    json_node_t *cur = json_root(doc);
+    bool creating = false;
+    for (const char *p = path;; p = strchr(p, '.') + 1) {
+        const char *dot = strchr(p, '.');
+        size_t seg = (dot == NULL) ? strlen(p) : (size_t)(dot - p);
+        if (seg == 0 || seg >= 64) return false;
+        char key[64];
+        memcpy(key, p, seg);
+        key[seg] = '\0';
+        const bool numeric = segment_is_numeric(key, seg);
+
+        /* Under a parent this function would create, only object keys can follow: a
+         * numeric segment would need an array to index, and none exists there. */
+        if (creating) {
+            if (numeric) return false;
+        } else if (json_is_array(cur)) {
+            if (!numeric) return false;
+            const size_t idx = (size_t)strtoul(key, NULL, 10);
+            if (idx >= json_array_len(cur)) return false;
+            if (dot != NULL) cur = json_array_at(cur, idx);
+        } else if (json_is_object(cur)) {
+            json_node_t *next = json_get(cur, key);
+            if (next == NULL) {
+                creating = true;
+            } else if (dot != NULL) {
+                /* An existing node can parent the rest only as an object or array;
+                 * anything else is a leaf and the path is wrong. */
+                if (!json_is_object(next) && !json_is_array(next)) return false;
+                cur = next;
+            }
+        } else {
+            return false;
+        }
+        if (dot == NULL) return true;
+    }
+}
+
 json_node_t *json_path_get(json_doc_t *doc, const char *path)
 {
     char last[64];
@@ -430,20 +523,18 @@ json_node_t *json_path_get(json_doc_t *doc, const char *path)
 
 bool json_path_set(json_doc_t *doc, const char *path, const json_node_t *value)
 {
-    if (value == NULL) return false;
+    if (value == NULL || !path_is_settable(doc, path)) return false;
     char last[64];
-    json_node_t *parent = walk_parent(doc, path, last, sizeof last);
+    json_node_t *parent = walk_parent_create(doc, path, last, sizeof last);
     if (parent == NULL) return false;
 
-    bool numeric = true;
-    for (const char *c = last; *c != '\0'; c++) {
-        if (*c < '0' || *c > '9') { numeric = false; break; }
-    }
+    const bool numeric = segment_is_numeric(last, strlen(last));
     /* cJSON owns what it is given, so a copy is made first and destroyed on a
      * failed insert; the source node stays owned by its own document. */
     cJSON *copy = cJSON_Duplicate(node_of(value), true);
     if (copy == NULL) return false;
     if (numeric) {
+        /* An existing index is replaced; a missing one is refused (§4.9). */
         size_t idx = (size_t)strtoul(last, NULL, 10);
         if (!cJSON_IsArray((cJSON *)(void *)parent) ||
             cJSON_GetArraySize((cJSON *)(void *)parent) <= (int)idx) {
@@ -454,11 +545,17 @@ bool json_path_set(json_doc_t *doc, const char *path, const json_node_t *value)
         return true;
     }
     cJSON *obj = (cJSON *)(void *)parent;
-    if (!cJSON_IsObject(obj) || cJSON_GetObjectItemCaseSensitive(obj, last) == NULL) {
+    if (!cJSON_IsObject(obj)) {
         cJSON_Delete(copy);
         return false;
     }
-    cJSON_ReplaceItemInObjectCaseSensitive(obj, last, copy);
+    /* A key the object already has is replaced; a missing one is added, which is
+     * what lets `ntp.timezone` land on a device with no `ntp` at all. */
+    if (cJSON_GetObjectItemCaseSensitive(obj, last) != NULL) {
+        cJSON_ReplaceItemInObjectCaseSensitive(obj, last, copy);
+    } else if (cJSON_AddItemToObject(obj, last, copy) == 0) {
+        return false;
+    }
     return true;
 }
 

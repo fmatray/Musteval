@@ -46,6 +46,19 @@ bool cfg_set(json_doc_t *doc, const char *path, const json_node_t *value)
     return json_path_set(doc, path, value);
 }
 
+bool cfg_needs_reboot(const char *path)
+{
+    if (path == NULL) return false;
+    /* `04` §4.2 names the boot-only fields. `ntp.timezone` is deliberately absent:
+     * `clock_init` applies it and `reload` re-runs `clock_init`. */
+    static const char *const kBoot[] = {"wifi.", "serial.", "ntp.servers"};
+    for (size_t i = 0; i < sizeof kBoot / sizeof kBoot[0]; i++) {
+        const size_t n = strlen(kBoot[i]);
+        if (strncmp(path, kBoot[i], n) == 0) return true;
+    }
+    return false;
+}
+
 esp_err_t cfg_emit(json_doc_t *doc, char *buf, size_t cap, size_t *written)
 {
     return json_emit(doc, buf, cap, written);

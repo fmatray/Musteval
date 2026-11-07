@@ -638,7 +638,7 @@ static esp_err_t handle_config_set(const json_node_t *args, json_node_t *root,
     if (!cfg_set(doc, path, value)) {
         json_free(doc);
         *code = "E_CONFIG";
-        *message = "no such path in config.json; a set never creates a parent key";
+        *message = "no such path in config.json; a set creates a missing object but never an array or array index";
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -694,8 +694,7 @@ static esp_err_t handle_config_set(const json_node_t *args, json_node_t *root,
     json_add_bool(root, "ok", true);
     json_add_string(result, "path", path);
     json_add_bool(result, "applied", true);
-    /* `wifi.*`, `serial.*` and `ntp.servers` are read at boot only (`04` §4.2). */
-    json_add_bool(result, "requires_reboot", false);
+    json_add_bool(result, "requires_reboot", cfg_needs_reboot(path));
     return ESP_OK;
 }
 

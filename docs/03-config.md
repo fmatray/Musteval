@@ -164,7 +164,9 @@ attempts. An empty list is a config error. Passwords are never inline.
 ### ntp
 
 `ntp.timezone` is a POSIX TZ string applied with `setenv("TZ", ...)`. `ntp.servers[]`
-is tried in order until one sync succeeds.
+is tried in order until one sync succeeds. The onboarding wizard writes both from one
+region choice (`05-bridge.md` §7.1) and `04` §4.9 records that a set creates a missing
+`ntp` object, so a device that has never had this block accepts the two keys.
 
 ```json
 {
