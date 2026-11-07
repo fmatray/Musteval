@@ -356,8 +356,8 @@ async def test_the_network_step_translates_the_stored_zone_back_to_a_region():
     )
 
 
-async def test_the_network_step_offers_a_pass_only_when_both_halves_are_stored():
-    """Ctrl+G must not walk a reader past a domain the device has not got."""
+async def test_a_fully_stored_network_step_says_the_pass_keeps_both_halves():
+    """`can_pass` still distinguishes a satisfied step; it no longer gates the key."""
     app = _app(Device())
     configured = {
         "wifi.networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}],
@@ -370,14 +370,19 @@ async def test_the_network_step_offers_a_pass_only_when_both_halves_are_stored()
         assert "Ctrl+G keeps both" in str(app.screen.query_one("#step-pass").render())
 
 
-async def test_the_network_step_offers_no_pass_without_a_stored_network():
-    """The zone alone is half the step; passing would leave the station unwritten."""
+async def test_the_network_step_passes_even_with_half_the_step_stored():
+    """The key must always work; the line says what passing would leave unset.
+
+    A silent refusal was the reported bug: the reader pressed Ctrl+G, the screen
+    did nothing, and nothing on it explained why. The cost is stated instead.
+    """
     app = _app(Device())
     async with app.run_test() as pilot:
         app.push_screen(NetworkStep({"ntp": {"timezone": "UTC0"}}, []))
         assert await _mounted(pilot, "#step-region")
         assert not app.screen.can_pass(), "no stored network: nothing to keep"
-        assert "Ctrl+G" not in str(app.screen.query_one("#step-pass").render())
+        note = str(app.screen.query_one("#step-pass").render())
+    assert "no stored network" in note and "unconfigured" in note, note
 
 
 async def test_the_network_pass_note_names_the_half_that_is_missing():
@@ -398,7 +403,7 @@ async def test_the_network_pass_note_names_both_when_both_are_absent():
         app.push_screen(NetworkStep({}, []))
         assert await _mounted(pilot, "#step-region")
         note = str(app.screen.query_one("#step-pass").render())
-    assert "no stored network or zone" in note, note
+    assert "nothing stored" in note and "unconfigured" in note, note
 
 
 async def test_the_provider_step_passes_only_over_a_stored_provider():
@@ -413,14 +418,16 @@ async def test_the_provider_step_passes_only_over_a_stored_provider():
         assert "Ctrl+G keeps it" in str(app.screen.query_one("#step-pass").render())
 
 
-async def test_the_provider_step_offers_no_pass_without_a_stored_provider():
+async def test_the_provider_step_passes_without_a_stored_provider():
+    """Same rule as the network step: the key works, the line names the cost."""
     entries, _ = providers.catalog()
     app = _app(Device())
     async with app.run_test() as pilot:
         app.push_screen(ProviderStep({}, entries))
         assert await _mounted(pilot, "#step-provider")
         assert not app.screen.can_pass()
-        assert "Ctrl+G" not in str(app.screen.query_one("#step-pass").render())
+        note = str(app.screen.query_one("#step-pass").render())
+    assert "nothing stored" in note and "unconfigured" in note, note
 
 
 async def test_pressing_pass_marks_the_step_and_sends_nothing():
@@ -439,6 +446,23 @@ async def test_pressing_pass_marks_the_step_and_sends_nothing():
     answered = box[0]
     assert answered.skip_network is True
     assert onboard.writes_network(answered) == []
+
+
+async def test_pressing_pass_on_an_unconfigured_step_dismisses_it():
+    """The reported bug, at the key: Ctrl+G inside the focused ssid Input.
+
+    A screen binding is reached by bubbling from the focused widget, so this asserts
+    the key path rather than the action in isolation.
+    """
+    app = _app(Device())
+    box: list[object] = []
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep({}, []), box.append)
+        assert await _mounted(pilot, "#step-region")
+        await pilot.press("ctrl+g")
+        await pilot.pause(0.2)
+    assert box, "Ctrl+G must dismiss an unconfigured step, not ignore it"
+    assert isinstance(box[0], onboard.Answers) and box[0].skip_network is True
 
 
 async def test_a_stored_zone_the_table_lacks_keeps_its_own_row():
@@ -540,6 +564,100 @@ async def test_passing_every_step_sends_only_the_document_read():
 
     assert device.writes() == [], device.writes()
     assert "reload:" not in device.order(), "a passed step has no write to apply"
+
+
+async def test_passing_an_unconfigured_step_still_continues():
+    """The reported bug: Ctrl+G on an unconfigured step was a silent no-op.
+
+    The key must reach the next step; what it leaves unset is the step line's job to
+    say, not the key's job to enforce.
+    """
+    device = Device()
+    app = _app(device)
+    seen: list[str] = []
+
+    async def fake_screen(screen):
+        seen.append(type(screen).__name__)
+        if isinstance(screen, NetworkStep):
+            return _answer(skip_network=True)
+        if isinstance(screen, ProviderStep):
+            return _answer(skip_provider=True)
+        if isinstance(screen, ModelStep):
+            return {"model": "", "thinking": "none", "skip_model": True}
+        return None
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        app.push_screen_wait = fake_screen  # type: ignore[method-assign]
+        app._config = {}
+        app._config_fetched = True
+        await app.onboard()
+
+    assert seen == ["NetworkStep", "ProviderStep", "ModelStep"], seen
+    assert device.writes() == []
+
+
+async def test_the_progress_screen_names_the_action_in_flight():
+    """A step's test is a round trip; the reader is told which one is running."""
+    from bridge.ui.modals import Working
+
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(Working("reloading the device", "re-running the boot sequence"))
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.screen.query("#working-action"):
+                break
+        title = str(app.screen.query_one("#working-action").render())
+        detail = str(app.screen.query_one("#working-detail").render())
+        assert isinstance(app.screen, Working)
+    assert title == "reloading the device"
+    assert "boot sequence" in detail
+
+
+async def test_the_progress_screen_has_no_escape():
+    """A cancel here would dismiss the screen its caller is still awaiting."""
+    from bridge.ui.modals import Working
+
+    assert "escape" not in {b.key for b in Working.BINDINGS}
+
+
+async def test_the_reload_shows_a_progress_screen_while_it_waits():
+    """`reload` blocks on net_connect; without the screen it looks hung.
+
+    Records every screen pushed while the reload is in flight, so a missing
+    progress screen fails here rather than being excused by an `or`.
+    """
+    from bridge.ui.modals import Working
+
+    device = Device()
+    app = _app(device)
+    pushed: list[str] = []
+    real_push = app.push_screen
+
+    def recording_push(screen, *args, **kwargs):
+        pushed.append(type(screen).__name__)
+        return real_push(screen, *args, **kwargs)
+
+    async def fake_screen(screen):
+        if isinstance(screen, NetworkStep):
+            return _answer(ssid="HomeLab", password="pw", auth="wpa2",
+                           timezone="UTC0", skip_network=False)
+        return None
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        app.push_screen_wait = fake_screen  # type: ignore[method-assign]
+        app.push_screen = recording_push  # type: ignore[method-assign]
+        app._config = {"wifi.networks": [], "wifi.connect_timeout_ms": 5000}
+        app._config_fetched = True
+        await app.onboard()
+        # Checked while the app is still running: after `run_test` returns there is
+        # no screen stack to ask.
+        assert pushed.count("Working") >= 2, pushed
+        assert not isinstance(app.screen, Working), "the screen is popped after the wait"
+
+    assert "reload:" in device.order(), device.order()
 
 
 async def test_cancelling_the_network_step_writes_nothing():

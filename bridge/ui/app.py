@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import asyncio
 import base64
 import os
@@ -27,6 +29,7 @@ from .help import COMMANDS, CommandSuggester, help_tabs, options
 from .history import PromptHistory
 from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import (
+    Working,
     HelpModal,
     ConfirmPrompt,
     FilePrompt,
@@ -1765,7 +1768,10 @@ class BridgeApp(App):
                 ),
                 "chat",
             )
-            await self._request("config.get")
+            async with self._working(
+                "reading the device's config", "one config.get, to pre-fill the form"
+            ):
+                await self._request("config.get")
             self.action_show(before)
 
         answers = await self._onboard_network()
@@ -1950,10 +1956,32 @@ class BridgeApp(App):
         code = error.get("code") if isinstance(error, dict) else error
         return False, str(code or "no code")
 
+    @asynccontextmanager
+    async def _working(self, action: str, detail: str):
+        """Show what the device is being asked, for as long as it takes to answer.
+
+        A step's proof is a round trip on the device's schedule, so without a line
+        saying so a wizard that is working is indistinguishable from one that has
+        hung. Popped in a `finally` because a raise out of the body would otherwise
+        leave the spinner on top of the next step forever.
+        """
+        self.push_screen(Working(action, detail))
+        # Let the screen mount before the blocking await, or the reader sees nothing
+        # until it is already gone.
+        await asyncio.sleep(0)
+        try:
+            yield
+        finally:
+            if isinstance(self.screen, Working):
+                self.pop_screen()
+
     async def _apply(self, plan: "list[tuple[str, dict[str, object]]]") -> bool:
         """Send a step's frames in order, stopping at the first refusal."""
         for kind, body in plan:
-            ok, why = await self._send_body(kind, body)
+            async with self._working(
+                "writing the config", f"{kind}: {next(iter(body.values()))!r}"
+            ):
+                ok, why = await self._send_body(kind, body)
             if not ok:
                 self._chat().write(f"onboard: refused ({why})")
                 return False
@@ -1965,9 +1993,13 @@ class BridgeApp(App):
         The reply is the device's own account of the boot sequence it just reran, so a
         step that depends on the network being up can read it rather than guess.
         """
-        ok, why = await self._send_body(
-            "command", {"name": "reload"}, timeout=self._reload_budget()
-        )
+        async with self._working(
+            "reloading the device",
+            "re-running the boot sequence: wifi, time, then the provider",
+        ):
+            ok, why = await self._send_body(
+                "command", {"name": "reload"}, timeout=self._reload_budget()
+            )
         self._chat().write(
             "onboard: reload: " + ("applied" if ok else f"refused ({why})")
         )
@@ -2009,9 +2041,13 @@ class BridgeApp(App):
         if entry is None or not entry.models_url:
             return []
         try:
-            return await asyncio.to_thread(
-                providers_mod.models, entry, answers.api_key, _http_fetch
-            )
+            async with self._working(
+                "asking the provider for its models",
+                f"{entry.label}: one GET with the key you typed",
+            ):
+                return await asyncio.to_thread(
+                    providers_mod.models, entry, answers.api_key, _http_fetch
+                )
         except Exception as err:  # noqa: BLE001 - a failed fetch is a chat line
             self._chat().write(f"model list: {err}")
             return []
@@ -2019,10 +2055,13 @@ class BridgeApp(App):
     async def _onboard_scan(self) -> tuple[list[dict], list[str]]:
         """The `wifi.scan` result and the lines worth showing about it."""
         try:
-            reply = await self.session.request(
-                Frame(type="command", id=new_id("b"), ts=0,
-                      body={"name": "wifi.scan", "args": {}})
-            )
+            async with self._working(
+                "scanning for networks", "wifi.scan; a few seconds, longer in a busy band"
+            ):
+                reply = await self.session.request(
+                    Frame(type="command", id=new_id("b"), ts=0,
+                          body={"name": "wifi.scan", "args": {}})
+                )
         except (SessionError, asyncio.TimeoutError):
             return [], ["scan unavailable; type the ssid"]
         if reply.type != "command.result" or not reply.body.get("ok"):

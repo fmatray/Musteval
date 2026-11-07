@@ -951,8 +951,12 @@ so the set is learnable once rather than per screen:
 | `Ctrl+S` | Save (editing only) |
 | `Ctrl+Y` | Toggle (follow mode, enabled state) |
 | `Ctrl+X` | Run or execute, or download |
+| `Ctrl+G` | Go on without changing what the device stores |
 
 A key that would mean two things on one screen is a design error, not a table entry.
+`Ctrl+G` was chosen over `Ctrl+P` because Textual claims the latter for its command
+palette, which swallows the binding inside a modal rather than passing it to the
+screen.
 
 ### 13.2 Colour
 
@@ -1095,16 +1099,32 @@ reader who expected a place. `providers.region_for_timezone` does the reverse lo
 and a zone the table does not list keeps its own `custom: <tz>` row — with no
 `ntp.servers` written, because guessing a pool could replace a working server.
 
-**Each step can be passed over with `Ctrl+G` when the device already answers it.**
-A step is skipped only when its own domain is stored — a network *and* a zone for
-step 1, a provider with a `base_url` and a model for step 2, a model for step 3 — and
-`Ctrl+G` on an unconfigured step does nothing rather than advancing. A passed step
-sends no frame and prints no verdict: a test that did not run must not report, or the
-reader learns to distrust the line that a real test produced. The step's own line says
-which it is: `network and zone stored; Ctrl+G keeps both`, or the half that is
-actually absent — `no stored zone; fill it in or Ctrl+S to write it`. Naming the missing
-half matters on the device that prompted the pass key: a configured network with no
-zone must not be reported as a missing network.
+**Each step can be passed over with `Ctrl+G`, configured or not.** The key always
+continues: a wizard that silently ignores a key the screen advertises is
+indistinguishable from a broken wizard, and the reader has no way to tell which step
+refused them or why. A passed step sends no frame, reloads nothing and prints no
+verdict — a test that did not run must not report, or the reader learns to distrust
+the line a real test produced. What the key keeps is the device's stored value; what
+it costs is named in the step's own line before it is pressed:
+
+|Stored for this step|Line|
+|---|---|
+|all of it|`network and zone stored; Ctrl+G keeps both`|
+|part of it|`no stored zone; Ctrl+G leaves it unconfigured`|
+|none of it|`nothing stored; Ctrl+G leaves this step unconfigured`|
+
+Naming the missing part matters on the device that prompted the key: a configured
+network with no zone must not be reported as a missing network. The consequence is
+stated rather than enforced, because the wizard's job is to make an unconfigured
+domain visible, not to refuse to continue past one.
+
+**A step's test runs behind a progress screen.** Each proof is a round trip the device
+answers on its own schedule — a `reload` waits on `net_connect`, a model fetch waits on
+an HTTPS call — so a wizard that is working looks exactly like a wizard that has hung.
+`Working` is pushed for the duration of the writes, the `reload` and the fetch, names
+the action in flight, and dismisses itself when the reply lands. It is not cancellable:
+the frame is already sent, and a cancel would leave its caller awaiting a screen the
+reader had dismissed.
 
 **Cancelling a step writes nothing and stops the wizard.** Each step is its own modal,
 so `Esc` at step 2 leaves the step-1 writes in place — they were already tested and
@@ -1117,3 +1137,12 @@ empty. `no config yet: Ctrl+R to fetch` tells the reader the next action; `no co
 leaves them to guess whether the device is silent, the screen is broken, or they are
 on the wrong screen. No screen may present a spinner or a blank panel where a word
 and a key would do.
+
+A **wait** is the one case with no key to offer, and there the word does all the work.
+A round trip the device answers on its own schedule — `reload` inside its handler,
+`wifi.scan`, a model fetch — is shown by `Working`, which names the action in flight
+and the command behind it (`reload: re-running the boot sequence`), and dismisses
+itself when the reply lands. The spinner beside that line is decoration; the sentence
+is the contract. `Working` binds no `Esc` and offers no cancel, because the frame is
+already sent: a cancel would dismiss the screen while its caller still awaited the
+device, and the two would disagree about which screen the reader is on.

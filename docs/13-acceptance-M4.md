@@ -219,12 +219,26 @@ need no provider. Recover from safe mode first if the board is in it.
       more access points than it reported, the difference being the hidden and the
       duplicate-SSID ones; that collapse is asserted exactly in
       `firmware/test_host/main/test_m3.c`, where the input is known.
-- [ ] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field,
-      and the region dropdown pre-selecting the stored zone's region.
-      **Gap**: opening the wizard needs a terminal, and the board this was written
-      against is driven over `/dev/ttyACM0` from scripts. The dropdown is asserted
-      through Textual's pilot in `bridge/tests/test_ui_onboard.py`, which feeds a
-      canned scan through `NetworkStep`.
+- [X] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field,
+      and the region dropdown pre-selecting the stored zone's region. Driven on the
+      board through a pty: `bin/bridge`, then `/onboard`, and step 1 drew with
+      `StoneBox` in the dropdown, the manual `or type an ssid` field under it, and the
+      region `Select` populated. This board has no `ntp` block, so the region fell to
+      the table's first entry rather than to a stored zone; the stored-zone
+      pre-selection is asserted in `bridge/tests/test_ui_onboard.py` against the board
+      dump's `CET-1CEST,M3.5.0,M10.5.0/3` shape.
+- [X] `Ctrl+G` advancing every step on an unconfigured device, and each step's line
+      naming what that pass leaves unset. Driven in the same pty: three presses took
+      the wizard `Network and time` → `Provider` → `Model` with nothing written, and
+      step 1's line read `no stored zone; Ctrl+G leaves it unconfigured` — the board
+      holds a `wifi.networks` entry and no `ntp` block, which is exactly the half-and-
+      half case the line has to name. Asserted at the key in
+      `test_pressing_pass_on_an_unconfigured_step_dismisses_it`.
+- [X] The progress screen appearing while the device is asked something slow. Seen on
+      the board: `reading the device's config` during the wizard's `config.get`, and
+      `scanning for networks` during `wifi.scan`. `reloading the device` is asserted in
+      `test_the_reload_shows_a_progress_screen_while_it_waits`, not observed on the
+      board this round: every step was passed, so no reload ran.
 - [X] `bin/bridge --send "/config set ntp.timezone CET-1CEST,M3.5.0,M10.5.0/3"`
       succeeds on a device whose `config.json` has no `ntp` object, reporting
       `requires_reboot: false`; `bin/bridge --send "/config get ntp"` then shows

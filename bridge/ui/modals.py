@@ -8,7 +8,15 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Select, Static, TabbedContent, TabPane, TextArea
+from textual.widgets import (
+    Input,
+    LoadingIndicator,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+    TextArea,
+)
 from textual.widgets.text_area import Selection
 
 from .. import providers
@@ -254,7 +262,7 @@ class _StepBox(PromptBox[Any]):
     #: is not deferred to the result.
     PROVES = ""
     SUMMARY = (
-        "Ctrl+S: continue | Ctrl+G: keep the current value | Esc: cancel | "
+        "Ctrl+S: continue | Ctrl+G: go on without writing | Esc: cancel | "
         "blank fields are left alone"
     )
 
@@ -294,22 +302,20 @@ class _StepBox(PromptBox[Any]):
     def action_pass_step(self) -> None:
         """Keep what the device has for this step and move on without writing.
 
-        Only offered when the step is already satisfied — a pass on an unconfigured
-        domain would send the reader to the next step with that domain still missing,
-        and the wizard exists to stop exactly that. `can_pass` is what the screen and
-        this action both consult, so the key cannot do more than the line promised.
+        Always available. Refusing on an unconfigured step was indistinguishable from
+        a broken key: the reader pressed it, nothing happened, and the screen did not
+        say which half was missing. `pass_note` states the cost instead, before the
+        key is pressed, and the action lets the reader decide.
         """
-        if not self.can_pass():
-            return
         self.passed = True
         self.dismiss(self.answer())
 
     def can_pass(self) -> bool:
-        """Whether the stored config already answers this step."""
+        """Whether the stored config already answers this step, which `pass_note` says."""
         return False
 
     def pass_note(self) -> str:
-        """One line naming whether Ctrl+G is available and what it would keep."""
+        """One line naming what `Ctrl+G` would keep, and what it would leave unset."""
         return ""
 
     def answer(self) -> Any:
@@ -451,7 +457,9 @@ class NetworkStep(_StepBox):
         ]
         if not missing:
             return "network and zone stored; Ctrl+G keeps both"
-        return f"no stored {' or '.join(missing)}; fill it in or Ctrl+S to write it"
+        if len(missing) == 2:
+            return "nothing stored; Ctrl+G leaves this step unconfigured"
+        return f"no stored {missing[0]}; Ctrl+G leaves it unconfigured"
 
     def answer(self) -> onboard.Answers:
         typed = self.query_one("#step-ssid", Input).value.strip()
@@ -534,10 +542,11 @@ class ProviderStep(_StepBox):
 
     def pass_note(self) -> str:
         stored = self._stored()
-        return (
-            f"{stored.get('id') or 'provider'} stored; Ctrl+G keeps it"
-            if self.can_pass() else "no stored provider; fill this step in"
-        )
+        if self.can_pass():
+            return f"{stored.get('id') or 'provider'} stored; Ctrl+G keeps it"
+        if stored.get("base_url"):
+            return "no stored model; Ctrl+G keeps the provider unconfigured"
+        return "nothing stored; Ctrl+G leaves this step unconfigured"
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """A provider choice fills the base url, so the reader does not retype it."""
@@ -647,10 +656,9 @@ class ModelStep(_StepBox):
         return bool(self.model)
 
     def pass_note(self) -> str:
-        return (
-            f"{self.model} stored; Ctrl+G keeps it"
-            if self.can_pass() else "no stored model; pick one"
-        )
+        if self.can_pass():
+            return f"{self.model} stored; Ctrl+G keeps it"
+        return "no stored model; Ctrl+G leaves the provider unconfigured"
 
 
 class FilePrompt(PromptBox[str | None]):
@@ -799,6 +807,46 @@ class FilePrompt(PromptBox[str | None]):
         # The body is the return value; `Esc` reaching `PromptBox`'s cancel
         # yields `None`, so a discarded edit is distinguishable from saving.
         self.dismiss(self.query_one("#file-body", TextArea).text)
+
+
+class Working(PromptBox[None]):
+    """What the reader watches while a step's test runs.
+
+    Each step's proof is a round trip the device answers on its own schedule: a
+    `reload` waits on `net_connect`, a model fetch waits on an HTTPS call. Without a
+    line saying so, a wizard that is working looks exactly like a wizard that has
+    hung, which is what made a slow-but-correct first step read as a failure.
+
+    Not cancellable: the request is already in flight and the step that asked for it
+    owns the result. `Esc` is bound to nothing on purpose — `PromptBox`'s cancel would
+    dismiss this screen while its caller was still awaiting the device, and the two
+    would then disagree about which screen the reader is on.
+    """
+
+    BINDINGS: list[Binding] = []
+    CSS = _CSS + """
+.prompt-box.working-box {
+    width: 60;
+    max-width: 100%;
+}
+.working-action {
+    text-style: bold;
+    color: $accent;
+}
+"""
+
+    def __init__(self, action: str, detail: str) -> None:
+        super().__init__()
+        self.action_text = action
+        self.detail = detail
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="prompt-box working-box"):
+            yield Static(self.action_text, classes="working-action", id="working-action")
+            yield LoadingIndicator(id="working-spinner")
+            yield Static(self.detail, classes="prompt-hint", id="working-detail")
+            yield Static("this cannot be cancelled; the device is answering",
+                         classes="prompt-hint")
 
 
 class HelpModal(ModalScreen[None]):
