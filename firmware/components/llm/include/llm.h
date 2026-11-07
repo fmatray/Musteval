@@ -85,6 +85,11 @@ size_t llm_endpoint(const char *base_url, char *out, size_t cap);
  * Returns the next index, or -1 when the chain is exhausted. */
 int llm_next_provider(int current, int count);
 
+/* Whether the chain walk may visit `index`. `llm_next_provider` returns -1 to end the
+ * walk, so a caller must test this rather than `index < count`, which is true for -1
+ * and would read `providers[-1]` forever. */
+bool llm_provider_loop_ok(int index, int count);
+
 /* --- Board-only ----------------------------------------------------------- */
 
 /* Load `llm.providers[]`, resolve each `api_key_ref`, and restore the persisted

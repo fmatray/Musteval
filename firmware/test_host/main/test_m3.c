@@ -254,6 +254,48 @@ TEST_CASE("tools are sent only when offered", "[m3]")
     TEST_ASSERT_NOT_NULL(strstr(out, "\"tools\":[{\"type\":\"function\"}]"));
 }
 
+/* A later round carries no `user_prompt`: the history already has it, and the last
+ * message of the request is the tool result (`02-firmware.md` §4.1 step 4). Sending
+ * it again put the user turn after the tool replies and asked the question twice. */
+TEST_CASE("a later round sends history only, with no repeated user turn", "[m3]")
+{
+    llm_request_t r = {
+        .model = "m",
+        .system_prompt = "s",
+        .user_prompt = NULL,
+        .history_json = "[{\"role\":\"user\",\"content\":\"hi\"},"
+                        "{\"role\":\"tool\",\"tool_call_id\":\"c1\","
+                        "\"content\":\"{}\"}]",
+    };
+    char out[512];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&r, NULL, out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"model\":\"m\",\"messages\":["
+        "{\"role\":\"system\",\"content\":\"s\"},"
+        "{\"role\":\"user\",\"content\":\"hi\"},"
+        "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{}\"}],"
+        "\"max_tokens\":1024,\"stream\":false}",
+        out);
+}
+
+/* History alone still produces a well-formed `messages` array, with no leading or
+ * trailing comma and no empty element. */
+TEST_CASE("history joins without a stray comma", "[m3]")
+{
+    llm_request_t r = {
+        .model = "m",
+        .history_json = "[{\"role\":\"user\",\"content\":\"a\"}]",
+    };
+    char out[256];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&r, NULL, out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"model\":\"m\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"a\"}],"
+        "\"max_tokens\":1024,\"stream\":false}",
+        out);
+    TEST_ASSERT_NULL(strstr(out, ",]"));
+}
+
 /* The endpoint is `base_url` plus `/chat/completions`, appended verbatim
  * (`03-config.md` §Provider compatibility). */
 TEST_CASE("the endpoint appends /chat/completions verbatim", "[m3]")
@@ -276,5 +318,18 @@ TEST_CASE("the provider chain is walked once", "[m3]")
     TEST_ASSERT_EQUAL_INT(-1, llm_next_provider(1, 2));
     TEST_ASSERT_EQUAL_INT(-1, llm_next_provider(0, 1));
     TEST_ASSERT_EQUAL_INT(-1, llm_next_provider(0, 0));
+}
+
+/* The sentinel -1 must end the walk. A `for` guard of `index < count` is true for -1,
+ * so the chain walk reads `providers[-1]` and loops forever: the run never returns,
+ * `agent.busy` stays true, and the device stops answering prompts. */
+TEST_CASE("the exhausted chain sentinel ends the walk", "[m3]")
+{
+    TEST_ASSERT_TRUE(llm_provider_loop_ok(0, 2));
+    TEST_ASSERT_TRUE(llm_provider_loop_ok(1, 2));
+    TEST_ASSERT_FALSE(llm_provider_loop_ok(llm_next_provider(1, 2), 2));
+    TEST_ASSERT_FALSE(llm_provider_loop_ok(-1, 1));
+    /* An empty chain never enters the walk at all. */
+    TEST_ASSERT_FALSE(llm_provider_loop_ok(llm_next_provider(0, 0), 0));
 }
 

@@ -22,8 +22,7 @@ size_t llm_endpoint(const char *base_url, char *out, size_t cap)
 size_t llm_assemble_prompt(const llm_request_t *request, const char *extra_body_json,
                       char *out, size_t cap)
 {
-    if (request == NULL || request->model == NULL || request->user_prompt == NULL ||
-        out == NULL || cap == 0) {
+    if (request == NULL || request->model == NULL || out == NULL || cap == 0) {
         return 0;
     }
 
@@ -51,25 +50,40 @@ size_t llm_assemble_prompt(const llm_request_t *request, const char *extra_body_
         used += (size_t)n;                                                              \
     } while (0)
 
+    /* Each message is joined with a leading comma rather than a trailing one, so the
+     * last message needs no special case and `messages` is never left ending in `,`. */
+    bool first = true;
+
     if (request->system_prompt != NULL && request->system_prompt[0] != '\0') {
         APPEND("{\"role\":\"system\",\"content\":");
         if (!llm_escape_json(request->system_prompt, out, cap, &used)) return 0;
-        APPEND("},");
+        APPEND("}");
+        first = false;
     }
-    /* History is spliced verbatim after the system message and before the user's:
-     * it is already the `role`/`content` object shape the provider expects, and
-     * re-encoding it here would have to re-implement tool-call messages. */
+    /* History is spliced verbatim: it is already the `role`/`content` object shape the
+     * provider expects, and re-encoding it here would have to re-implement tool-call
+     * messages. */
     if (request->history_json != NULL) {
         const char *open = strchr(request->history_json, '[');
         const char *close = strrchr(request->history_json, ']');
         if (open != NULL && close != NULL && close > open + 1) {
             size_t inner = (size_t)(close - open - 1);
-            APPEND("%*.*s,", (int)inner, (int)inner, open + 1);
+            APPEND("%s%*.*s", first ? "" : ",", (int)inner, (int)inner, open + 1);
+            first = false;
         }
     }
-    APPEND("{\"role\":\"user\",\"content\":");
-    if (!llm_escape_json(request->user_prompt, out, cap, &used)) return 0;
-    APPEND("}]");
+    /* `user_prompt` is the run's own prompt, which is only the *last* message on the
+     * first round. On every later round the history already carries it, and the last
+     * message is a tool result — appending it again would send it twice and put the
+     * user turn after the tool replies (`02-firmware.md` §4.1 step 4). */
+    if (request->user_prompt != NULL) {
+        if (!first) APPEND(",");
+        APPEND("{\"role\":\"user\",\"content\":");
+        if (!llm_escape_json(request->user_prompt, out, cap, &used)) return 0;
+        APPEND("}");
+        first = false;
+    }
+    APPEND("]");
 
     /* `tools` is omitted rather than sent empty: an empty array is accepted by some
      * providers and rejected by others, while the absent key is ignored by all
@@ -152,4 +166,13 @@ int llm_next_provider(int current, int count)
     /* The chain is ordered and tried once per attempt: wrapping would let a flapping
      * provider spend the budget in a loop (`02-firmware.md` §llm). */
     return next < count ? next : -1;
+}
+
+bool llm_provider_loop_ok(int index, int count)
+{
+    /* The guard the chain walk uses. `-1` is `llm_next_provider`'s "exhausted" and
+     * must end the walk: a bare `index < count` is true for -1, reads
+     * `providers[-1]` and then keeps walking, which is an out-of-bounds read plus a
+     * loop that never returns. */
+    return index >= 0 && index < count;
 }

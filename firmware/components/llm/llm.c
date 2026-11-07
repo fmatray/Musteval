@@ -163,7 +163,11 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
     static char s_endpoint[192];
     static char s_auth[CFG_SECRET_MAX + 16];
 
-    for (int index = 0; index < (int)s_provider_count; index = llm_next_provider(index, (int)s_provider_count)) {
+    /* `llm_next_provider` returns -1 at the end of the chain, so the guard is on the
+     * next index rather than a `for` increment: `index < count` is true for -1 and
+     * would walk the array backwards out of bounds forever. */
+    int index = 0;
+    while (llm_provider_loop_ok(index, (int)s_provider_count)) {
         llm_provider_t *p = &s_providers[index];
 
         /* Charged before the socket, once per attempt, across the whole chain
@@ -179,6 +183,7 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
         if (p->api_key[0] == '\0') {
             snprintf(s_last_error, sizeof s_last_error, "%s: api key not set", p->id);
             ESP_LOGW(TAG, "llm: %s", s_last_error);
+            index = llm_next_provider(index, (int)s_provider_count);
             continue;
         }
 
@@ -189,11 +194,13 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
 
         if (llm_endpoint(p->base_url, s_endpoint, sizeof s_endpoint) == 0) {
             snprintf(s_last_error, sizeof s_last_error, "%s: base_url too long", p->id);
+            index = llm_next_provider(index, (int)s_provider_count);
             continue;
         }
         if (llm_assemble_prompt(&attempt, p->extra_body[0] != '\0' ? p->extra_body : NULL,
                            s_body, sizeof s_body) == 0) {
             snprintf(s_last_error, sizeof s_last_error, "%s: request body too large", p->id);
+            index = llm_next_provider(index, (int)s_provider_count);
             continue;
         }
         snprintf(s_auth, sizeof s_auth, "Bearer %s", p->api_key);
@@ -205,6 +212,7 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
             snprintf(s_last_error, sizeof s_last_error, "%s: %s", p->id,
                      esp_err_to_name(err));
             ESP_LOGW(TAG, "llm: %s", s_last_error);
+            index = llm_next_provider(index, (int)s_provider_count);
             continue;
         }
 
@@ -214,6 +222,7 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
             snprintf(s_last_error, sizeof s_last_error, "%s: http %d", p->id, resp.status);
             ESP_LOGW(TAG, "llm: %s", s_last_error);
             free(resp.body);
+            index = llm_next_provider(index, (int)s_provider_count);
             continue;
         }
 
