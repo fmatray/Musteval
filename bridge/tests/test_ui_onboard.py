@@ -367,3 +367,161 @@ async def test_a_hidden_picker_contributes_no_extra_body():
         pilot.app.screen.query_one("#onboard-provider").value = "ollama-cloud"
         await pilot.pause(0.15)
         assert pilot.app.screen.answers().extra_body == {}
+
+
+async def _open_with(pilot, **kwargs) -> bool:
+    """Push the wizard with explicit `OnboardPrompt` arguments."""
+    from bridge.ui.modals import OnboardPrompt
+
+    provider_rows = (kwargs.pop("current", {}) or {})
+    pilot.app.push_screen(OnboardPrompt(provider_rows, **kwargs))
+    for _ in range(60):
+        await pilot.pause(0.05)
+        try:
+            pilot.app.screen.query_one("#onboard-model-select")
+        except Exception:
+            continue
+        return True
+    return False
+
+
+async def _stub_fetch(names: list[str]):
+    """A fetch callback standing in for the provider's own endpoint."""
+
+    async def fetch(entry, api_key: str) -> list[str]:
+        fetch.calls.append((entry.id, api_key))
+        return list(names)
+
+    fetch.calls = []
+    return fetch
+
+
+async def test_the_fetched_list_is_selected_not_just_offered():
+    """A list in the dropdown with nothing selected is an empty answer.
+
+    `Select.set_options` resets the selection, so the value has to be set again
+    afterwards. The symptom when it is not: a model list is visible, the reader
+    accepts it, and `answers()` still reads no model, which drops the whole
+    `llm.providers` write.
+    """
+    fetch = await _stub_fetch(["m-one", "m-two"])
+    app = BridgeApp(
+        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
+    )
+    async with app.run_test() as pilot:
+        assert await _open_with(pilot, providers=providers.catalog()[0], fetch_models=fetch)
+        pilot.app.screen.query_one("#onboard-provider").value = "openrouter"
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if pilot.app.screen.query_one("#onboard-model-select").value == "m-one":
+                break
+        select = pilot.app.screen.query_one("#onboard-model-select")
+        answers = pilot.app.screen.answers()
+
+    assert select.value == "m-one"
+    assert answers.model == "m-one"
+    assert fetch.calls == [("openrouter", "")]
+
+
+async def test_the_list_loads_when_the_form_opens():
+    """The configured provider's list is there before the reader touches anything.
+
+    They may accept every pre-filled value and press `Ctrl+S`, so a blank dropdown
+    is not a field waiting to be filled — it is a write that will be skipped.
+    """
+    fetch = await _stub_fetch(["m-one", "m-two"])
+    app = BridgeApp(
+        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
+    )
+    current = {
+        "llm": {
+            "providers": [
+                {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1",
+                 "model": "m-two", "api_key_ref": "nvs:llm_api_key"}
+            ]
+        }
+    }
+    async with app.run_test() as pilot:
+        assert await _open_with(
+            pilot, current=current, providers=providers.catalog()[0], fetch_models=fetch
+        )
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if fetch.calls:
+                break
+        select = pilot.app.screen.query_one("#onboard-model-select")
+
+    assert fetch.calls == [("openrouter", "")]
+    assert select.value == "m-two", "the configured model is kept when still offered"
+
+
+async def test_typing_a_key_refetches_the_list():
+    """Most providers answer 401 without a key, so the list has to follow the key."""
+    fetch = await _stub_fetch(["m-one"])
+    app = BridgeApp(
+        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
+    )
+    async with app.run_test() as pilot:
+        assert await _open_with(pilot, providers=providers.catalog()[0], fetch_models=fetch)
+        pilot.app.screen.query_one("#onboard-provider").value = "openrouter"
+        await pilot.pause(0.1)
+        before = len(fetch.calls)
+        await _fill(pilot, "#onboard-api-key", "sk-test")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if len(fetch.calls) > before:
+                break
+
+    assert fetch.calls[-1] == ("openrouter", "sk-test")
+
+
+def test_a_started_provider_without_a_model_says_it_will_skip():
+    """A half-filled LLM domain must narrate the skip, not do nothing quietly."""
+    answers = onboard.Answers(
+        ssid="", password="", base_url="https://openrouter.ai/api/v1",
+        api_key="sk-test", model="", provider="openrouter",
+    )
+    assert onboard.writes(answers) == [("secret", {"key": onboard.LLM_KEY, "value": "sk-test"})]
+    assert any("skips llm.providers" in line for line in onboard.narration(answers, {}))
+
+
+async def test_a_flattened_config_still_prefills_the_form():
+    """`app.py` holds the config flattened, so a nested read found nothing.
+
+    Every field opened empty and the provider was blank, which is what left the model
+    list unloaded. The form has to read the shape the app actually holds, or the
+    pre-fill it promises never happens.
+    """
+    from bridge.ui.settings import flatten
+
+    nested = {
+        "wifi": {"networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}]},
+        "llm": {"providers": [{"id": "openrouter",
+                               "base_url": "https://openrouter.ai/api/v1",
+                               "model": "m-one", "api_key_ref": "nvs:llm_api_key"}]},
+        "ntp": {"timezone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+    }
+    fetch = await _stub_fetch(["m-one", "m-two"])
+    app = BridgeApp(
+        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
+    )
+    async with app.run_test() as pilot:
+        assert await _open_with(
+            pilot, current=flatten(nested), providers=providers.catalog()[0],
+            fetch_models=fetch,
+        )
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if fetch.calls:
+                break
+        screen = pilot.app.screen
+        provider = screen.query_one("#onboard-provider")
+        ssid = screen.query_one("#onboard-ssid-select")
+        base_url = screen.query_one("#onboard-base-url")
+        answers = screen.answers()
+
+    assert provider.value == "openrouter"
+    assert ssid.value == "HomeLab"
+    assert base_url.value == "https://openrouter.ai/api/v1"
+    assert answers.model == "m-one"
+    assert fetch.calls == [("openrouter", "")]

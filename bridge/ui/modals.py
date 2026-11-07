@@ -270,6 +270,8 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
         self.providers = providers or []
         #: The chosen provider's model names, or empty for a typed model.
         self.models = models or []
+        #: The `(provider, key)` whose list is already in the dropdown.
+        self._loaded: tuple[str, str] | None = None
 
     @staticmethod
     def _select(
@@ -298,13 +300,11 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
         Pre-filling is what makes the form revisable: the previous answer is already
         there, so the reader edits instead of retyping blind.
         """
-        existing = self.current or {}
-        networks = (existing.get("wifi") or {}).get("networks") or []
+        networks = self._existing("wifi.networks") or []
         first = networks[0] if networks else {}
-        provider_rows = (existing.get("llm") or {}).get("providers") or []
+        provider_rows = self._existing("llm.providers") or []
         provider = provider_rows[0] if provider_rows else {}
-        ntp = existing.get("ntp") or {}
-        current_tz = str(ntp.get("timezone") or "")
+        current_tz = str(self._existing("ntp.timezone") or "")
 
         ssids = [str(n.get("ssid") or "") for n in self.scan if n.get("ssid")]
         current_ssid = str(first.get("ssid") or "")
@@ -395,9 +395,36 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
             )
 
     def on_mount(self) -> None:
-        """Seed the picker's visibility from the provider already configured."""
+        """Seed the picker's visibility, and the model list, from the config.
+
+        A form opened on a provider that publishes a list must show that list: the
+        reader may accept every pre-filled value and press `Ctrl+S`, so an empty model
+        dropdown is not a form waiting to be filled, it is a write that will be
+        skipped.
+        """
         chosen = self.query_one("#onboard-provider", Select).value
-        self._show_thinking(chosen if isinstance(chosen, str) else "")
+        provider_id = chosen if isinstance(chosen, str) else ""
+        self._show_thinking(provider_id)
+        if provider_id:
+            self.run_worker(self._load_models(provider_id))
+
+    def _existing(self, path: str) -> object | None:
+        """One config value by dotted path, from either shape `app.py` may hold.
+
+        `app.py` keeps the config flattened (`settings.flatten`), so a nested read
+        found nothing and every field opened empty — including the provider, which is
+        what left the model list unloaded. Both shapes are accepted because this form
+        is constructed directly in tests with a nested document.
+        """
+        current = self.current or {}
+        if path in current:
+            return current[path]
+        value: object = current
+        for segment in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(segment)
+        return value
 
     def _chosen(self, select_id: str, input_id: str) -> str:
         """The dropdown's value, or the text field's when one is typed.
@@ -449,6 +476,19 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
             ntp_server=server,
         )
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Re-offer the model list once a key is typed.
+
+        Most providers answer `401` without one, so the fetch made when the form
+        opened came back empty and the dropdown stayed blank. The reader types the
+        key, and the list they were promised arrives without them having to reselect
+        the provider.
+        """
+        if event.input.id == "onboard-api-key" and event.value.strip():
+            provider_id = self.query_one("#onboard-provider", Select).value
+            if isinstance(provider_id, str) and provider_id:
+                self.run_worker(self._load_models(provider_id))
+
     async def on_select_changed(self, event: Select.Changed) -> None:
         """A provider choice fills the base url and fetches its model list.
 
@@ -468,13 +508,44 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
         # A thinking level is only meaningful for the provider it was chosen for.
         self._show_thinking(provider_id)
 
+        await self._load_models(provider_id)
+
+    async def _load_models(self, provider_id: str) -> None:
+        """Fetch `provider_id`'s model names into the dropdown and select one.
+
+        `set_options` resets the selection, so the value is set again afterwards.
+        Without that the box renders blank and `answers()` reads no model at all,
+        which drops the whole `llm.providers` write — the form submits, the reader
+        sees a model chosen, and nothing is written.
+
+        The configured model is kept when the provider still offers it; otherwise the
+        first name is selected, because a filled dropdown with nothing chosen is the
+        same empty answer as an unfilled one.
+        """
+        entry = next((p for p in self.providers if p.id == provider_id), None)
+        if entry is None:
+            return
+        select = self.query_one("#onboard-model-select", Select)
         if self._fetch_models is None or not entry.models_url:
             return
         key = self.query_one("#onboard-api-key", Input).value.strip()
+        # Mount and a `Changed` for the pre-filled provider both fire, so the same
+        # list is not requested twice for one provider and key.
+        if self._loaded == (provider_id, key):
+            return
+        self._loaded = (provider_id, key)
         models = await self._fetch_models(entry, key)
-        select = self.query_one("#onboard-model-select", Select)
+        rows = self._existing("llm.providers")
+        configured = str((rows or [{}])[0].get("model") or "") if isinstance(rows, list) else ""
+        keep = (
+            self.query_one("#onboard-model", Input).value.strip()
+            or select.value
+            or configured
+        )
         select.set_options(self._options(models, ""))
-        if not models:
+        if models:
+            select.value = keep if keep in models else models[0]
+        else:
             self.query_one("#onboard-model", Input).placeholder = (
                 "no list from this provider; type the model"
             )

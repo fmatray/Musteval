@@ -79,6 +79,17 @@ class Answers:
     ntp_server: str = ""
 
 
+def needs_model(answers: Answers) -> bool:
+    """A provider the reader started filling but left without a model.
+
+    `03-config.md` makes `model` required, so there is nothing to write. Saying so is
+    the difference between a form that refused and a form that silently did nothing:
+    an empty model dropdown reads as "not chosen yet", not as "this domain will be
+    skipped".
+    """
+    return bool(answers.base_url and answers.api_key and not answers.model)
+
+
 def network_writable(answers: Answers) -> bool:
     """Whether this network can be written at all.
 
@@ -156,6 +167,8 @@ def narration(answers: Answers, current: dict[str, object]) -> list[str]:
         else:
             lines.append("creates wifi.networks (1 entry)")
     providers_now = current.get("llm.providers")
+    if needs_model(answers):
+        lines.append("skips llm.providers: no model, and the schema requires one")
     if answers.base_url and answers.model and answers.api_key:
         if isinstance(providers_now, list):
             lines.append(

@@ -1046,6 +1046,20 @@ publish, and a timezone region the table lacks are all reachable by typing, so t
 wizard never traps a reader behind a list that did not load. A `Select` whose list is
 empty is shown with its manual field open rather than as a closed box with no rows.
 
+**A loaded list is also a selected one.** A list in a `Select` with no value chosen
+reads the same as a field the reader has not reached yet, so the wizard selects the
+configured model when the provider still offers it and the first name otherwise. A
+provider's list is fetched when the form opens, not only when the reader changes the
+provider, because a reader may accept every pre-filled value and submit: a blank
+dropdown there is not a pending field, it is a domain the plan will skip. The list is
+fetched again when an API key is typed, because a provider that answers `401` without
+one returns nothing the first time.
+
+**The form reads the config in the shape the app holds it.** `app.py` keeps the config
+flattened to dotted paths (`settings.flatten`), so a pre-fill that reads nested keys
+finds nothing and the whole form opens empty — including the provider, which is what
+leaves the model list unloaded.
+
 ### 13.7 Empty and loading states
 
 A screen with no data says **which command would fill it**, not only that it is
