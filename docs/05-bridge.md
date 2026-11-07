@@ -697,16 +697,101 @@ neither `command` nor `(Local)` send the frame named in their mapping instead:
 `/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping` sends `ping`,
 `/diag` sends `status`, and `/cancel` sends `cancel`.
 
-`/onboard`'s writes are whole-array sets rather than per-leaf paths:
+`/onboard`'s writes are whole-value sets rather than per-leaf paths:
 `config.set` with path `wifi.networks.0.ssid` assumes index 0 exists, and `04` §4.9
 does not say that setting a missing index creates the array. `03` revalidates the
-whole file, so on a fresh device the per-leaf form would plausibly answer
-`E_CONFIG` at the second step, and on a configured one it would silently overwrite
-network 0. `[ASSUMPTION]`: a whole-array `config.set` replaces `wifi.networks` and
-`llm.providers` wholesale and is accepted on a device that has no such array yet.
-If that is wrong, `/onboard` reports the device's `E_CONFIG` and writes no config;
-the two `secret.set` frames before it have already landed, which is harmless — a
-stored key nothing references is inert.
+whole file, so on a fresh device the per-leaf form would answer `E_CONFIG` at the
+second step, and on a configured one it would silently overwrite network 0.
+`wifi.networks` and `llm.providers` are therefore sent as whole arrays, and
+`ntp.servers` as a whole array with `ntp.timezone` beside it. `04` §4.9 defines a
+set as creating a missing **object** parent, which is what lets a device with no
+`ntp` block at all accept the timezone; it never creates a missing array index or
+array, which is why the arrays go whole.
+
+### 7.1 The provider catalog
+
+`/onboard` offers providers, models and thinking levels from a catalog that lives
+on the host, in `bridge/providers.py` at L2. The device never sees it: a provider
+entry reaches the device only as the `base_url`, `model`, `token_param` and
+`extra_body` fields of `llm.providers[]`, which is all `03-config.md` gives it. This
+keeps a growing catalog of providers and model names out of a 3 MiB firmware image
+and off its update cycle.
+
+**The catalog is data, not behaviour.** Each entry is a name, a `base_url`, an
+optional model-list endpoint and the thinking levels the provider's models accept:
+
+| Field | Meaning |
+|---|---|
+| `id` | The `llm.providers[].id` written to the device: `[a-z0-9_-]{1,16}` |
+| `label` | What the dropdown shows (`OpenAI`, `Ollama (local)`) |
+| `base_url` | The request prefix, version path included, because the firmware appends `/chat/completions` verbatim |
+| `models_url` | Optional; the absolute URL returning the model list, because a custom provider's list may live on another host than its `base_url`. Absent means the provider has no list this bridge can read |
+| `thinking` | `none`, or the `extra_body` member names that express a level |
+| `needs_key` | `false` for a local server that ignores the header but still requires it |
+
+The built-in list covers the providers `03-config.md` §Provider compatibility
+already documents, in that table's order, because it is the frozen statement of what
+the firmware can talk to and a second list would drift from it. Adding a provider the
+firmware can already reach is a catalog entry, not a code change. The same table
+decides `token_param`: the rows that say to set `max_completion_tokens` are
+transcribed once as `TOKEN_PARAM` in `bridge/providers.py`, and every other provider
+keeps the firmware default.
+
+**Models come from the provider when it publishes them.** With `models_url` set,
+the bridge fetches it with the key the reader just typed and offers the result. The
+call happens on a worker thread, never on the UI thread, and a failure — no network,
+a rejected key, a shape this bridge does not recognise — is reported as one chat
+line and leaves the model field free-text. The field is never left empty and the
+wizard never blocks on a provider being reachable: a manual model name is always
+accepted, which is also the only route for a provider with no `models_url`.
+
+The two list shapes in use are OpenAI's `{"data":[{"id":"..."}]}` and Ollama's
+`{"models":[{"name":"..."}]}`. Both are accepted; anything else is "no list", not
+an error, because a provider that answers 200 with an unfamiliar document is not
+broken.
+
+**Thinking levels are only offered where the provider takes them.** A level is
+written into `llm.providers[].extra_body`, which `03-config.md` merges into the
+request verbatim and caps at four flat members. So:
+
+| Catalog `thinking` | Levels offered | `extra_body` written |
+|---|---|---|
+| `none` | none; the field is absent | nothing |
+| `reasoning_effort` | `none`, `low`, `medium`, `high` | `{"reasoning_effort":"<level>"}` |
+| `thinking_budget` | the same names, mapped to token budgets | `{"thinking_budget":<n>}` |
+
+A provider with `thinking: none` shows no level picker rather than a disabled one:
+the device passes `extra_body` straight through, so a level written for a provider
+that rejects the member turns every call into a 400. Where the picker is absent,
+`extra_body` is left as the device had it.
+
+**Custom providers come from a host file, not a screen.** `~/.config/musteval/
+providers.json` (honouring `XDG_CONFIG_HOME`) is a list of entries in the same shape
+as the built-ins; an entry sharing an `id` replaces the built-in, which is how a
+reader corrects a stale `base_url` without patching the bridge. The file is read
+when the wizard opens. A malformed file is reported as one chat line naming the
+path and the parse error, and the built-ins are used alone — a broken local file
+never costs the reader the ability to onboard a device. A custom entry that is
+missing `id`, `base_url` or `label` is skipped with its reason named, because a
+half-entry cannot be written to the device and silently dropping it would look like
+the file was not read.
+
+`[ASSUMPTION]`: a model list is fetched with the same bearer token that will be
+written to the device. If a provider requires a token exchange or a different scope
+for its list endpoint, that provider's `models_url` is left unset and the model is
+typed. The consequence of being wrong is a failed fetch and a chat line, not a
+broken write.
+
+Time is the third domain. `ntp.timezone` takes a **POSIX TZ string**, not an IANA
+name — the firmware applies it with `setenv("TZ", ...)`, which knows no
+`Europe/Amsterdam`. The dropdown therefore offers named regions and maps each to its
+POSIX string. The `ntp.servers` value is derived from the same choice: the ntppool
+zone whose servers are nearest to that region (`europe`, `north-america`, `asia`,
+`oceania`, `south-america`, `africa`), written as `0.<zone>.pool.ntp.org`. Two rows
+from two regions that share a zone still differ in `timezone`, so the map is region
+→ (TZ, zone), not zone → TZ. A region whose country zone exists is not used:
+`ntppool.org` documents that a country zone may hold one or two servers or none at
+all, and the continental zone is the safer of the two.
 
 4. **Link token**: the value sent as `hello.token` is a bridge-side config value that the user sets when provisioning the device (`06-security.md` §9); it is not a slash command and the bridge never prints it.
 `/fs put <p>` is the one command that sends more than one frame per invocation: it

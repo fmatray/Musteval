@@ -59,6 +59,15 @@ order, and what is refused before the first byte lands — is testable without a
 terminal or a port. `ui` supplies the callbacks. It is not filed under `ui/` for the
 same reason `commands.py` is not: the part that can be wrong has no widgets in it.
 
+`bridge/providers.py` sits at **L2** beside them: the LLM provider catalog that
+`/onboard` offers (`05-bridge.md` §7.1). It imports `protocol` and nothing else from
+the tree. The two things that would otherwise make it untestable are callbacks: the
+model fetch takes a `fetch(url, key) -> bytes` callable, and the custom-provider file
+takes a path. So the catalog's merge rules, the model-list parsing, the thinking
+level mapping and the timezone table are all pure and host-tested, and only the
+`http.client` call itself lives in `ui`, which already owns the thread the reader is
+waiting on. The same split as `transfer.py`, for the same reason.
+
 `bridge/tools/` is **off-tree and not a layer.** It holds maintainer scripts
 (`build_userfs.py`, `05-bridge.md` §11) that run on a developer machine, and it may
 import anything or nothing. It ships with neither the app nor the library, so it is
@@ -72,6 +81,7 @@ L3   ui/            Textual App, screens, widgets
 L2   client/        Session: correlation, heartbeat, backoff
      commands.py    slash command → frames (leaf at L2)
      transfer.py    sandbox tree walk, upload and download (leaf at L2)
+     providers.py   LLM catalog, model list, thinking levels, timezones (leaf at L2)
       |
 L1   link/          Transport ABC, SerialTransport, FakeTransport
       |
