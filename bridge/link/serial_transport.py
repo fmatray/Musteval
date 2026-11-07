@@ -113,8 +113,13 @@ class SerialTransport(Transport):
                 # than 256 bytes waited the full 100 ms and `ping`/`pong` measured
                 # ~99 ms against `07-roadmap.md` M1's 10 ms budget.
                 chunk = self._serial.read(self._serial.in_waiting or 1)
-            except (serial.SerialException, OSError) as exc:
-                self._error = str(exc)
+            except (serial.SerialException, OSError, TypeError) as exc:
+                # `TypeError` is how pyserial reports `in_waiting` on a handle that
+                # `close` released: the fd is None and `ioctl` rejects it. `close`
+                # sets `_closed` first, so this is the ordinary shutdown path, and
+                # letting it escape killed the thread with a traceback after every
+                # disconnect. A genuine error still lands in `_error`.
+                self._error = None if self._closed.is_set() else str(exc)
                 self._pending.put(None)
                 return
             if not chunk:
