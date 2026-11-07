@@ -294,6 +294,21 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
             rows.insert(0, (current, current))
         return rows
 
+    def _provider_rows(self, current: str) -> list[tuple[str, str]]:
+        """The catalog with its labels, plus the configured id when it is not one.
+
+        A device set up over raw frames holds whatever id was written — `p1` on the
+        board — and a `Select` whose value is absent from its options raises on mount,
+        which is what made the wizard unusable on a device that already had a
+        provider. The stored id becomes a row showing its base url, so the reader can
+        see the provider they have and keep it without retyping, and the catalog rows
+        keep their labels rather than their ids.
+        """
+        rows = [(entry.label, entry.id) for entry in self.providers]
+        if current and current not in {entry.id for entry in self.providers}:
+            rows.insert(0, (current, current))
+        return rows or [(current or "", current or "")]
+
     def compose(self) -> ComposeResult:
         """The fields, pre-filled from whatever the device already reports.
 
@@ -308,7 +323,6 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
 
         ssids = [str(n.get("ssid") or "") for n in self.scan if n.get("ssid")]
         current_ssid = str(first.get("ssid") or "")
-        provider_ids = [p.id for p in self.providers]
         chosen_provider = str(provider.get("id") or "")
         chosen_model = str(provider.get("model") or "")
 
@@ -336,8 +350,7 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
                 yield Static("LLM  →  llm.providers[0]", classes="onboard-section")
                 yield Static("provider (fills the base url)", classes="onboard-label")
                 yield self._select(
-                    [(p.label, p.id) for p in self.providers]
-                    or [(chosen_provider or "", chosen_provider or "")],
+                    self._provider_rows(chosen_provider),
                     chosen_provider,
                     "onboard-provider",
                     allow_blank=True,

@@ -289,13 +289,8 @@ async def test_the_scan_feeds_the_ssid_dropdown():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.run_worker(app.onboard())
-        for _ in range(40):
-            await pilot.pause(0.05)
-            try:
-                form = app.screen.query_one("#onboard-ssid-select")
-            except Exception:
-                continue
-            break
+        assert await _mounted(pilot, "#onboard-ssid-select")
+        form = app.screen.query_one("#onboard-ssid-select")
         options = [value for _, value in form._options]
         assert "HomeLab" in options and "Cafe-FREE" in options
 
@@ -314,17 +309,28 @@ async def test_the_scan_feeds_the_ssid_dropdown():
 
 
 
-async def _open_form(pilot) -> bool:
-    """Push the wizard and wait for its fields. False if it never mounted."""
-    pilot.app.run_worker(pilot.app.onboard())
-    for _ in range(40):
+async def _mounted(pilot, selector: str) -> bool:
+    """Wait for a widget to be composed and mounted, not merely present.
+
+    A `Select` exists before its own `SelectCurrent` child does, and setting a value
+    in that window raises `NoMatches` on the child. Polling the child is what makes
+    the wait describe the state the test then mutates.
+    """
+    for _ in range(80):
         await pilot.pause(0.05)
         try:
-            pilot.app.screen.query_one("#onboard-provider")
+            widget = pilot.app.screen.query_one(selector)
+            widget.query_one("#label")
         except Exception:
             continue
         return True
     return False
+
+
+async def _open_form(pilot) -> bool:
+    """Push the wizard and wait for its fields. False if it never mounted."""
+    pilot.app.run_worker(pilot.app.onboard())
+    return await _mounted(pilot, "#onboard-provider")
 
 
 async def test_choosing_a_provider_does_not_crash_when_it_takes_no_level():
@@ -375,14 +381,7 @@ async def _open_with(pilot, **kwargs) -> bool:
 
     provider_rows = (kwargs.pop("current", {}) or {})
     pilot.app.push_screen(OnboardPrompt(provider_rows, **kwargs))
-    for _ in range(60):
-        await pilot.pause(0.05)
-        try:
-            pilot.app.screen.query_one("#onboard-model-select")
-        except Exception:
-            continue
-        return True
-    return False
+    return await _mounted(pilot, "#onboard-model-select")
 
 
 async def _stub_fetch(names: list[str]):
@@ -525,3 +524,75 @@ async def test_a_flattened_config_still_prefills_the_form():
     assert base_url.value == "https://openrouter.ai/api/v1"
     assert answers.model == "m-one"
     assert fetch.calls == [("openrouter", "")]
+
+
+async def test_a_provider_id_outside_the_catalog_does_not_crash_the_form():
+    """A device set up over raw frames holds whatever id was written.
+
+    The board holds `p1`, which no catalog row names. `Select` raises when its value
+    is absent from its own options, and the wizard is mounted on mount, so the form
+    died before the reader could see it — the second `/onboard` on a configured
+    device was unusable. The stored id has to arrive as a row.
+    """
+    app = BridgeApp(
+        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
+    )
+    current = {"llm.providers": [{"id": "p1", "base_url": "https://a/v1", "model": "m",
+                                  "api_key_ref": "nvs:llm_api_key"}]}
+    async with app.run_test() as pilot:
+        assert await _open_with(pilot, current=current, providers=providers.catalog()[0])
+        screen = pilot.app.screen
+        provider = screen.query_one("#onboard-provider")
+        value, answers = provider.value, screen.answers()
+        base_url = screen.query_one("#onboard-base-url").value
+        ids = [row[1] for row in provider._options if isinstance(row[1], str)]
+
+    assert value == "p1"
+    assert "p1" in ids
+    assert answers.model == "m"
+    assert base_url == "https://a/v1"
+
+
+async def test_the_form_prefills_from_a_config_the_app_fetched_itself():
+    """`/onboard` on a fresh process must fetch the config before opening the form.
+
+    `_config` is filled by a `config.get` reply, which only the settings screen
+    requested. A process that opened the wizard first therefore pre-filled from `{}`:
+    every field looked unconfigured on a device that had one, the provider was blank,
+    and the model list never loaded. Asserted on what the form is handed, which is
+    the only thing the reader sees.
+    """
+    stored = {
+        "wifi": {"networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}]},
+        "llm": {"providers": [{"id": "p1", "base_url": "https://a/v1", "model": "m",
+                               "api_key_ref": "nvs:llm_api_key"}]},
+    }
+
+    def device(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("name") == "config.get":
+            body = {"name": "config.get", "ok": True, "result": {"config": stored},
+                    "duration_ms": 0}
+            return [json.dumps({"v": 1, "type": "command.result", "id": "d-1", "ts": 0,
+                                "reply_to": frame["id"], **body}).encode() + b"\n"]
+        return _reply(line)
+
+    app = BridgeApp(Session(FakeTransport(on_write=device), ack_timeout=1, ping_interval=99))
+    seen: list[dict] = []
+
+    async def capture(screen):
+        seen.append(dict(screen.current))
+        return None
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        assert app._config_fetched is False
+        app.push_screen_wait = capture  # type: ignore[method-assign]
+        await app.onboard()
+        visible = [name for name in ("chat", "status", "tasks", "logs", "settings",
+                                     "mqtt", "files")
+                   if app.query_one(f"#{name}").display]
+
+    assert seen, "the form was opened"
+    assert seen[0].get("llm.providers"), "the config arrived before the form was shown"
+    assert visible == ["chat"], "the wizard is a modal, not a detour through settings"

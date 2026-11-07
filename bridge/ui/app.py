@@ -1779,6 +1779,27 @@ class BridgeApp(App):
         scan, notes = await self._onboard_scan()
         for note in notes:
             self._chat().write(note)
+        # The form pre-fills from the device's config, so the config has to have
+        # arrived. It is only fetched when the settings screen is opened, so a fresh
+        # process opened this form on an empty document and every field looked
+        # unconfigured — including the provider, which suppressed the model fetch.
+        # A whole-document reply also navigates to the settings grid, so the screen
+        # the reader was on is restored: the wizard is a modal over their screen, not
+        # a detour through another one.
+        if not self._config_fetched:
+            # The reply navigates to the settings grid, so the screen the reader was
+            # on is named before the request and restored after it.
+            before = next(
+                (
+                    name
+                    for name in ("chat", "status", "tasks", "logs", "settings",
+                                 "mqtt", "files")
+                    if self.query_one(f"#{name}").display
+                ),
+                "chat",
+            )
+            await self._request("config.get")
+            self.action_show(before)
         entries, catalog_notes = providers_mod.catalog()
         for note in catalog_notes:
             self._chat().write(note)

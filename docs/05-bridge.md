@@ -1060,6 +1060,21 @@ flattened to dotted paths (`settings.flatten`), so a pre-fill that reads nested 
 finds nothing and the whole form opens empty — including the provider, which is what
 leaves the model list unloaded.
 
+**A stored id the catalog does not name is a row, not a value.** `id` is free text in
+`03-config.md`, so a device configured over raw frames holds whatever was written — the
+board holds `p1`. A `Select` whose value is absent from its own options raises
+`InvalidSelectValueError` on mount, so passing that id as the value killed the wizard
+before it drew, and only on a device that already had a provider. Every dropdown
+therefore offers the stored value as a row next to the known ones, which also shows the
+reader the provider they already have instead of pretending it is unconfigured.
+
+**The form fetches the config itself.** `_config` is filled by a `config.get` reply,
+and the only other request came from opening the settings screen. A process that
+opened the wizard first therefore pre-filled from an empty document, which looked
+identical to a device with nothing configured. `/onboard` requests the document before
+it shows the form, and restores the screen the reader was on afterwards, because a
+whole-document reply also navigates to the settings grid.
+
 ### 13.7 Empty and loading states
 
 A screen with no data says **which command would fill it**, not only that it is
