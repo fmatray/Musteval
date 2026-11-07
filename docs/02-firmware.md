@@ -180,6 +180,13 @@ bug it exists to prevent.
   `ESP_ERR_ESP_TLS_CERTIFICATE_VERIFY_FAILED`, which `llm` maps to
   `E_LLM_UNAVAILABLE`. Follows no redirect. A body over 16 KiB is refused with
   `ESP_ERR_INVALID_SIZE` rather than truncated, so `llm` never parses half a reply.
+- `resp.body` / `resp.body_len` carry the reply for **every** status, 4xx and 5xx
+  included. The body is collected by the HTTP event handler while the request is
+  performed, not by a read afterwards: `esp_http_client_perform` consumes the body
+  through its own parser and resets the buffer as it returns, so a read after it
+  yields 0 for a 200 as readily as for a 400. `net_exchange` read the body this way
+  once, so every reply it returned was empty; that is why an `E_LLM_UNAVAILABLE`
+  arrived as a bare `http 400` with no reason in it.
 
 `net` knows nothing about providers: an HTTP POST is transport, and what a body means
 belongs to `llm`. `net_rank()` and `net_backoff_ms()` are pure and host-tested; the
@@ -796,7 +803,10 @@ the one write carve-out that touches storage internals.
 
 `tools_json` is built at run start from three sources, in this order: built-ins,
 declarative `/tools/*.json`, and MCP tools discovered at `tools/list`. Each entry is
-one `{"type":"function","function":{...}}`. Every built-in carries a description and
+one `{"type":"function","function":{...}}`. The value `llm` receives is the bare
+array — `[{"type":"function",...}]` — with no enclosing object, because `llm` splices
+it into a member of its own request. A slice that carries the wrapper's closing brace
+closes the request early and every provider refuses the body. Every built-in carries a description and
 a parameter schema of the same shape declarative tools require (`03-config.md`
 §Tool schema): `type: "object"`, `properties`, `required`, plus `enum` for a closed
 value set; nothing else.

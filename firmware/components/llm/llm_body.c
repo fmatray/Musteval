@@ -214,6 +214,24 @@ bool llm_escape_json(const char *in, char *out, size_t cap, size_t *used)
     return true;
 }
 
+size_t llm_slice_member(const char *json, char *out, size_t cap)
+{
+    if (json == NULL || out == NULL || cap == 0) return 0;
+    const char *open = strchr(json, '[');
+    const char *colon = strchr(json, ':');
+    if (open == NULL || colon == NULL || open < colon) return 0;
+    /* The matching close is the last `]` before the wrapper's closing brace. Taking
+     * everything after the colon instead would carry that brace, which is exactly the
+     * bug: the caller then splices a closed object into its own. */
+    const char *close = strrchr(json, ']');
+    if (close == NULL || close < open) return 0;
+    size_t len = (size_t)(close - open + 1);
+    if (len + 1 > cap) return 0;
+    memcpy(out, open, len);
+    out[len] = '\0';
+    return len;
+}
+
 int llm_next_provider(int current, int count)
 {
     int next = current + 1;

@@ -182,10 +182,14 @@ static void build_tools_json(const tools_context_t *ctx)
         if (wrap != NULL) {
             if (json_add_node(json_root(wrap), "tools", array)) {
                 json_emit(wrap, s_tools_json, TOOLS_MAX_TOTAL * 512, &written);
-                /* Re-slice the array value: `llm` wants the array, not the wrapper. */
-                const char *colon = strchr(s_tools_json, ':');
-                if (colon != NULL) {
-                    memmove(s_tools_json, colon + 1, strlen(colon));
+                /* Re-slice the array value: `llm` wants the array, not the wrapper.
+                 * A slice that took everything past the colon carried the wrapper's
+                 * closing brace, so `llm` spliced `[{...}]}` into its own object and
+                 * closed it early; the provider answered `invalid character ',' after
+                 * top-level value` to every request. */
+                if (llm_slice_member(s_tools_json, s_tools_json,
+                                     TOOLS_MAX_TOTAL * 512) == 0) {
+                    s_tools_json[0] = '\0';
                 }
             }
             json_free(wrap);

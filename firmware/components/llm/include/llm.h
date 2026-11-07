@@ -91,6 +91,13 @@ bool llm_escape_json(const char *in, char *out, size_t cap, size_t *used);
  * length, or 0 when it does not fit. */
 size_t llm_endpoint(const char *base_url, char *out, size_t cap);
 
+/* Copies the value of the first member object in `json` into `out`, dropping the
+ * enclosing object's braces. Returns the copied length. Hand-written because the
+ * device builds this wrapper only to splice one array out of it, and the slice used to
+ * carry the closing brace along: `llm` spliced `[{...}]}` into its own object, closed
+ * it early, and the provider refused the body. */
+size_t llm_slice_member(const char *json, char *out, size_t cap);
+
 /* Which provider to try, given the chain and an index that has already failed.
  * Returns the next index, or -1 when the chain is exhausted. */
 int llm_next_provider(int current, int count);

@@ -616,6 +616,10 @@ static esp_err_t handle_config_get(const json_node_t *args, json_node_t *root,
     return ok ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+/* The schema's refusal sentence for `config.set`. Static so the `*message` the
+ * handler returns still points at it when the caller emits the frame. */
+static char s_set_reason[128];
+
 /* `config.set` (`04` §4.9): validate a copy, write it whole, keep the old document
  * when anything fails, so a rejected value never leaves the device configless. */
 static esp_err_t handle_config_set(const json_node_t *args, json_node_t *root,
@@ -642,20 +646,24 @@ static esp_err_t handle_config_set(const json_node_t *args, json_node_t *root,
         return ESP_ERR_INVALID_ARG;
     }
 
-    char why[96];
-    if (cfg_validate(doc, why, sizeof why) != ESP_OK) {
+    /* `why` is the schema's own sentence and it names the member it refused. The
+     * caller is a human looking at the offending key, so it travels in the refusal
+     * rather than only in a log they are not reading (`04` §4.9). The buffer is
+     * static because `*message` outlives this frame: the caller emits it after the
+     * handler returns. */
+    if (cfg_validate(doc, s_set_reason, sizeof s_set_reason) != ESP_OK) {
         json_free(doc);
-        ESP_LOGW(TAG, "config.set rejected: %s", why);
-        *message = "value rejected by the config schema";
+        ESP_LOGW(TAG, "config.set rejected: %s", s_set_reason);
+        *message = s_set_reason;
         return ESP_ERR_INVALID_ARG;
     }
-    if (cfg_validate_refs(doc, why, sizeof why) != ESP_OK) {
+    if (cfg_validate_refs(doc, s_set_reason, sizeof s_set_reason) != ESP_OK) {
         /* `03-config.md` step 9: a `nvs:` ref whose key is unset is `E_CONFIG` and
          * the old document is kept, so a typo cannot point at nothing. */
         json_free(doc);
-        ESP_LOGW(TAG, "config.set rejected: %s", why);
+        ESP_LOGW(TAG, "config.set rejected: %s", s_set_reason);
         *code = "E_CONFIG";
-        *message = "a secret reference in the result does not resolve";
+        *message = s_set_reason;
         return ESP_ERR_INVALID_ARG;
     }
 

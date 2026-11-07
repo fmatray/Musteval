@@ -399,6 +399,35 @@ void net_status(net_status_t *out)
     out->failovers = s_failovers;
 }
 
+/* `esp_http_client_perform` owns the body read and drops it on the way out (it
+ * resets `buffer->raw_len`), so the body is only ever available through the event
+ * handler. Reading with `esp_http_client_read` after `perform` returns 0 for every
+ * response, including a 200: that is why a caller asking for the body used to get an
+ * empty string and the caller here has to collect it as it streams. */
+typedef struct {
+    char *out;
+    size_t cap;
+    size_t len;
+    bool overflow;
+} net_capture_t;
+
+static esp_err_t net_capture_event(esp_http_client_event_t *evt)
+{
+    net_capture_t *cap = evt->user_data;
+    if (evt->event_id != HTTP_EVENT_ON_DATA || cap == NULL) return ESP_OK;
+    if (evt->data_len <= 0) return ESP_OK;
+    size_t room = cap->cap - cap->len;
+    if ((size_t)evt->data_len > room) {
+        /* Refused, not truncated: a half body is a JSON error the caller cannot tell
+         * from a provider's own bad reply. */
+        cap->overflow = true;
+        return ESP_OK;
+    }
+    memcpy(cap->out + cap->len, evt->data, (size_t)evt->data_len);
+    cap->len += (size_t)evt->data_len;
+    return ESP_OK;
+}
+
 /* One exchange, shared by every caller that reaches the wire. The method, the extra
  * headers and whether there is an entity are the only things that differ, so TLS
  * policy, the body cap and the redirect rule are stated once
@@ -425,6 +454,7 @@ static esp_err_t net_exchange(esp_http_client_method_t method, const char *url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .disable_auto_redirect = true,
         .buffer_size = 2048,
+        .event_handler = net_capture_event,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -445,49 +475,37 @@ static esp_err_t net_exchange(esp_http_client_method_t method, const char *url,
         esp_http_client_set_post_field(client, body, (int)body_len);
     }
 
+    resp->body = malloc(NET_BODY_MAX + 1);
+    if (resp->body == NULL) {
+        esp_http_client_cleanup(client);
+        return ESP_ERR_NO_MEM;
+    }
+    net_capture_t capture = { .out = resp->body, .cap = NET_BODY_MAX };
+    esp_http_client_set_user_data(client, &capture);
+
     int64_t start = esp_timer_get_time() / 1000;
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "http: %s: %s", url, esp_err_to_name(err));
+        free(resp->body);
+        resp->body = NULL;
         esp_http_client_cleanup(client);
         return err;
     }
 
     resp->status = esp_http_client_get_status_code(client);
     int64_t declared = esp_http_client_get_content_length(client);
-    /* A body larger than the declared cap is refused rather than truncated: a
-     * truncated JSON body is an error the caller cannot tell from a bad provider. */
-    if (declared > NET_BODY_MAX) {
+    if (declared > NET_BODY_MAX || capture.overflow) {
+        /* The cap is a refusal, not a truncation: a half body is an error the caller
+         * cannot tell from a provider's own bad reply. */
+        free(resp->body);
+        resp->body = NULL;
         esp_http_client_cleanup(client);
         return ESP_ERR_INVALID_SIZE;
     }
 
-    resp->body = malloc(NET_BODY_MAX + 1);
-    if (resp->body == NULL) {
-        esp_http_client_cleanup(client);
-        return ESP_ERR_NO_MEM;
-    }
-    int total = 0;
-    while (total < NET_BODY_MAX) {
-        int got = esp_http_client_read(client, resp->body + total, NET_BODY_MAX - total);
-        if (got <= 0) break;
-        total += got;
-    }
-    /* A chunked response declares no length, so a body that exactly fills the cap is
-     * indistinguishable from one that continues. One more read tells them apart, and
-     * the answer must be a refusal: truncating here would hand `llm` a half-parsed
-     * reply it would report as a malformed provider response. */
-    if (total == NET_BODY_MAX) {
-        char probe;
-        if (esp_http_client_read(client, &probe, 1) > 0) {
-            free(resp->body);
-            resp->body = NULL;
-            esp_http_client_cleanup(client);
-            return ESP_ERR_INVALID_SIZE;
-        }
-    }
-    resp->body[total] = '\0';
-    resp->body_len = (size_t)total;
+    resp->body[capture.len] = '\0';
+    resp->body_len = capture.len;
     resp->elapsed_ms = esp_timer_get_time() / 1000 - start;
 
     esp_http_client_cleanup(client);

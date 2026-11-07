@@ -9,6 +9,7 @@
 #include "clock.h"
 #include "llm.h"
 #include "net.h"
+#include "store.h" /* `json_parse_at`, which is strict about trailing content */
 
 /* --- clock ---------------------------------------------------------------- */
 
@@ -451,6 +452,41 @@ TEST_CASE("tools are sent only when offered", "[m3]")
     with.tools_json = "[{\"type\":\"function\"}]";
     TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&with, NULL, out, sizeof out));
     TEST_ASSERT_NOT_NULL(strstr(out, "\"tools\":[{\"type\":\"function\"}]"));
+}
+
+/* The body is assembled by hand, so nothing but a parse proves it is one JSON object.
+ * `tools` was sliced with `strlen` from the wrapper's colon, which carried the
+ * wrapper's closing brace along: the body closed early and every provider answered
+ * `invalid character ',' after top-level value`. */
+TEST_CASE("the assembled body parses as exactly one JSON object", "[m3]")
+{
+    llm_request_t r = {.model = "m", .user_prompt = "hi", .system_prompt = "sys"};
+    /* The wrapper `agent` actually builds before slicing, put through the slicer, so
+     * this covers the shape that broke: a slice that kept the wrapper's closing brace
+     * produced `[{...}]}` and the provider refused every request. */
+    char wrapped[256];
+    snprintf(wrapped, sizeof wrapped,
+             "{\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"t\"}}]}");
+    char sliced[128];
+    TEST_ASSERT_GREATER_THAN(0, llm_slice_member(wrapped, sliced, sizeof sliced));
+    TEST_ASSERT_EQUAL_STRING("[{\"type\":\"function\",\"function\":{\"name\":\"t\"}}]",
+                             sliced);
+    r.tools_json = sliced;
+    r.history_json = "[{\"role\":\"assistant\",\"content\":\"hello\"}]";
+    r.max_output_tokens = 64;
+    char out[2048];
+    size_t n = llm_assemble_prompt(&r, "{\"temperature\":0.2}", out, sizeof out);
+    TEST_ASSERT_GREATER_THAN(0, n);
+
+    json_doc_t *doc = NULL;
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse_at(out, n, &doc, &offset));
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_TRUE(json_is_object(json_root(doc)));
+    /* One top-level value: a trailing member after the closing brace is a second
+     * value, which is what the provider refused. */
+    TEST_ASSERT_EQUAL_CHAR('}', out[n - 1]);
+    json_free(doc);
 }
 
 /* A later round carries no `user_prompt`: the history already has it, and the last
