@@ -8,9 +8,10 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static, TabbedContent, TabPane, TextArea
+from textual.widgets import Input, Select, Static, TabbedContent, TabPane, TextArea
 from textual.widgets.text_area import Selection
 
+from .. import providers
 from . import onboard
 
 _T = TypeVar("_T")
@@ -201,13 +202,27 @@ class ValuePrompt(PromptBox[str | None]):
         self.dismiss(self.query_one("#value-input", Input).value.strip() or None)
 
 
+def _thinking_levels(entries: list[Any], provider_id: str) -> list[str]:
+    """The levels to offer for `provider_id`, or none.
+
+    `05` §7.1: a provider whose `extra_body` takes no level gets no picker, because a
+    level written where the member is rejected turns every call into a 400.
+    """
+    entry = next((p for p in entries if p.id == provider_id), None)
+    return list(entry.thinking_levels) if entry is not None else []
+
+
 class OnboardPrompt(PromptBox["onboard.Answers | None"]):
     """`05` §7 and §13.6: the whole first-run form, grouped by domain.
 
-    One dialog per domain, not one per value: a reader sees everything `wifi.*`
-    will become before committing any of it, can revise an earlier answer after
-    reading a later one, and knows how much is left. `Ctrl+S` writes the whole
+    One form for all three domains, not one dialog per value: a reader sees everything
+    `wifi.*` will become before committing any of it, can revise an earlier answer
+    after reading a later one, and knows how much is left. `Ctrl+S` writes the whole
     form; `Esc` writes nothing.
+
+    A dropdown where the values are known, a text field where they are not. Every
+    dropdown keeps its manual route open, so a scan that answered `E_WIFI`, a model the
+    provider does not publish, and a region the table lacks are all still reachable.
     """
 
     BINDINGS = [Binding("ctrl+s", "submit", "Write", show=False)]
@@ -215,9 +230,9 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
         _CSS
         + """
 .prompt-box.onboard-box {
-    width: 88;
+    width: 92;
     max-width: 100%;
-    max-height: 90%;
+    max-height: 92%;
 }
 .onboard-section {
     text-style: bold;
@@ -227,42 +242,110 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
 .onboard-label {
     color: $text-muted;
 }
+.onboard-note {
+    color: $text-muted;
+}
 """
     )
     AUTO_FOCUS = "#onboard-ssid"
 
-    def __init__(self, current: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        current: dict[str, Any],
+        scan: list[dict[str, Any]] | None = None,
+        providers: list[Any] | None = None,
+        models: list[str] | None = None,
+        fetch_models: Any = None,
+    ) -> None:
         super().__init__()
         self.current = current
+        #: `fetch_models(provider, api_key) -> Awaitable[list[str]]`, supplied by
+        #: `app.py`, which owns the thread. Never opened here: this module has widgets
+        #: in it, and a blocking call in a widget freezes the form.
+        self._fetch_models = fetch_models
+        #: The `wifi.scan` result, strongest first. Empty when the scan refused, which
+        #: leaves the manual SSID field as the only route rather than blocking.
+        self.scan = scan or []
+        #: The catalog (`05` §7.1). Built-ins alone when the custom file is broken.
+        self.providers = providers or []
+        #: The chosen provider's model names, or empty for a typed model.
+        self.models = models or []
+
+    @staticmethod
+    def _select(
+        options: list[tuple[str, str]], value: str, widget_id: str, **kwargs: Any
+    ) -> "Select":
+        """A `Select` whose current value is real or absent.
+
+        `Select.BLANK` is `False`, and the widget refuses a `False` value, so the
+        value is passed only when there is one; `allow_blank` decides the rest.
+        """
+        if value:
+            return Select(options, value=value, id=widget_id, **kwargs)
+        return Select(options, id=widget_id, **kwargs)
+
+    @staticmethod
+    def _options(values: list[str], current: str) -> list[tuple[str, str]]:
+        """`Select` rows, with the current value present even if the list lacks it."""
+        rows = [(value, value) for value in values]
+        if current and current not in values:
+            rows.insert(0, (current, current))
+        return rows
 
     def compose(self) -> ComposeResult:
         """The fields, pre-filled from whatever the device already reports.
 
-        Pre-filling is what makes the form revisable: the previous answer is
-        already there, so the reader edits instead of retyping blind.
+        Pre-filling is what makes the form revisable: the previous answer is already
+        there, so the reader edits instead of retyping blind.
         """
         existing = self.current or {}
         networks = (existing.get("wifi") or {}).get("networks") or []
         first = networks[0] if networks else {}
-        providers = (existing.get("llm") or {}).get("providers") or []
-        provider = providers[0] if providers else {}
+        provider_rows = (existing.get("llm") or {}).get("providers") or []
+        provider = provider_rows[0] if provider_rows else {}
+        ntp = existing.get("ntp") or {}
+        current_tz = str(ntp.get("timezone") or "")
+
+        ssids = [str(n.get("ssid") or "") for n in self.scan if n.get("ssid")]
+        current_ssid = str(first.get("ssid") or "")
+        provider_ids = [p.id for p in self.providers]
+        chosen_provider = str(provider.get("id") or "")
+        chosen_model = str(provider.get("model") or "")
 
         with Vertical(classes="prompt-box onboard-box"):
             yield Static("First run", classes="prompt-title")
             with VerticalScroll(id="onboard-body"):
-                yield Static("Wi-Fi  → wifi.networks[0]", classes="onboard-section")
-                yield Static("ssid", classes="onboard-label")
-                yield Input(str(first.get("ssid") or ""), id="onboard-ssid")
+                yield Static("Wi-Fi  →  wifi.networks[0]", classes="onboard-section")
+                yield Static(
+                    "ssid (from the scan; type one the scan cannot see)",
+                    classes="onboard-label",
+                )
+                yield self._select(
+                    self._options(ssids, current_ssid),
+                    current_ssid or (ssids[0] if ssids else ""),
+                    "onboard-ssid-select",
+                    allow_blank=True,
+                )
+                yield Input(current_ssid, placeholder="or type an ssid", id="onboard-ssid")
                 yield Static(
                     "password (the nvs secret wifi_psk; blank leaves it alone)",
                     classes="onboard-label",
                 )
                 yield Input(password=True, id="onboard-password")
 
-                yield Static("LLM  → llm.providers[0]", classes="onboard-section")
+                yield Static("LLM  →  llm.providers[0]", classes="onboard-section")
+                yield Static("provider (fills the base url)", classes="onboard-label")
+                yield self._select(
+                    [(p.label, p.id) for p in self.providers]
+                    or [(chosen_provider or "", chosen_provider or "")],
+                    chosen_provider,
+                    "onboard-provider",
+                    allow_blank=True,
+                )
                 yield Static("base url", classes="onboard-label")
                 yield Input(
-                    str(provider.get("base_url") or "https://api.openai.com/v1"),
+                    str(provider.get("base_url") or ""),
+                    placeholder="https://api.openai.com/v1",
                     id="onboard-base-url",
                 )
                 yield Static(
@@ -271,23 +354,137 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
                 )
                 yield Input(password=True, id="onboard-api-key")
                 yield Static("model", classes="onboard-label")
-                yield Input(str(provider.get("model") or ""), id="onboard-model")
+                yield self._select(
+                    self._options(self.models, chosen_model),
+                    chosen_model,
+                    "onboard-model-select",
+                    allow_blank=True,
+                )
+                yield Input(chosen_model, placeholder="or type a model", id="onboard-model")
+                yield Static(
+                    "thinking (only where the provider accepts the member)",
+                    classes="onboard-label",
+                )
+                levels = (
+                    _thinking_levels(self.providers, chosen_provider)
+                    if self.providers
+                    else []
+                )
+                if levels:
+                    yield Select(
+                        [(level, level) for level in levels],
+                        value="none",
+                        allow_blank=False,
+                        id="onboard-thinking",
+                    )
+
+                yield Static("Time  →  ntp.timezone, ntp.servers", classes="onboard-section")
+                yield Static("region (fills the TZ string and the pool server)",
+                             classes="onboard-label")
+                yield self._select(
+                    self._options(providers.region_names(), current_tz),
+                    current_tz,
+                    "onboard-region",
+                    allow_blank=True,
+                )
+                yield Input(
+                    current_tz,
+                    placeholder="or type a POSIX TZ string, e.g. CET-1CEST,M3.5.0,M10.5.0/3",
+                    id="onboard-timezone",
+                )
             yield Static(
                 "Ctrl+S: write | Esc: cancel | blank fields are left alone",
                 classes="prompt-hint",
             )
 
+    def _chosen(self, select_id: str, input_id: str) -> str:
+        """The dropdown's value, or the text field's when one is typed.
+
+        One rule for all four dropdowns: the typed field wins when it has anything in
+        it, and the choice is the default. That is what keeps a manual route open — a
+        hidden SSID, an unpublished model, a TZ string no region names — without the
+        reader having to clear a dropdown first.
+        """
+        typed = self.query_one(input_id, Input).value.strip()
+        if typed:
+            return typed
+        chosen = self.query_one(select_id, Select).value
+        return chosen if isinstance(chosen, str) else ""
+
     def answers(self) -> onboard.Answers:
-        def value(widget_id: str) -> str:
-            return self.query_one(widget_id, Input).value.strip()
+        chosen_id = self.query_one("#onboard-provider", Select).value
+        provider_id = chosen_id if isinstance(chosen_id, str) else ""
+        entry = next((p for p in self.providers if p.id == provider_id), None)
+
+        thinking = self.query("#onboard-thinking")
+        level = thinking.first(Select).value if thinking else "none"
+        extra = entry.extra_body(str(level or "none")) if entry is not None else {}
+
+        base_url = self.query_one("#onboard-base-url", Input).value.strip()
+        if not base_url and entry is not None:
+            base_url = entry.base_url
+        provider_name = onboard.provider_id(base_url, entry)
+
+        region = self._chosen("#onboard-region", "#onboard-timezone")
+        timezone, server = providers.timezone_for(region)
 
         return onboard.Answers(
-            ssid=value("#onboard-ssid"),
-            password=value("#onboard-password"),
-            base_url=value("#onboard-base-url"),
-            api_key=value("#onboard-api-key"),
-            model=value("#onboard-model"),
+            ssid=self._chosen("#onboard-ssid-select", "#onboard-ssid"),
+            password=self.query_one("#onboard-password", Input).value.strip(),
+            base_url=base_url,
+            api_key=self.query_one("#onboard-api-key", Input).value.strip(),
+            model=self._chosen("#onboard-model-select", "#onboard-model"),
+            auth=self._auth_for(self._chosen("#onboard-ssid-select", "#onboard-ssid")),
+            provider=provider_name,
+            token_param=providers.TOKEN_PARAM.get(provider_name, ""),
+            extra_body=extra,
+            timezone=timezone,
+            ntp_server=server,
         )
+
+    async def on_select_changed(self, event: Select.Changed) -> None:
+        """A provider choice fills the base url and fetches its model list.
+
+        `05` §7.1: the model list arrives when `models_url` is set, on a thread rather
+        than the UI thread. A provider with no list, or a failed fetch, leaves the
+        typed model field, which is the route that always works.
+        """
+        if event.select.id != "onboard-provider":
+            return
+        provider_id = event.value if isinstance(event.value, str) else ""
+        entry = next((p for p in self.providers if p.id == provider_id), None)
+        if entry is None:
+            return
+        if entry.base_url:
+            self.query_one("#onboard-base-url", Input).value = entry.base_url
+
+        # A thinking level is only meaningful for the provider it was chosen for.
+        thinking = self.query("#onboard-thinking")
+        thinking.set_display(bool(_thinking_levels(self.providers, provider_id)))
+
+        if self._fetch_models is None or not entry.models_url:
+            return
+        key = self.query_one("#onboard-api-key", Input).value.strip()
+        models = await self._fetch_models(entry, key)
+        select = self.query_one("#onboard-model-select", Select)
+        select.set_options(self._options(models, ""))
+        if not models:
+            self.query_one("#onboard-model", Input).placeholder = (
+                "no list from this provider; type the model"
+            )
+
+    def _auth_for(self, ssid: str) -> str:
+        """The scanned security of `ssid`, or empty for a hand-typed name.
+
+        An empty `auth` means the reader asserted a name no scan returned, and the
+        planner takes that at face value; a scanned name carries the security the
+        radio reported, which is what stops a password being written for a network
+        the station will refuse (`04` §4.24).
+        """
+        for row in self.scan:
+            if row.get("ssid") == ssid:
+                return str(row.get("auth") or "")
+        return ""
 
     def action_submit(self) -> None:
         self.dismiss(self.answers())

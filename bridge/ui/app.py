@@ -20,6 +20,7 @@ from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
 from ..client import LinkState, Session
 from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
+from .. import providers as providers_mod
 from .. import transfer
 from ..protocol import Frame, new_id
 from .help import COMMANDS, CommandSuggester, help_tabs, options
@@ -1767,8 +1768,63 @@ class BridgeApp(App):
         await self._request("config.get")
 
     async def _onboard_prompts(self) -> onboard.Answers | None:
-        """`05` §13.6: one form for both domains. `None` means Esc, nothing written."""
-        return await self.push_screen_wait(OnboardPrompt(self._config))
+        """`05` §13.6: one form for all three domains. `None` means Esc, nothing written.
+
+        The scan runs first because its result is what the SSID dropdown offers, and a
+        device with no reachable network is exactly the device `/onboard` is for. A
+        refusal (`E_WIFI`) is one chat line and an empty list, not a failed command:
+        the manual SSID field remains, which is the only route on a board whose radio
+        will not start.
+        """
+        scan, notes = await self._onboard_scan()
+        for note in notes:
+            self._chat().write(note)
+        entries, catalog_notes = providers_mod.catalog()
+        for note in catalog_notes:
+            self._chat().write(note)
+        return await self.push_screen_wait(
+            OnboardPrompt(
+                self._config, scan=scan, providers=entries, fetch_models=self._fetch_models
+            )
+        )
+
+    async def _fetch_models(self, provider: Any, api_key: str) -> list[str]:
+        """One provider's model names, fetched off the UI thread.
+
+        `05` §7.1: the fetch runs in a worker thread and a failure is one chat line,
+        never a broken write. `providers.models` holds the parsing and the exception
+        handling; this supplies the socket the L2 module may not open.
+        """
+        if not provider.models_url:
+            return []
+        try:
+            return await asyncio.to_thread(
+                providers_mod.models, provider, api_key, _http_fetch
+            )
+        except Exception as err:  # noqa: BLE001 - a failed fetch is a chat line
+            self._chat().write(f"model list: {err}")
+            return []
+
+    async def _onboard_scan(self) -> tuple[list[dict], list[str]]:
+        """The `wifi.scan` result and the lines worth showing about it."""
+        try:
+            reply = await self.session.request(
+                Frame(type="command", id=new_id("b"), ts=0,
+                      body={"name": "wifi.scan", "args": {}})
+            )
+        except (SessionError, asyncio.TimeoutError):
+            return [], ["scan unavailable; type the ssid"]
+        if reply.type != "command.result" or not reply.body.get("ok"):
+            error = reply.body.get("error") or {}
+            return [], [
+                f"scan refused ({error.get('code') or 'no answer'}); type the ssid"
+            ]
+        result = reply.body.get("result") or {}
+        networks = result.get("networks") or []
+        notes: list[str] = []
+        if result.get("truncated"):
+            notes.append(f"{len(networks)} networks shown; the list was truncated")
+        return [n for n in networks if isinstance(n, dict)], notes
 
     async def _onboard_secret(self, key: str, value: str) -> None:
         """One `secret.set`, via the existing path so redaction stays in one place."""
@@ -1806,3 +1862,23 @@ class BridgeApp(App):
             self._chat().write(f"exported bridge-export-{stamp}.md")
         elif head == "quit":
             self.exit()
+
+
+def _http_fetch(url: str, key: str) -> bytes:
+    """`GET url` with a bearer token, returning the body.
+
+    The one socket `/onboard` opens. It lives in `ui` rather than `providers.py`
+    because `09` §2 keeps L2 pure, and it is a plain `urllib` call because the project
+    ships no HTTP client and one GET does not justify a dependency.
+
+    A non-200 raises, and the caller turns any failure into one chat line with an
+    empty model list, so the form stays usable.
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    if key:
+        request.add_header("Authorization", f"Bearer {key}")
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - https
+        return response.read()

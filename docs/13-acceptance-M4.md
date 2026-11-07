@@ -204,6 +204,48 @@ frame named.
       which is the code `04-protocol.md` §4.11 documents and which was never emitted
       before.
 
+## M4.7 The onboarding feed
+
+The wizard is hand-testable without credentials because a scan and a config write
+need no provider. Recover from safe mode first if the board is in it.
+
+- [X] `bin/bridge --send "/sys reset-counter"`, then `bin/bridge --send /status`,
+      shows `sys.safe_mode: false`. A scan brings the station interface up itself,
+      so no configured network is required for the next step.
+- [X] `wifi.scan` against the board returns the networks the radio hears,
+      strongest-first, each with `ssid`, `rssi` and `auth`, and `truncated` false.
+      This was run as a raw `command` frame on `/dev/ttyACM0`, not through the
+      wizard: 11 entries, strongest `-53`, `auth` a `04` §4.24 word. The radio heard
+      more access points than it reported, the difference being the hidden and the
+      duplicate-SSID ones; that collapse is asserted exactly in
+      `firmware/test_host/main/test_m3.c`, where the input is known.
+- [ ] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field.
+      **Gap**: opening the wizard needs a terminal, and the board this was written
+      against is driven over `/dev/ttyACM0` from scripts. The dropdown is asserted
+      through Textual's pilot in `bridge/tests/test_ui_onboard.py`, which feeds a
+      canned scan through the same `OnboardPrompt`.
+- [X] `bin/bridge --send "/config set ntp.timezone CET-1CEST,M3.5.0,M10.5.0/3"`
+      succeeds on a device whose `config.json` has no `ntp` object, reporting
+      `requires_reboot: false`; `bin/bridge --send "/config get ntp"` then shows
+      the key.
+- [X] `bin/bridge --send "/config set wifi.networks.3.ssid x"` returns `E_CONFIG`
+      and writes nothing, because a set creates a missing object but never an array
+      index.
+- [ ] `/onboard` with a real SSID and passphrase, then `bin/bridge --send /status`
+      showing that network's `ssid` and an `rssi`. **Gap**: needs the credentials of
+      the network, which are the reader's, not this file's.
+- [ ] The provider dropdown filling `base_url` from `05` §7.1's catalog, and the
+      model list arriving for a provider that publishes one. **Gap**: the fetch is an
+      HTTPS request carrying the typed key and there is no key here, so the shape is
+      asserted in `bridge/tests/test_providers.py` with the transport injected.
+- [ ] A whole `llm.providers` array written with `token_param` and
+      `extra_body: {"reasoning_effort":"medium"}`, then read back through
+      `config.get`. **Gap**: `/config set` sends its value as a JSON *string*
+      (`bridge/commands.py`), and an array is not a string, so the only hand route to
+      this write is `/onboard`, which is the row above. The device side was proven
+      over a raw frame instead: accepted, `requires_reboot: false`, read back
+      verbatim, then restored to the prior array.
+
 ## Host suite
 
 The logic that cannot be reached from the bridge is asserted here. Build first with
@@ -212,9 +254,9 @@ the command in `AGENTS.md`'s Test Strategy table: `cd firmware/test_host`, remov
 `idf.py -DCOVERAGE=ON build`.
 
 - [X] `cd firmware/test_host && ./build/musteval_test_host.elf` prints
-      `156 Tests 0 Failures 0 Ignored`. The M4 cases are the ones tagged `[m4]` in
+      `163 Tests 0 Failures 0 Ignored`. The M4 cases are the ones tagged `[m4]` in
       `main/test_m4.c`, and every name this file quotes is in that binary's output.
-- [X] `./coverage.sh` passes its 80 % line gate, reporting 88 % over the
+- [X] `./coverage.sh` passes its 80 % line gate, reporting 89 % over the
       host-built sources.
 
 The binary takes no filter argument, so it runs every case; `grep` its output for a

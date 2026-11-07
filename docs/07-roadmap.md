@@ -56,7 +56,7 @@ Goal: Secure connectivity to the AI provider.
 
 ### M4: Agent Loop & Tool surface
 Goal: implement the serialized agent run and the tool execution engine.
-- **Scope**: Agent state machine, tool round logic, built-in tools, declarative tools, gating, `fs.put` import path.
+- **Scope**: Agent state machine, tool round logic, built-in tools, declarative tools, gating, `fs.put` import path, and the `/onboard` wizard with its `wifi.scan` feed.
 - **Deliverables**: `agent`, `tools`, `skills` modules.
 - **Acceptance Tests**:
  - Serialized runs: Second `prompt` while agent is active returns `E_BUSY`.
@@ -105,6 +105,25 @@ Goal: implement the serialized agent run and the tool execution engine.
    intact and `fs.read` never shows a partial file.
  - Import caps: an upload whose assembled size exceeds the per-directory cap, or
    would push the directory past 16 entries, returns `E_STORAGE` and does not commit.
+ - Scan: `wifi.scan` returns the networks the radio hears, strongest first, with
+   `ssid`, `rssi` and `auth` per entry; a hidden SSID is absent and two BSSIDs of
+   one name collapse to the stronger; the list stops at 20 and sets `truncated`.
+ - Scan refusal: `wifi.scan` during an agent run returns `E_BUSY`, and a radio that
+   will not start returns `E_WIFI` rather than an empty list, so a bridge can tell
+   "nothing in range" from "the radio is not up". A scan needs no configured
+   network: bringing the station interface up is part of scanning, which is what
+   makes the command usable on the device the wizard is onboarding.
+ - Onboarding config: a set to `ntp.timezone` succeeds on a device with no `ntp`
+   object; a set to `wifi.networks.3.ssid` on a one-entry array returns `E_CONFIG`
+   and writes nothing.
+ - Onboarding end to end: `/onboard` offers the scan's SSIDs and a manual SSID, a
+   provider from `05` §7.1's catalog with its `base_url` filled from that entry, the
+   provider's model list when it publishes one and a free-text field when it does
+   not, a thinking level only where the provider's `extra_body` accepts one, and a
+   timezone whose `ntp.servers` value is the matching ntppool zone — then writes all
+   of it and re-reads `config.get`.
+ - Onboarding reboots: a change to `wifi.*` reports `requires_reboot: true`, a change
+   to `ntp.timezone` reports `false` and is applied by `reload`.
 
 Firmware status: `agent`, `tools` and `skills` are implemented and link clean, and
 `docs/13-acceptance-M4.md` records which rows were run on a board. Everything that

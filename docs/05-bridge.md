@@ -686,7 +686,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
 | `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
-| `/onboard` | `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard: one form per domain — network (SSID, password) and LLM (base URL, API key, model) — each pre-filled from the current config, then a confirm. One `Ctrl+S` submits all five fields, so an answer can be revised after reading a later one. Writes both secrets first, then `wifi.networks` and `llm.providers` as whole arrays, then `llm.model`, then re-reads `config.get`. Refuses at once on `down`, `linking` or `refused` |
+| `/onboard` | `wifi.scan`, `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard: one form with three domains — network (SSID, password), LLM (provider, base URL, API key, model, thinking level) and time (timezone) — each pre-filled from the current config, then a confirm. The SSID comes from a `wifi.scan` dropdown or a manual entry; the provider, model and thinking level come from the bridge-side catalog (§7.1). One `Ctrl+S` submits every field, so an answer can be revised after reading a later one. Writes the secrets first, then `wifi.networks`, `llm.providers`, `ntp.servers` and `ntp.timezone` as whole values, then re-reads `config.get`. Refuses at once on `down`, `linking` or `refused` |
 | `/quit` | (Local) | none | Exits TUI |
 
 Commands marked `(Local)` render from state the bridge already holds from
@@ -1025,17 +1025,26 @@ A list longer than a screen needs a way to narrow it without leaving the screen.
 ### 13.6 Onboarding
 
 `/onboard` groups its questions **by domain** in one form — a `Wi-Fi` section, an
-`LLM` section, then a confirmation that lists every write — rather than one dialog
-per value. Six
-sequential one-value prompts ask the reader to answer a question before they can see
-the next one, so they cannot change their mind about the first answer once they see
-the third, and there is no surface that says how many steps remain. `OnboardPrompt`
-in `bridge/ui/modals.py` is that form: a scrolling box with a `Wi-Fi` section and an
-`LLM` section, both pre-filled from the config already held, secrets masked, and one
-`Ctrl+S` to submit the whole page.
+`LLM` section, a `Time` section, then a confirmation that lists every write — rather
+than one dialog per value. Sequential one-value prompts ask the reader to answer a
+question before they can see the next one, so they cannot change their mind about the
+first answer once they see the third, and there is no surface that says how many steps
+remain. `OnboardPrompt` in `bridge/ui/modals.py` is that form: a scrolling box with
+those three sections, all pre-filled from the config already held, secrets masked, and
+one `Ctrl+S` to submit the whole page.
 
 Within a domain the fields are shown together, each labelled with the config path it
 writes, so the reader sees the whole of `wifi.*` before committing any of it.
+
+**A choice is a dropdown where the values are known and a text field where they are
+not.** The SSID, the provider, the model and the timezone are `Select`s, because each
+has a finite list the bridge can offer: the scan result, the catalog, the provider's
+model list, the region table. The password and the API key are masked `Input`s,
+because they are typed. Every dropdown keeps a manual route: an SSID the scan cannot
+see (a hidden network, a scan that answered `E_WIFI`), a model the provider does not
+publish, and a timezone region the table lacks are all reachable by typing, so the
+wizard never traps a reader behind a list that did not load. A `Select` whose list is
+empty is shown with its manual field open rather than as a closed box with no rows.
 
 ### 13.7 Empty and loading states
 
