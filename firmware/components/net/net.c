@@ -53,12 +53,29 @@ static bool s_attempting;
  * about an *established* link dropping; a boot in which every network refused is a
  * config problem and must stay `failed` rather than spin `connecting` forever. */
 static bool s_ever_connected;
+/* Set around the `esp_wifi_disconnect` that `net_connect` issues before each attempt.
+ * The driver answers it with `WIFI_EVENT_STA_DISCONNECTED`, and that event used to set
+ * `NET_FAIL_BIT` like any other drop: it woke the wait in `net_connect` immediately, so
+ * every attempt was scored "no association (timeout 15000 ms)" in a few milliseconds,
+ * before the radio had a chance to associate. The reason code distinguishes the two
+ * cases, so the handler can tell a deliberate leave from a real drop. */
+static bool s_leaving;
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     (void)base;
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* An intentional leave is not an attempt that failed. `net_connect` issues one
+         * before configuring each access point, and scoring it as a failure is what
+         * made every network look refused within a few milliseconds. The reason code
+         * is the reliable signal: the event can be dispatched after the call that
+         * caused it has returned, so a flag set around it races the handler. */
+        const wifi_event_sta_disconnected_t *gone = data;
+        if (s_leaving ||
+            (gone != NULL && gone->reason == WIFI_REASON_ASSOC_LEAVE)) {
+            return;
+        }
         /* A drop must downgrade the state, not just raise the flag: otherwise
          * `net_connected()` keeps answering true and `status` reports the SSID and IP
          * of a link that is gone (`04-protocol.md` §3.9 types them as the *active*
@@ -285,7 +302,9 @@ esp_err_t net_connect(void)
             ESP_LOGW(TAG, "wifi: %s: set_config failed: %s", ap->ssid,
                      esp_err_to_name(err));
         } else {
+            s_leaving = true;
             esp_wifi_disconnect();
+            s_leaving = false;
             esp_wifi_connect();
         }
 

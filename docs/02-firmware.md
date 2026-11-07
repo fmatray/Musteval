@@ -162,7 +162,10 @@ bug it exists to prevent.
   `priority` first, `retry_backoff_ms` between attempts and `connect_timeout_ms` per
   attempt. Blocks for at most the sum of those bounds. Returns `E_WIFI` when every
   configured AP refused; the device stays reachable over the link, which is the point
-  of continuing.
+  of continuing. The `esp_wifi_disconnect` it issues before configuring the next AP
+  raises `WIFI_EVENT_STA_DISCONNECTED` with reason `WIFI_REASON_ASSOC_LEAVE`, and that
+  event is **not** a failed attempt: it must not raise the failure the wait is
+  watching for, or every attempt is scored refused before the radio can associate.
 - `net_connected()`: Whether an IP is assigned right now. A `WIFI_EVENT_STA_DISCONNECTED`
   clears the state and the reported `ssid`/`ip` before it retries, so a dropped link
   reads as `connecting` with no identity rather than as a live network with a stale
