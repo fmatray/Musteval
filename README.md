@@ -45,6 +45,7 @@ The full specification is located in the `docs/` directory:
 - [10 Test Agent](docs/10-test-agent.md) - Fake device over a pty: validating peer for hardware-free bridge testing.
 - [11 Acceptance M1 M2](docs/11-acceptance-M1-M2.md) - Hand-run procedure for the M1 and M2 criteria.
 - [12 Acceptance M3](docs/12-acceptance-M3.md) - Hand-run procedure for the M3 criteria, and the two that have no route yet.
+- [13 Acceptance M4](docs/13-acceptance-M4.md) - Hand-run procedure for the M4 criteria, and why the tool surface needs a live provider.
 - [Tools](docs/tools/README.md) - Per-domain tool contracts: arguments, results, schemas.
 
 ## Quickstart (intended)
