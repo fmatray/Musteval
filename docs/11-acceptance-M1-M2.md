@@ -28,22 +28,24 @@ banner in headless mode.
 
 ### M1.2 `ping`/`pong` round trip under 10 ms
 
-- [ ] `bin/bridge`, press `F3` for Status.
-- [ ] Type `/ping` in the chat bar. The footer changes from `PING  no pong yet` to a
-      number: measured 5.5 ms on an idle link, and every later `/ping` replaces it.
+- [ ] `bin/bridge`, press `F2` for Chat if another screen is showing.
+- [ ] Type `/ping` in the input and press Enter.
+- [ ] The chat log gains a line `pong: 5.5 ms`, measured here at 1.2-5.5 ms on an
+      idle link.
+- [ ] `F3` for Status shows the same number in the footer row `PING  5.5 ms`, in
+      place of `PING  no pong yet`.
 
-The footer is a live measurement: the heartbeat refreshes it every ten seconds, so
-leave the screen open and the number moves on its own. Two facts about the budget,
-measured on this board with 40 back-to-back pings and 30 with a 150 ms pause between
-them:
+The footer is a live measurement: the heartbeat refreshes it every ten seconds, and
+later `/ping` calls replace it. The chat line appears only for a ping you typed, so
+a heartbeat does not fill the conversation with a line every ten seconds.
+
+Two facts about the budget, measured on this board with 40 back-to-back pings and 30
+with a 150 ms pause between them:
 
 | Pattern | median | p90 | min | max |
 |---|---|---|---|---|
 | Back to back | 2.0 ms | 33.9 ms | 1.2 ms | 51.4 ms |
 | 150 ms between pings | 22.4 ms | 32.0 ms | 1.5 ms | 34.1 ms |
-
-- [ ] The footer's value falls in the range the table shows for whichever pattern
-      you are producing. One `/ping` typed after a pause is the idle case.
 
 The budget is met when the device is already reading and missed when it is asleep.
 The read call blocks for up to 100 ms and returns only when bytes arrive, so the
@@ -52,9 +54,9 @@ in the path reproduces it, and the bridge's own contribution is the floor, about
 1.2 ms. Record both numbers: M1's 10 ms is met back to back and missed at idle, and
 that gap belongs to the device read loop.
 
-`bin/bridge --send /ping` exits `0` and prints nothing. A pong is a heartbeat
-frame, not a `command.result`, so headless has no body to show. That is why this
-check is a screen and not a command.
+`bin/bridge --send /ping` exits `0` and prints nothing. A pong is a heartbeat frame,
+not a `command.result`, so headless has no body to show. That is why this check is
+the TUI and not a `--send` command.
 
 ### M1.3 `status` returns device state
 

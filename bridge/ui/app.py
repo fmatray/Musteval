@@ -1455,6 +1455,12 @@ class BridgeApp(App):
         except NoMatches:
             return
         screen.show_latency(rtt)
+        # `05-bridge.md` §10 calls `/ping` the latency check, so a reader who typed
+        # it must see the number without knowing to open the Status screen. The
+        # heartbeat stays silent: a line every 10 s would bury the conversation.
+        if self._reader_pinged:
+            self._reader_pinged = False
+            self._chat().write(f"pong: {rtt:.1f} ms")
 
     def _on_command_result(self, frame: Frame) -> None:
         body = frame.body
@@ -1676,6 +1682,8 @@ class BridgeApp(App):
         except CommandError as exc:
             self._chat().write(f"✗ {exc}")
             return
+        if any(frame.type == "ping" for frame in frames):
+            self._reader_pinged = True
         for frame in frames:
             if frame.type == "command":
                 await self._request(frame.body["name"], frame.body.get("args"))
@@ -1709,6 +1717,9 @@ class BridgeApp(App):
         self._pending_secret = None
 
     _pending_secret: str | None = None
+    #: Set when the reader types `/ping`, so its pong gets a chat line and the
+    #: heartbeat's does not (`05-bridge.md` §10).
+    _reader_pinged: bool = False
 
     def _secret_value(self) -> str:
         # `05-bridge.md` §8: masked input, never rendered. `ui` collects the value

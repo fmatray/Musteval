@@ -220,6 +220,39 @@ async def test_a_path_scoped_config_get_prints_the_value_in_chat():
         await session.close()
 
 
+async def test_a_typed_ping_answers_in_chat_as_well_as_the_footer():
+    """`05-bridge.md` §10 calls `/ping` the latency check.
+
+    The footer alone is not an answer: it is on another screen and empty until the
+    status grid has loaded, so a reader who typed `/ping` saw nothing happen. The
+    heartbeat must stay silent, or a line every 10 s buries the conversation.
+    """
+    from bridge.ui import BridgeApp
+
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        log = app.query_one("#chat-log")
+        before = len(log.lines)
+
+        field = app.query_one("#chat-input")
+        field.focus()
+        field.value = "/ping"
+        await pilot.pause(0.05)
+        await pilot.press("enter")
+        for _ in range(100):
+            if len(log.lines) > before:
+                break
+            await pilot.pause(0.02)
+
+        assert "pong:" in str(log.lines[-1].text)
+        await session.close()
+
+
 async def test_status_footer_shows_the_round_trip_a_real_pong_measured():
     """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
 

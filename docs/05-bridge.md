@@ -680,7 +680,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/todo` | (Local) | none | Re-renders the phases and their tasks from the last observed `todo` tool result, one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished. It also marks a finished run whose `agent.final` carried `todo_open: true`, so an unfinished plan is visible instead of silent |
 | `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
-| `/ping` | `ping` | none | Tests link latency |
+| `/ping` | `ping` | none | Tests link latency: the answer is a `pong: <n> ms` chat line and the `PING` row on F3 |
 | `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
 | `/cancel` | `cancel` | none | Cancels current run |
 | `/logs` | (Local) | none | Switches to the Logs screen |
@@ -804,7 +804,7 @@ caught mechanically (§7 of `09-bridge-architecture.md`), so the two cannot drif
 | `mqtt.message` | MQTT screen (F6) | Appends to traffic log; no chat entry |
 | `event` | Logs screen (F5) | Log line, `event:<kind>` tag |
 | `command.result` | Originating screen | Resolves the pending command |
-| `pong` | Status screen footer | Updates the `PING` row from `Session.last_rtt_ms`, the measured round trip |
+| `pong` | Status screen footer, Chat screen | Updates the `PING` row from `Session.last_rtt_ms`, the measured round trip; a pong answering a ping the reader typed also writes `pong: <n> ms` to the chat log, while the heartbeat stays silent so it cannot bury the conversation |
 
 Commands map to surfaces the same way: `geo.locate` updates the Status screen
 GEO row and reports in chat, `mqtt.status` refreshes F6, and `mqtt.publish`
