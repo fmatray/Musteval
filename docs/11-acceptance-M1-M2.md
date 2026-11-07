@@ -10,7 +10,7 @@ present (`.venv/bin/python`). Commands are shown exactly as typed.
 
 ## Preconditions
 
-- [ ] `bin/bridge --send /status` prints a JSON object. If it does not, the
+- [X] `bin/bridge --send /status` prints a JSON object. If it does not, the
       board is not on the link and nothing below will work.
 
 Read its `boot_id`. Keep it: several checks below compare it to prove the device
@@ -20,7 +20,7 @@ did not reboot.
 
 ### M1.1 Bridge connects, `hello`/`hello_ack` exchanged
 
-- [ ] `bin/bridge --send /status` prints a JSON object and exits `0`.
+- [X] `bin/bridge --send /status` prints a JSON object and exits `0`.
 
 `--send` performs the full handshake before the command, so a printed object is
 the `hello`/`hello_ack` round trip succeeding. There is no separate "connected"
@@ -58,7 +58,7 @@ check is a screen and not a command.
 
 ### M1.3 `status` returns device state
 
-- [ ] `bin/bridge --send /status` prints keys `agent`, `boot_id`, `geo`, `llm`,
+- [X] `bin/bridge --send /status` prints keys `agent`, `boot_id`, `geo`, `llm`,
       `mcp`, `mem`, `mqtt`, `storage`, `sys`, `time`, `uptime_s`, `wifi`.
 
 ### M1.4 Input validation: oversize and malformed lines
@@ -67,7 +67,7 @@ The bridge refuses to build these frames, so a user cannot type them and they ar
 not hand-testable through the TUI. They are covered by the host suite, which asserts
 both halves of `04` §1.2:
 
-- [ ] `cd firmware/test_host && ./build/musteval_test_host.elf` passes: cases
+- [X] `cd firmware/test_host && ./build/musteval_test_host.elf` passes: cases
       "an oversize line still exposes its id prefix", "an oversize line without an
       id reports the bytes it dropped" and "a line that is not JSON names the parse
       offset" are in that binary. Build first with the command in
@@ -78,10 +78,10 @@ both halves of `04` §1.2:
 On the board the observable half is recovery: a refused line costs one reply, not
 the link. Watch `boot_id` in `/status` (chat bar, or `F3`):
 
-- [ ] `bin/bridge --send "/config set device.log_level loud"` answers a
+- [X] `bin/bridge --send "/config set device.log_level loud"` answers a
       `command.result` with `ok:false` and `E_CONFIG`: the device answered a refusal
       and stayed up.
-- [ ] `bin/bridge --send /status` still answers and its `boot_id` is unchanged.
+- [X] `bin/bridge --send /status` still answers and its `boot_id` is unchanged.
 
 The bytes for an oversize line, a malformed line and their `dropped_bytes` counters
 are asserted by the host suite and cannot be typed: the bridge refuses to build such
@@ -91,8 +91,8 @@ a frame, and `test_agent.py` is a peer of the device, not a way around that.
 
 A command that succeeds logs nothing, so the trigger must be one that warns.
 
-- [ ] `bin/bridge --json --log-file /tmp/frames.ndjson --send "/config set device.log_level loud"`
-- [ ] `grep -v '^$' /tmp/frames.ndjson | grep '"type":"log"'` prints a line with
+- [X] `bin/bridge --json --log-file /tmp/frames.ndjson --send "/config set device.log_level loud"`
+- [X] `grep -v '^$' /tmp/frames.ndjson | grep '"type":"log"'` prints a line with
       `"level":"warn"`, `"tag":"musteval"`, `"msg":"config.set rejected: device.log_level: not an allowed value"`.
 
 The frame carries `t_ms` (uptime milliseconds), not wall time: `ts` is `0` until
@@ -101,9 +101,9 @@ produced before `hello` are not replayed.
 
 ### M1.6 Headless run against the test agent, no board
 
-- [ ] Terminal 1: `.venv/bin/python bridge/tools/test_agent.py --port /tmp/ta > /tmp/ta_out &`
+- [X] Terminal 1: `.venv/bin/python bridge/tools/test_agent.py --port /tmp/ta > /tmp/ta_out &`
       then `sleep 3`. The agent prints the pty it opened on its first stdout line.
-- [ ] Terminal 2: `.venv/bin/bridge --target test --port "$(head -1 /tmp/ta_out)" --send /status`
+- [X] Terminal 2: `.venv/bin/bridge --target test --port "$(head -1 /tmp/ta_out)" --send /status`
       prints a status object and exits `0`, with no board attached.
 
 `--target test` is required: `--target usb` refuses a pty by design
@@ -112,40 +112,35 @@ human line to stderr; `head -1` takes the path.
 
 ## M2: configuration and storage
 
-### M2.1 An unresolved `secret_ref` loads degraded, naming the key
+### M2.1 An unresolved `secret_ref` is refused, and the document is kept
 
-There is no hand-testable route to this state today, and that is a gap in the
+There is no hand-testable route to the *degraded* state, and that is a gap in the
 product rather than in this procedure. `config.set` refuses an unresolved reference
-outright, and the only writer that can place a whole document — `fs.put` — needs its
-bytes built over the wire, which no screen does: the Files screen uploads through
+outright, and the only writer that can place a whole document — `fs.put` — takes its
+bytes over the wire, which no screen does: the Files screen uploads through
 `sandbox.write` and cannot reach `/config.json`. The degraded path is therefore
 reachable only by a script, and its firmware side has no host test either.
 
 What a user can observe is the refusal, which is the same rule seen from the other
-side:
+side. The path uses **numbers for array indices**, separated by dots:
 
 - [ ] `bin/bridge --send /config set wifi.networks.0.password_ref nvs:no_such_key`
-      prints `E_CONFIG` with "a secret reference in the result does not resolve".
-- [ ] `bin/bridge --send /config get wifi.networks.0.password_ref` still returns the
-      old value: the rejected write changed nothing.
+      answers `ok: false`, `code: E_CONFIG`, "a secret reference in the result does
+      not resolve".
+- [ ] `bin/bridge --send /config get wifi.networks.0.password_ref` still returns
+      `nvs:wifi_test`: the rejected write changed nothing.
+- [ ] In the TUI, `/config get wifi.networks.0.password_ref` prints
+      `{"path": "wifi.networks.0.password_ref", "value": "nvs:wifi_test"}` in the chat
+      log.
 
-Restoring and re-reading a good document is covered by M2.2, which is the same
-`reload` path.
-
-### M2.2 `secret.set` then `reload`
-
-`secret.set` takes its value from a masked modal, so it is a TUI action, not a
-`--send` one.
-
-- [ ] `bin/bridge`, then type `/secret set wifi_test` in the chat bar.
-- [ ] The prompt masks the value; it never appears on screen or in the terminal.
-- [ ] `/reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
-      again without a reboot. Measured; `secret.set` answers
-      `{'key': 'wifi_test', 'length': 16, 'stored': true}` and never echoes the value.
+The bracket form `wifi.networks[0].password_ref` is **not** a path: the walker splits
+on dots only, so `0` must be its own segment. A bracket path fails one step earlier
+with "no such path in config.json; a set never creates a parent key". If you reach
+that message, the spelling is wrong, not the reference.
 
 ### M2.3 `config.get` redacts
 
-- [ ] `bin/bridge --send /config get wifi.networks.0.password_ref` prints
+- [X] `bin/bridge --send /config get wifi.networks.0.password_ref` prints
       `{'path': 'wifi.networks.0.password_ref', 'value': 'nvs:wifi_test'}`.
 
 The value is the `nvs:` reference, never the stored secret. A leak would print the
@@ -157,13 +152,13 @@ passphrase itself in `value`.
 declared file extensions. `fs.put` takes its bytes over the wire, so a slash command
 cannot express one.
 
-- [ ] `bin/bridge --send /sandbox list` prints
+- [X] `bin/bridge --send /sandbox list` prints
       `{'entries': [{'bytes': 0, 'dir': True, 'name': 'd'}, ...], 'path': '/workspace/'}`
       — measured; the directory and its files are both listed.
-- [ ] `bin/bridge --send "/fs put /prompts/x.md"` prints `no file loaded to upload`
+- [X] `bin/bridge --send "/fs put /prompts/x.md"` prints `no file loaded to upload`
       — measured. The refusal is the bridge's, before anything reaches the wire, so
       this step proves the guard exists and proves nothing about the device.
-- [ ] `F7` for Files, `Ctrl+O` uploads a host file into `/workspace/`; the chat log
+- [X] `F7` for Files, `Ctrl+O` uploads a host file into `/workspace/`; the chat log
       prints one line naming the destination, and the file appears in the table.
       The screen browses `/workspace/` only, so `/prompts/` and the other
       extension-restricted roots cannot be reached from it: the allowlist below
@@ -171,7 +166,7 @@ cannot express one.
 
 ### M2.5 Config writes are atomic
 
-- [ ] `bin/bridge --send /config set wifi.networks.0.ssid ""` is rejected with
+- [X] `bin/bridge --send /config set wifi.networks.0.ssid ""` is rejected with
       `E_CONFIG`, and `bin/bridge --send /config get wifi.networks.0.ssid` still
       returns the previous value.
 

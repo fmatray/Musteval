@@ -165,6 +165,61 @@ async def test_ui_connects_and_renders_the_greeting():
         await session.close()
 
 
+async def test_a_path_scoped_config_get_prints_the_value_in_chat():
+    """`04` §4.8 gives `config.get` two shapes: a whole document under `config`,
+    a path read under `path`/`value`. The second was read as the first, flattened
+    into the Settings grid, and printed nothing — so `/config get <path>` looked
+    like it had done nothing at all.
+    """
+
+    def reply_for(sent):
+        frame = json.loads(sent)
+        if frame.get("name") != "config.get":
+            return _reply(sent)
+        return [
+            encode(
+                Frame(
+                    type="command.result",
+                    id="r-1",
+                    ts=0,
+                    reply_to=frame["id"],
+                    body={
+                        "name": "config.get",
+                        "ok": True,
+                        "duration_ms": 1,
+                        "result": {"path": "wifi.networks.0.ssid", "value": "home"},
+                    },
+                )
+            )
+        ]
+
+    from bridge.ui import BridgeApp
+
+    session = Session(
+        FakeTransport(on_write=reply_for), ack_timeout=1, ping_interval=99
+    )
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        log = app.query_one("#chat-log")
+        before = len(log.lines)
+        field = app.query_one("#chat-input")
+        field.focus()
+        field.value = "/config get wifi.networks.0.ssid"
+        await pilot.pause(0.05)
+        await pilot.press("enter")
+        for _ in range(100):
+            if len(log.lines) > before:
+                break
+            await pilot.pause(0.02)
+        written = " ".join(str(line.text) for line in log.lines[before:])
+        assert "home" in written
+        await session.close()
+
+
 async def test_status_footer_shows_the_round_trip_a_real_pong_measured():
     """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
 

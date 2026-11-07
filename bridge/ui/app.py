@@ -1488,7 +1488,17 @@ class BridgeApp(App):
             self._chat().write(f"{len(servers)} broker(s)")
             return
         if name == "config.get" and isinstance(result, dict):
-            # No `path` was sent, so this is the whole config (`04` §4.8).
+            # Two reply shapes share this name (`04` §4.8): a whole document comes
+            # back under `config`, a path-scoped read under `path`/`value`. Treating
+            # the second as the first flattened one value into the Settings grid and
+            # showed the reader nothing, so `/config get <path>` looked dead.
+            if "path" in result:
+                self._chat().write(
+                    render_json_block(
+                        {"path": result.get("path"), "value": result.get("value")}
+                    )
+                )
+                return
             raw = result.get("config", result)
             self._config = flatten(raw)
             self._config_fetched = True
