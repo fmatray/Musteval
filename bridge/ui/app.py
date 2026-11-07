@@ -949,6 +949,9 @@ class BridgeApp(App):
         #: `_config` is empty both before the first fetch and when the device
         #: reports nothing, so a flag decides whether a fetch already happened.
         self._config_fetched = False
+        #: Set while a caller fetches the document for its own use, so the reply
+        #: caches it without moving the reader off the screen they were on.
+        self._config_quiet = False
         # A silent refresh after a mutation should not narrate its count.
         self._tasks_quiet = False
         self._tasks: list[dict[str, Any]] = []
@@ -1589,7 +1592,8 @@ class BridgeApp(App):
             self._config = flatten(raw)
             self._config_fetched = True
             self.query_one("#settings", SettingsScreen).render_rows(self._config)
-            self.action_show("settings")
+            if not self._config_quiet:
+                self.action_show("settings")
             return
         if name == "config.set":
             self._chat().write(
@@ -1638,6 +1642,20 @@ class BridgeApp(App):
         self._chat().write(render_json_block(result))
 
     # -- input ----------------------------------------------------------
+
+    async def _fetch_config(self) -> None:
+        """Read the whole document into `_config` without showing the Settings grid.
+
+        The whole-document reply navigates on purpose: `/settings` and a `Ctrl+R`
+        refresh are the reader asking for that grid. A command that needs the
+        document as an input — `/thinking`, `/onboard` — is not, and letting the
+        reply navigate wrote its answer into a pane it had just hidden.
+        """
+        self._config_quiet = True
+        try:
+            await self._request("config.get")
+        finally:
+            self._config_quiet = False
 
     async def _request(
         self, name: str, args: dict[str, Any] | None = None
@@ -1725,6 +1743,9 @@ class BridgeApp(App):
             return
         if head in LOCAL_COMMANDS:
             self._run_local(head)
+            return
+        if head == "thinking":
+            await self._thinking(words[1:])
             return
         if head == "diag":
             # `05-bridge.md` §7: reuses the `status` frame, renders only the
@@ -1832,22 +1853,12 @@ class BridgeApp(App):
             # arrived. It is only fetched when the settings screen is opened, so a
             # fresh process opened this form on an empty document and every field
             # looked unconfigured — including the provider, which suppressed the model
-            # fetch. The reply also navigates to the settings grid, so the screen the
-            # reader was on is restored: the wizard is a modal over their screen.
-            before = next(
-                (
-                    name
-                    for name in ("chat", "status", "tasks", "logs", "settings",
-                                 "mqtt", "files")
-                    if self.query_one(f"#{name}").display
-                ),
-                "chat",
-            )
+            # fetch. The fetch is quiet so the wizard stays a modal over the screen
+            # the reader was on, rather than landing them on the settings grid.
             async with self._working(
                 "reading the device's config", "one config.get, to pre-fill the form"
             ):
-                await self._request("config.get")
-            self.action_show(before)
+                await self._fetch_config()
 
         answers = await self._onboard_network()
         if answers is None:
@@ -1943,10 +1954,19 @@ class BridgeApp(App):
         stored = self._existing("llm.providers")
         first = stored[0] if isinstance(stored, list) and stored else {}
         stored_model = str(first.get("model") or "") if isinstance(first, dict) else ""
+        # The level is seeded from the stored entry, not from `none`: re-running the
+        # wizard must not be a silent downgrade for a reader who set one (`05` §13.6).
+        stored_extra = first.get("extra_body") if isinstance(first, dict) else None
+        entries, notes = providers_mod.catalog()
+        for note in notes:
+            self._chat().write(note)
+        entry = providers_mod.find(answers.provider) if answers.provider else None
         step = ModelStep(
             models=models,
             provider=answers.provider or "",
             model=(answers.model or stored_model or (models[0] if models else "")),
+            thinking=entry.level_of(stored_extra) if entry is not None else "none",
+            entries=entries,
         )
         picked = await self.push_screen_wait(step)
         if picked is None:
@@ -2157,6 +2177,40 @@ class BridgeApp(App):
         await self._request_secret(
             Frame(type="secret.set", id=new_id("b"), ts=0, body={"key": key})
         )
+
+    async def _thinking(self, rest: list[str]) -> None:
+        """`05` §7.2: read, or read-modify-write, the provider's thinking level.
+
+        The level is validated against the catalog before any frame is sent: the
+        device accepts any flat `extra_body` member and turns every call into a 400,
+        so a refused word has to be refused here, where it can be named.
+        """
+        level = rest[0] if rest else ""
+        # Both forms read the stored entry: the write is a read-modify-write, and the
+        # read form has nothing to report on an unfetched document. Without this the
+        # line said "no provider is not in this bridge's catalog" against an empty
+        # `_config`, which is a report on a document nobody asked the device for.
+        if not self._config_fetched:
+            await self._fetch_config()
+        chain = self._existing("llm.providers")
+        if not level:
+            self._chat().write(onboard.thinking_line(level, chain))
+            return
+        plan, why = onboard.thinking_writes(level, chain)
+        if plan is None:
+            self._chat().write(why, kind="error")
+            return
+        async with self._working(
+            "writing the thinking level", f"config.set llm.providers ({level})"
+        ):
+            ok, refused = await self._send_body(plan[0][0], plan[0][1])
+        if not ok:
+            self._chat().write(f"thinking: refused ({refused})", kind="error")
+            return
+        # The device's own answer, not the request's: `config.set` reports `applied`
+        # only when the running chain re-read the document (`04` §4.9).
+        self.run_worker(self._request("config.get"))
+        self._chat().write(f"thinking: {level}")
 
     def _run_local(self, head: str) -> None:
         if head == "logs":

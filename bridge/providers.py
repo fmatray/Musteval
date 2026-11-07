@@ -52,12 +52,46 @@ class Provider:
 
     def extra_body(self, level: str) -> dict[str, object]:
         """The `extra_body` for `level`. An unusable level is no member at all, and
-        `none` is an explicit "no thinking" only where the provider takes one."""
+        `none` is an explicit "no thinking" only where the provider takes one.
+
+        `thinking_budget` has no token form of "off", so its `none` is the absence of
+        the member — which is what the caller gets, an empty dict."""
         if self.thinking == THINKING_REASONING_EFFORT and level in THINKING_LEVELS:
             return {"reasoning_effort": level}
         if self.thinking == THINKING_BUDGET and level in THINKING_LEVELS[1:]:
             return {"thinking_budget": _BUDGETS[level]}
         return {}
+
+    def level_of(self, extra_body: object) -> str:
+        """The level a stored `extra_body` names, or `none`.
+
+        The inverse of `extra_body`, used to seed the wizard's picker from what the
+        device already holds (`05` §13.6). A member this mapping does not recognise
+        is reported as `none` rather than guessed at: the member is the reader's, and
+        the wizard writing over an unrecognised value would be a silent downgrade of
+        a setting the catalog does not model.
+        """
+        if not isinstance(extra_body, dict):
+            return THINKING_NONE
+        if self.thinking == THINKING_REASONING_EFFORT:
+            found = extra_body.get("reasoning_effort")
+            return found if found in THINKING_LEVELS else THINKING_NONE
+        if self.thinking == THINKING_BUDGET:
+            budget = extra_body.get("thinking_budget")
+            for level, tokens in _BUDGETS.items():
+                if budget == tokens:
+                    return level
+        return THINKING_NONE
+
+    def without_level(self, extra_body: object) -> dict[str, object]:
+        """`extra_body` with this provider's level member removed, others kept.
+
+        `/thinking` writes the whole array (`05` §7.2), so every other member the
+        reader's entry carries has to survive the write."""
+        keep = dict(extra_body) if isinstance(extra_body, dict) else {}
+        for member in ("reasoning_effort", "thinking_budget"):
+            keep.pop(member, None)
+        return keep
 
 
 #: The providers `03-config.md` §Provider compatibility documents, in that table's

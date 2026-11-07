@@ -65,6 +65,11 @@ bool cfg_set(json_doc_t *doc, const char *path, const json_node_t *value);
  * `ntp.servers`), false otherwise. Pure, so the rule is unit-tested. */
 bool cfg_needs_reboot(const char *path);
 
+/* True for a path whose value the running firmware holds a copy of, so a set to it
+ * is not applied until the copy is re-read — today only `llm.*`, which `llm_init`
+ * owns and `config.set` re-runs (`02-firmware.md` §Request body). */
+bool cfg_is_live_path(const char *path);
+
 /* Serialise `doc` canonically into `buf` (`03-config.md` §config.json, `AGENTS.md`
  * rule 4). `*written` excludes the terminator. */
 esp_err_t cfg_emit(json_doc_t *doc, char *buf, size_t cap, size_t *written);

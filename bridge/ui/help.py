@@ -38,7 +38,7 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
         "status", "reload", "reboot", "tasks", "run", "config", "secret",
         "templates", "template", "mqtt", "geo", "fs", "sandbox", "sys",
     ),
-    "Chat": ("retry", "ping", "cancel", "diag", "export"),
+    "Chat": ("retry", "ping", "cancel", "diag", "thinking", "export"),
     "Info": ("tools", "mcp", "usage", "context", "todo"),
     "Screens": ("settings", "onboard", "files", "logs", "help", "quit"),
 }
@@ -95,6 +95,12 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("retry", "/retry", "resend the last prompt", False),
     CommandHelp("ping", "/ping", "test link latency", False),
     CommandHelp("cancel", "/cancel", "cancel the current run", False),
+    CommandHelp(
+        "thinking",
+        "/thinking | /thinking <level>",
+        "read or set the provider's thinking level",
+        False,
+    ),
     CommandHelp("diag", "/diag", "render the diagnostic half of status", False),
     CommandHelp("tools", "/tools", "list built-in and MCP tools", True),
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),

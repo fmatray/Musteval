@@ -279,6 +279,24 @@ TEST_CASE("requires_reboot follows the path prefix", "[cfg]")
     TEST_ASSERT_FALSE(cfg_needs_reboot("xwifi.networks"));
 }
 
+/* `04` §4.9: `applied` is true only when the running firmware took the value, so the
+ * paths whose value it holds a copy of have to be named. `llm.*` is the whole set:
+ * `llm_init` copies the chain and `config.set` re-runs it. */
+TEST_CASE("a path whose value the firmware copies is not applied by writing", "[cfg]")
+{
+    TEST_ASSERT_TRUE(cfg_is_live_path("llm.providers"));
+    TEST_ASSERT_TRUE(cfg_is_live_path("llm.providers.0.model"));
+    TEST_ASSERT_TRUE(cfg_is_live_path("llm.budget.hour"));
+
+    TEST_ASSERT_FALSE(cfg_is_live_path("ntp.timezone"));
+    TEST_ASSERT_FALSE(cfg_is_live_path("device.name"));
+    TEST_ASSERT_FALSE(cfg_is_live_path(NULL));
+
+    /* A prefix, not a substring: an unrelated path starting with the same letters is
+     * not the `llm` block. */
+    TEST_ASSERT_FALSE(cfg_is_live_path("llmx.providers"));
+}
+
 TEST_CASE("a config round-trips through the canonical writer", "[cfg]")
 {
     json_doc_t *doc = NULL;

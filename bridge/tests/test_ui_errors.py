@@ -353,3 +353,119 @@ async def test_a_protocol_event_reaches_the_logs_not_the_chat():
         assert "E_PROTOCOL" not in _text(app)
 
     await _run(_scripted(), body)
+
+
+# -- `/thinking` (`05` §7.2) ---------------------------------------------
+
+
+async def test_thinking_reports_the_stored_level_and_the_levels_offered():
+    """No argument is a read: the stored level, and what this provider takes."""
+
+    async def body(app, pilot):
+        app._config = {
+            "llm.providers": [
+                {"id": "groq", "extra_body": {"reasoning_effort": "low"}}
+            ]
+        }
+        app._config_fetched = True
+        await app._run_command("/thinking")
+        await pilot.pause(0.1)
+        text = _text(app)
+        assert "thinking: low" in text
+        assert "medium" in text and "high" in text
+
+    await _run(_scripted(), body)
+
+
+async def test_thinking_refuses_a_provider_that_takes_no_level_without_a_frame():
+    """The device would accept any flat member and 400 on the next prompt, so the
+    refusal has to be `$error` here, with no `config.set` on the wire."""
+    sent: list[str] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "command":
+            sent.append(str(frame.get("name")))
+        return _scripted()(line)
+
+    async def body(app, pilot):
+        app._config = {"llm.providers": [{"id": "ollama-cloud", "model": "m"}]}
+        app._config_fetched = True
+        await app._run_command("/thinking high")
+        await pilot.pause(0.1)
+        assert "takes no thinking level" in _text(app)
+
+    await _run(reply, body)
+    assert "config.set" not in sent, sent
+
+
+async def test_thinking_writes_the_whole_array_and_says_the_level():
+    """The write keeps the entry's other members, and the line claims the level only
+    once the device reports the chain took it (`04` §4.9)."""
+    written: list[object] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "command" and frame.get("name") == "config.set":
+            args = frame.get("args") or {}
+            assert args.get("path") == "llm.providers", args
+            written.append(args.get("value"))
+        return _scripted()(line)
+
+    async def body(app, pilot):
+        app._config = {
+            "llm.providers": [
+                {
+                    "id": "groq",
+                    "base_url": "https://api.groq.com/openai/v1",
+                    "model": "m",
+                    "api_key_ref": "nvs:llm_api_key",
+                    "extra_body": {"reasoning_effort": "low", "seed": 7},
+                }
+            ]
+        }
+        app._config_fetched = True
+        await app._run_command("/thinking high")
+        await pilot.pause(0.2)
+        assert "thinking: high" in _text(app)
+
+    await _run(reply, body)
+    assert written, "no config.set reached the device"
+    entry = written[0][0]
+    assert entry["extra_body"] == {"seed": 7, "reasoning_effort": "high"}
+    assert entry["model"] == "m"
+
+
+async def test_thinking_reads_the_document_before_reporting_on_it():
+    """The read form reported on an unfetched `_config`: an empty document produced
+    "no provider is not in this bridge's catalog", a claim about a document the
+    bridge had never asked the device for."""
+    asked: list[str] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "command":
+            asked.append(str(frame.get("name")))
+        return _scripted()(line)
+
+    async def body(app, pilot):
+        await app._run_command("/thinking")
+        await pilot.pause(0.2)
+        # The device was asked, and the line is about the device's document.
+        assert "no provider is configured" in _text(app)
+
+    await _run(reply, body)
+    assert "config.get" in asked, asked
+
+
+async def test_a_command_that_reads_the_config_does_not_move_the_reader():
+    """`/thinking` fetched the document and the whole-document reply navigated to
+    Settings, so the answer it wrote landed in a pane it had just hidden. The reply
+    still navigates for `/settings` and its refresh: that is the reader asking."""
+    async def body(app, pilot):
+        await app._run_command("/thinking")
+        await pilot.pause(0.2)
+        assert app.query_one("#settings").display is False
+        assert "thinking:" in _text(app)
+
+    await _run(_scripted(), body)

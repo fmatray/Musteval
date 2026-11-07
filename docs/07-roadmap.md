@@ -126,6 +126,11 @@ Goal: implement the serialized agent run and the tool execution engine.
    was accepted.
  - Onboarding reboots: a change to `wifi.*` reports `requires_reboot: true`, a change
    to `ntp.timezone` reports `false` and is applied by `reload`.
+ - The thinking level is changeable without re-running the wizard: `/thinking` reads
+   the stored level and `/thinking <level>` writes it into the entry's `extra_body`,
+   refused on the host for a provider whose catalog row takes none (`05` §7.2). The
+   write reports `applied` only because `config.set` re-reads `llm.providers`, so the
+   next prompt uses the new level with no `reload` and no reboot.
 
 Firmware status: `agent`, `tools` and `skills` are implemented and link clean, and
 `docs/13-acceptance-M4.md` records which rows were run on a board. Everything that

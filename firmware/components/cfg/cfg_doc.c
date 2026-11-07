@@ -107,3 +107,11 @@ bool cfg_redact(char *line, size_t cap, const char *const *secrets, size_t n)
     return changed;
 }
 
+bool cfg_is_live_path(const char *path)
+{
+    /* The one block a set cannot apply by writing the file: `llm_init` copies the
+     * chain into the running module and start-up is its only other caller, so
+     * `config.set` re-reads it before replying. Everything else the firmware keeps
+     * in config is read when it is used. */
+    return path != NULL && strncmp(path, "llm.", 4) == 0;
+}

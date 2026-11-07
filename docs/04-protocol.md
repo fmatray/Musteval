@@ -724,6 +724,12 @@ list says nothing about entries 1 and 2, and `03-config.md` requires each to be
 complete. A whole-array set (`{"path":"wifi.networks","value":[...]}`) replaces the
 array and is the way to add one.
 
+`applied` is `true` only when the running firmware took the value. A set to
+`llm.*` re-reads the provider chain before replying (`02-firmware.md` §Request body),
+so the reply reflects the chain the next prompt will use rather than the document
+that was just written; if that re-read fails, `applied` is `false` and
+`requires_reboot` is `true`.
+
 `requires_reboot` is `true` when the key is not applied by the running firmware until
 the next boot *unless* a `reload` intervenes — `wifi.*`, `serial.*` and `ntp.servers`
 — and `false` otherwise. `ntp.timezone` is `false`: `clock_init` applies it, and

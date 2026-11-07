@@ -216,6 +216,73 @@ def writes(answers: Answers) -> list[tuple[str, dict[str, object]]]:
     )
 
 
+def thinking_writes(
+    level: str, providers_now: object
+) -> "tuple[list[tuple[str, dict[str, object]]] | None, str]":
+    """`/thinking <level>`: the frames that set one entry's level, or why not.
+
+    A read-modify-write of `llm.providers[0].extra_body`, so the path is the whole
+    array: `04` §4.9 will not create a missing index, and writing the array preserves
+    every other member of the entry — `05` §7.2's whole point is that a level change
+    is not a reconfiguration.
+
+    Returns `(None, refusal)` when the level cannot be written: an unknown word, a
+    provider the catalog does not describe, or a provider whose row takes no level.
+    All three are refused **on the host**, because the device accepts any flat member
+    and turns every call into a 400, and a 400 on the reader's next prompt is the
+    worst possible way to learn that.
+    """
+    chain = providers_now if isinstance(providers_now, list) else []
+    if not chain or not isinstance(chain[0], dict):
+        return None, "no provider is configured; run /onboard first"
+    entry_now = chain[0]
+    provider_id_ = str(entry_now.get("id") or "")
+    if not provider_id_:
+        return None, "the stored provider has no id; run /onboard first"
+    entry = providers.find(provider_id_)
+    if entry is None:
+        return None, f"provider {provider_id_!r} is not in this bridge's catalog"
+    if not entry.thinking_levels:
+        return None, f"{provider_id_} takes no thinking level; nothing to set"
+    if level not in entry.thinking_levels:
+        return None, (
+            f"{level!r} is not a level {provider_id_} takes; "
+            f"choose from {', '.join(entry.thinking_levels)}"
+        )
+    member = entry.without_level(entry_now.get("extra_body"))
+    member.update(entry.extra_body(level))
+    updated = dict(entry_now)
+    if member:
+        updated["extra_body"] = member
+    else:
+        # `thinking_budget` has no token form of "off", so `none` is the member's
+        # absence rather than a zero budget (`05` §7.2).
+        updated.pop("extra_body", None)
+    return [("config", {"llm.providers": [updated] + list(chain[1:])})], ""
+
+
+def thinking_line(level: str, providers_now: object) -> str:
+    """What `/thinking` says for a provider it can describe: the level, or why not.
+
+    The levels are the catalog's, so the reader learns what the provider accepts
+    without being shown a list the device would refuse.
+    """
+    chain = providers_now if isinstance(providers_now, list) else []
+    entry_now = chain[0] if chain and isinstance(chain[0], dict) else {}
+    provider_id_ = str(entry_now.get("id") or "")
+    if not provider_id_:
+        return "thinking: no provider is configured; run /onboard first"
+    entry = providers.find(provider_id_)
+    if entry is None:
+        return f"thinking: {provider_id_} is not in this bridge's catalog"
+    if not entry.thinking_levels:
+        return f"thinking: {provider_id_} takes no thinking level"
+    return (
+        f"thinking: {entry.level_of(entry_now.get('extra_body'))}"
+        f" (choose from {', '.join(entry.thinking_levels)})"
+    )
+
+
 def verdict_network(status: dict[str, object] | None) -> str:
     """What the device says about the network the step just wrote.
 
@@ -328,7 +395,14 @@ def narration(
                 lines.append("creates llm.providers (1 entry)")
             lines.append(f"provider model {answers.model}")
             if answers.extra_body:
-                lines.append(f"thinking: {answers.extra_body}")
+                # The level, not the raw member: `{"reasoning_effort":"high"}` is the
+                # catalog's encoding, and the reader chose a word.
+                level = providers.find(answers.provider)
+                lines.append(
+                    f"thinking: {level.level_of(answers.extra_body)}"
+                    if level is not None
+                    else f"thinking: {answers.extra_body}"
+                )
             lines.append(f"stores nvs:{LLM_KEY}")
 
     if step in ("network", "all") and answers.timezone:

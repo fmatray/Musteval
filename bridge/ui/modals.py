@@ -596,17 +596,20 @@ class ModelStep(_StepBox):
         provider: str = "",
         model: str = "",
         thinking: str = "none",
+        entries: list[Any] | None = None,
     ) -> None:
         super().__init__()
         self.models = models or []
         self.provider = provider
         self.model = model
         self.thinking = thinking
+        # The catalog the provider step was built from, so a custom entry's levels
+        # are offered too: reading `BUILTIN` here made a host-file provider look like
+        # one with no thinking member.
+        self.entries = entries if entries is not None else [p for p in providers.BUILTIN]
 
     def fields(self) -> Any:
-        levels = _thinking_levels(
-            [p for p in providers.BUILTIN], self.provider
-        )
+        levels = _thinking_levels(self.entries, self.provider)
         yield_this = [
             Static(
                 f"{len(self.models)} models from {self.provider}"

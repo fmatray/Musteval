@@ -284,3 +284,33 @@ def test_an_unknown_region_is_accepted_as_its_own_tz():
     tz, server = providers.timezone_for("XYZ-3")
     assert tz == "XYZ-3"
     assert server == "0.europe.pool.ntp.org"
+
+
+def test_a_level_round_trips_through_extra_body():
+    """`05` §7.2 seeds the picker from the stored entry, so `level_of` must invert
+    `extra_body` for every mode — otherwise re-running `/onboard` silently resets a
+    level the reader set."""
+    for provider_id in ("groq", "gemini", "anthropic"):
+        entry = providers.find(provider_id)
+        for level in entry.thinking_levels:
+            assert entry.level_of(entry.extra_body(level)) == level, (provider_id, level)
+
+
+def test_an_unrecognised_level_member_reads_as_none_rather_than_a_guess():
+    """The member is the reader's. Guessing a level from a value the catalog does not
+    model is how a wizard writes over a setting it was not asked to touch."""
+    groq = providers.find("groq")
+    assert groq.level_of({"reasoning_effort": "minimal"}) == "none"
+    assert groq.level_of({"unrelated": 1}) == "none"
+    assert groq.level_of(None) == "none"
+    # A budget between the mapped steps names no level either.
+    assert providers.find("anthropic").level_of({"thinking_budget": 2000}) == "none"
+
+
+def test_without_level_keeps_every_other_member():
+    """`/thinking` writes the whole array (`05` §7.2), so a member the reader added to
+    `extra_body` has to survive a level change."""
+    groq = providers.find("groq")
+    kept = groq.without_level({"reasoning_effort": "low", "seed": 7})
+    assert kept == {"seed": 7}
+    assert groq.without_level(None) == {}

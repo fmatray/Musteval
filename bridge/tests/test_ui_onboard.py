@@ -725,3 +725,116 @@ async def test_the_wizard_prefills_from_a_config_it_fetched_itself():
     assert seen, "the form was opened"
     assert seen[0].get("llm.providers"), "the config arrived before the form was shown"
     assert visible == ["chat"], "the wizard is a modal, not a detour through settings"
+
+
+def test_a_level_write_is_the_whole_array_and_keeps_other_members():
+    """`05` §7.2: a level change is not a reconfiguration.
+
+    `04` §4.9 will not create an index, so the path is the array; and the array form
+    is what preserves the entry's other members, including `extra_body` members the
+    catalog does not model.
+    """
+    chain = [
+        {
+            "id": "groq",
+            "base_url": "https://api.groq.com/openai/v1",
+            "model": "m",
+            "api_key_ref": "nvs:llm_api_key",
+            "extra_body": {"reasoning_effort": "low", "seed": 7},
+        },
+        {"id": "openrouter", "base_url": "u", "model": "b", "api_key_ref": "nvs:k"},
+    ]
+    plan, why = onboard.thinking_writes("high", chain)
+    assert why == ""
+    assert [kind for kind, _ in plan] == ["config"]
+    written = plan[0][1]["llm.providers"]
+    assert written[0]["extra_body"] == {"seed": 7, "reasoning_effort": "high"}
+    assert written[0]["model"] == "m"
+    # The rest of the chain is untouched: the chain is a fallback list, not one entry.
+    assert written[1] == chain[1]
+
+
+def test_a_budget_provider_turning_thinking_off_drops_the_member():
+    """`thinking_budget` has no token form of "off"; writing 0 would be a budget."""
+    plan, why = onboard.thinking_writes(
+        "none",
+        [{"id": "anthropic", "extra_body": {"thinking_budget": 4096}, "model": "m"}],
+    )
+    assert why == ""
+    assert "extra_body" not in plan[0][1]["llm.providers"][0]
+
+
+def test_a_level_the_provider_does_not_take_is_refused_on_the_host():
+    """The device accepts any flat member and turns every call into a 400, so the
+    refusal has to happen where it can name the provider (`05` §7.2)."""
+    plan, why = onboard.thinking_writes("high", [{"id": "ollama-cloud", "model": "m"}])
+    assert plan is None
+    assert "takes no thinking level" in why
+    plan, why = onboard.thinking_writes("maximal", [{"id": "groq", "model": "m"}])
+    assert plan is None
+    assert "not a level" in why and "high" in why
+    plan, why = onboard.thinking_writes("high", [])
+    assert plan is None and "/onboard" in why
+
+
+async def test_the_model_step_is_handed_the_stored_level():
+    """`05` §13.6: re-running the wizard must not be a silent downgrade.
+
+    The assertion is on the step the app *built*, not on the answer a fake screen
+    returned: a fake that answers `high` would pass whatever the app seeded.
+    """
+    device = Device()
+    app = _app(device)
+    seen: list[ModelStep] = []
+
+    async def fake_screen(screen):
+        if isinstance(screen, NetworkStep):
+            return _answer(ssid="HomeLab", password="pw", auth="wpa2",
+                           timezone="UTC0", skip_network=True)
+        if isinstance(screen, ProviderStep):
+            return _answer(base_url="https://api.groq.com/openai/v1",
+                           provider="groq", api_key="k")
+        if isinstance(screen, ModelStep):
+            seen.append(screen)
+        return None
+
+    async def fake_fetch(_answers):
+        return ["llama-3.3-70b"]
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        app.push_screen_wait = fake_screen  # type: ignore[method-assign]
+        app._fetch_models = fake_fetch  # type: ignore[method-assign]
+        app._config = {
+            "llm.providers": [
+                {
+                    "id": "groq",
+                    "base_url": "https://api.groq.com/openai/v1",
+                    "model": "llama-3.3-70b",
+                    "api_key_ref": "nvs:llm_api_key",
+                    "extra_body": {"reasoning_effort": "high"},
+                }
+            ]
+        }
+        app._config_fetched = True
+        await app.onboard()
+
+    assert len(seen) == 1
+    assert seen[0].thinking == "high"
+
+
+async def test_the_model_step_offers_a_host_file_providers_levels():
+    """Reading `BUILTIN` in the step made a custom entry look like a provider with no
+    thinking member, so its levels were never offered."""
+    custom = providers.Provider(
+        id="local-thinker",
+        label="Local",
+        base_url="http://localhost:8000/v1",
+        thinking=providers.THINKING_REASONING_EFFORT,
+    )
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(models=["m"], provider="local-thinker", model="m", entries=[custom])
+        )
+        assert await _mounted(pilot, "#step-thinking")

@@ -698,11 +698,27 @@ static esp_err_t handle_config_set(const json_node_t *args, json_node_t *root,
         return err;
     }
 
+    /* `llm.providers` is re-read by `llm_init` and by nothing else, so a set to it
+     * is written but not live. Reporting `applied` there is the lie `/thinking` would
+     * inherit: the reply would say the level changed while the chain kept the old
+     * `extra_body`. `llm_init` is idempotent and holds no state an in-flight request
+     * reads (its providers are copied per attempt), so re-running it here is the
+     * whole of "applied". */
+    bool live = !cfg_is_live_path(path);
+    if (!live) {
+        esp_err_t reloaded = llm_init();
+        live = reloaded == ESP_OK;
+        if (!live) {
+            ESP_LOGW(TAG, "config.set: llm re-read failed: %s",
+                     esp_err_to_name(reloaded));
+        }
+    }
+
     json_add_string(root, "name", "config.set");
     json_add_bool(root, "ok", true);
     json_add_string(result, "path", path);
-    json_add_bool(result, "applied", true);
-    json_add_bool(result, "requires_reboot", cfg_needs_reboot(path));
+    json_add_bool(result, "applied", live);
+    json_add_bool(result, "requires_reboot", cfg_needs_reboot(path) || !live);
     return ESP_OK;
 }
 

@@ -708,6 +708,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
 | `/ping` | `ping` | none | Tests link latency: the answer is a `pong: <n> ms` chat line and the `PING` row on F3 |
 | `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
+| `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
 | `/cancel` | `cancel` | none | Cancels current run |
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
@@ -790,6 +791,42 @@ A provider with `thinking: none` shows no level picker rather than a disabled on
 the device passes `extra_body` straight through, so a level written for a provider
 that rejects the member turns every call into a 400. Where the picker is absent,
 `extra_body` is left as the device had it.
+
+### 7.2 `/thinking`
+
+The level is a property of the provider entry, so `/thinking` is a read-modify-write
+of `llm.providers[0].extra_body` and nothing else. It exists because otherwise the
+only way to change the level is to run `/onboard` again, which rewrites the Wi-Fi
+network and the key as well — a form of a full reconfiguration to change one number.
+
+| Form | Sends | Answer |
+|---|---|---|
+| `/thinking` | `config.get` | the stored level, and the levels this provider accepts |
+| `/thinking <level>` | `config.get`, then `config.set llm.providers` | the level written, and whether the chain took it |
+
+- **The levels offered are the catalog's, for the provider the device is already
+  configured with.** `/thinking high` against a provider whose catalog row says
+  `thinking: none` is refused **on the host**, naming the provider, and no frame is
+  sent: the device would accept any flat member and turn every call into a 400, and
+  a 400 arriving on the reader's next prompt is a worse way to learn that.
+- **The write is the whole array.** `config.set` on `llm.providers.0.extra_body`
+  needs index 0 to exist, and `04` §4.9 will not create an array index; the array
+  form also preserves every other member of the entry, which is what makes this a
+  level change rather than a reconfiguration.
+- **`none` is a level, where the provider takes one.** It writes
+  `{"reasoning_effort":"none"}` rather than deleting the member, because a stale
+  explicit level in `extra_body` must not survive a reader turning thinking off.
+  A provider with `thinking_budget` has no token form of `none`: for those the
+  `extra_body` member is removed, which is how that provider says it.
+- **The reply is the device's, not the request's.** `config.set` reports `applied`
+  only when the running chain re-read the document (`04` §4.9), so the chat line
+  says `thinking: high` only when the next prompt will use it.
+- **Neither form moves the reader.** A whole-document `config.get` reply normally
+  switches to the settings grid, because `/settings` and its `Ctrl+R` refresh are
+  the reader asking for that grid. `/thinking` reads the document as an input, so it
+  asks for the same reply quietly and its answer lands in the chat pane the reader
+  is looking at. The same rule holds for `/onboard`, which reads the document only
+  to pre-fill its forms.
 
 **Custom providers come from a host file, not a screen.** `~/.config/musteval/
 providers.json` (honouring `XDG_CONFIG_HOME`) is a list of entries in the same shape
@@ -1087,6 +1124,14 @@ model list nobody could load.
 The provider entry is written in step **3**, not step 2, because `03-config.md` makes
 `model` required: there is no half-configured provider to write, and a device given one
 refuses the document.
+
+**Step 3 seeds its thinking level from the stored entry**, not from `none`. The
+dropdown opens on the level `llm.providers[0].extra_body` already names, read back
+through the catalog's mapping (`reasoning_effort: high` → `high`, `thinking_budget:
+4096` → `medium`), so re-running the wizard is not a silent downgrade for a reader who
+set a level once. A stored member this bridge cannot map is left as it is and shown as
+`none` on the step: inventing a level from a value the catalog does not know would
+rewrite a field the reader never asked it to touch.
 
 Network and time are one step because they are **one test**. A single `reload` reruns
 the boot sequence that applies both `wifi.*` and `ntp.timezone`, and one `status` reply

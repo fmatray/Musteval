@@ -254,6 +254,13 @@ time, and as a platform service it needs no port.
   the thinking level the wizard wrote. The body is read before it is freed, which is
   the whole reason this module keeps a copy at all.
 
+- `llm_init()` **is re-runnable and is the only way a `llm.providers` edit goes
+  live.** `config.set` on the `llm` block calls it before replying, because the
+  service start-up is otherwise the sole caller and a written document would sit
+  unread until the next `reload`. It holds no state an in-flight request reads (the
+  provider entry is copied per attempt), so re-running it cannot disturb a run that
+  is already posting.
+
 The budget, the body and the chain order are pure and host-tested (`llm_budget.c`,
 `llm_body.c`); `llm.c` resolves secrets, reads NVS and posts, and is board-only.
 
