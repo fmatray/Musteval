@@ -775,7 +775,10 @@ accepted, which is also the only route for a provider with no `models_url`.
 The two list shapes in use are OpenAI's `{"data":[{"id":"..."}]}` and Ollama's
 `{"models":[{"name":"..."}]}`. Both are accepted; anything else is "no list", not
 an error, because a provider that answers 200 with an unfamiliar document is not
-broken.
+broken. Ollama's `/api/tags` is not the only endpoint: its compatibility layer also
+serves `/v1/models` in the OpenAI shape, which is the one the cloud entry names, and
+that list needs no key. A name read from it is the API name (`gemma4:31b`), not the
+app's `:cloud` alias, and the two are not interchangeable.
 
 **Thinking levels are only offered where the provider takes them.** A level is
 written into `llm.providers[].extra_body`, which `03-config.md` merges into the
@@ -787,10 +790,35 @@ request verbatim and caps at four flat members. So:
 | `reasoning_effort` | `none`, `low`, `medium`, `high` | `{"reasoning_effort":"<level>"}` |
 | `thinking_budget` | the same names, mapped to token budgets | `{"thinking_budget":<n>}` |
 
+A row may narrow the offered set with `levels`. That is not a preference: it is the
+set of names the provider's request surface can express. **Offered and expressible
+are different questions.** `reasoning_effort` is a free-form name, so a value the
+device already stores is written back even when the row does not list it — otherwise
+a re-run of the wizard would replace a setting it was never asked about. The picker
+shows such a value as its own row.
+
 A provider with `thinking: none` shows no level picker rather than a disabled one:
 the device passes `extra_body` straight through, so a level written for a provider
 that rejects the member turns every call into a 400. Where the picker is absent,
 `extra_body` is left as the device had it.
+
+**The catalog's levels are the provider's, not the model's.** A catalog row is per
+provider because that is all the device is told, but the values a request accepts
+belong to the model: Ollama publishes them per model in `/api/show` as
+`{"values": [...], "default": ...}`, and they differ — `gemma4:31b` takes
+`[false, true]`, `gpt-oss:120b` takes `["low","medium","high"]`, `glm-5.3` takes
+`["low","high","max"]`. Refinement per model is not offered: the bridge does not
+fetch `/api/show`, and a picker whose rows changed with the model would make a stored
+level's meaning depend on a name typed later.
+
+**Ollama's rows therefore offer `low` and `high` only.** Ollama applies a supported
+name exactly and *resolves an unsupported one to the model's default*, which is often
+the highest (`glm-5.3-flash` defaults to `max`). So on that surface `none` would
+maximise thinking rather than disable it, and `medium` would too. `low` and `high`
+are the only names every published thinking model accepts, and on a boolean model
+(`gemma4`) both mean `true`, with `none` absent because there is no member that turns
+thinking off on `/chat/completions`. This is a limit of the request surface, not of
+the catalog: `/v1/responses` has `think: false`, the compatible surface does not.
 
 ### 7.2 `/thinking`
 
@@ -818,6 +846,21 @@ network and the key as well — a form of a full reconfiguration to change one n
   explicit level in `extra_body` must not survive a reader turning thinking off.
   A provider with `thinking_budget` has no token form of `none`: for those the
   `extra_body` member is removed, which is how that provider says it.
+- **Where the provider cannot say "off", `/thinking none` is refused, not
+  approximated.** Ollama's rows offer `low` and `high` only (§7.1): its surface
+  resolves an unsupported name to the model's default, and several models default to
+  their highest effort, so writing `"none"` would intensify thinking rather than
+  disable it. The refusal names the levels that do work.
+- **Such a provider's absent member reads as `the provider's default`, never
+  `none`.** `/thinking` with no stored level and no off switch reports that the model
+  thinks at its own default, because `none` would claim a setting the entry does not
+  have. A stored level, whatever its name, is still reported as itself.
+- **A refused level is "not offered", never "not taken".** The row lists the names
+  every model of that provider accepts, so `max` is a level a `glm` model takes and
+  the `ollama-cloud` row still does not offer it. The refusal says so and names the
+  offered levels; it does not tell the reader their model rejects a value it
+  publishes. Setting such a level is a `config.set` of the entry's `extra_body`, and
+  the wizard preserves it on a re-run (§13.6).
 - **The reply is the device's, not the request's.** `config.set` reports `applied`
   only when the running chain re-read the document (`04` §4.9), so the chat line
   says `thinking: high` only when the next prompt will use it.
@@ -1129,9 +1172,16 @@ refuses the document.
 dropdown opens on the level `llm.providers[0].extra_body` already names, read back
 through the catalog's mapping (`reasoning_effort: high` → `high`, `thinking_budget:
 4096` → `medium`), so re-running the wizard is not a silent downgrade for a reader who
-set a level once. A stored member this bridge cannot map is left as it is and shown as
-`none` on the step: inventing a level from a value the catalog does not know would
-rewrite a field the reader never asked it to touch.
+set a level once.
+
+**A stored value the row does not offer is shown as itself.** Ollama names its levels
+per model, so `reasoning_effort: max` is a real setting that the `ollama-cloud` row
+does not list. The step adds it as its own row, because the answer is what gets
+written back: falling back to the first row and then rebuilding `extra_body` from the
+picker replaced `max` with `low` on a re-run that touched nothing. Only a value the
+provider's surface cannot express at all — a `"none"` on a surface with no off switch
+— is absent, and there the picker shows its first row and the write is what the
+reader chose rather than a value the step invented.
 
 Network and time are one step because they are **one test**. A single `reload` reruns
 the boot sequence that applies both `wifi.*` and `ntp.timezone`, and one `status` reply

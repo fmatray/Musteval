@@ -245,8 +245,12 @@ def thinking_writes(
     if not entry.thinking_levels:
         return None, f"{provider_id_} takes no thinking level; nothing to set"
     if level not in entry.thinking_levels:
+        # "offered", not "takes": Ollama's rows list only the names *every* model of
+        # that provider accepts, so `max` is a level a `glm` model takes and its row
+        # still does not offer it (`05` §7.1). The message must not claim the model
+        # rejects what it accepts.
         return None, (
-            f"{level!r} is not a level {provider_id_} takes; "
+            f"{level!r} is not offered for {provider_id_}; "
             f"choose from {', '.join(entry.thinking_levels)}"
         )
     member = entry.without_level(entry_now.get("extra_body"))
@@ -277,8 +281,14 @@ def thinking_line(level: str, providers_now: object) -> str:
         return f"thinking: {provider_id_} is not in this bridge's catalog"
     if not entry.thinking_levels:
         return f"thinking: {provider_id_} takes no thinking level"
+    level = entry.level_of(entry_now.get("extra_body"))
+    # An absent member is not "off" where the surface has no off switch: Ollama's
+    # models think at their own default, which several of them set to their highest
+    # effort. Saying "none" there would claim a setting the entry does not have.
+    if level == providers.THINKING_NONE and "none" not in entry.thinking_levels:
+        level = "the provider's default"
     return (
-        f"thinking: {entry.level_of(entry_now.get('extra_body'))}"
+        f"thinking: {level}"
         f" (choose from {', '.join(entry.thinking_levels)})"
     )
 

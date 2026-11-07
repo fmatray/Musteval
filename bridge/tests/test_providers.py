@@ -296,11 +296,18 @@ def test_a_level_round_trips_through_extra_body():
             assert entry.level_of(entry.extra_body(level)) == level, (provider_id, level)
 
 
-def test_an_unrecognised_level_member_reads_as_none_rather_than_a_guess():
-    """The member is the reader's. Guessing a level from a value the catalog does not
-    model is how a wizard writes over a setting it was not asked to touch."""
+def test_an_unrecognised_level_member_is_reported_as_stored_not_as_none():
+    """The member is the reader's, and reporting `none` for it is what made a re-run
+    of the wizard overwrite it: `answers.extra_body` is rebuilt from the picker, so
+    `none` for a stored `max` replaced `max` with whatever the picker showed.
+
+    The old expectation here was `none`, from when `reasoning_effort` was assumed to
+    have a closed set of four names. Ollama disproved that: it names levels per model
+    and `/api/show` publishes `[low, high, max]` for `glm-5.3`, so `max` and
+    `minimal` are real settings the catalog does not list (`05` §7.1)."""
     groq = providers.find("groq")
-    assert groq.level_of({"reasoning_effort": "minimal"}) == "none"
+    assert groq.level_of({"reasoning_effort": "minimal"}) == "minimal"
+    assert providers.find("ollama-cloud").level_of({"reasoning_effort": "max"}) == "max"
     assert groq.level_of({"unrelated": 1}) == "none"
     assert groq.level_of(None) == "none"
     # A budget between the mapped steps names no level either.
@@ -314,3 +321,39 @@ def test_without_level_keeps_every_other_member():
     kept = groq.without_level({"reasoning_effort": "low", "seed": 7})
     assert kept == {"seed": 7}
     assert groq.without_level(None) == {}
+
+
+#: A slice of the real `GET https://ollama.com/v1/models` body, recorded 2026-11-07.
+#: Ollama's OpenAI compatibility layer answers in the OpenAI shape, which is why the
+#: cloud entry can list its models at all (`05` §7.1).
+_OLLAMA_MODELS = b"""{"object":"list","data":[
+ {"id":"gemma4:31b","object":"model","created":1785164400,"owned_by":"ollama"},
+ {"id":"gpt-oss:120b","object":"model","created":1785164300,"owned_by":"ollama"},
+ {"id":"glm-5.3","object":"model","created":1785164200,"owned_by":"ollama"}]}"""
+
+
+def test_ollama_cloud_lists_its_models_and_takes_a_level():
+    """The two things the catalog used to get wrong about Ollama.
+
+    Its `/v1/models` was recorded as unreadable, so the model had to be typed; and the
+    thinking member was recorded as absent, so `/thinking` refused a level the
+    provider accepts. `docs.ollama.com/api/openai-compatibility` lists
+    `reasoning_effort` as supported and `/api/show` gives each model's own values.
+    """
+    entry = providers.find("ollama-cloud")
+    assert entry is not None
+    assert entry.models_url == "https://ollama.com/v1/models"
+    assert providers.models(entry, "", lambda url, key: _OLLAMA_MODELS) == [
+        "gemma4:31b",
+        "gpt-oss:120b",
+        "glm-5.3",
+    ]
+    # The list is public: it needs no key, so a reader can pick a model before they
+    # have proved their key works.
+    assert providers.models(entry, "", lambda url, key: _OLLAMA_MODELS) != []
+
+    assert "high" in entry.thinking_levels
+    assert entry.extra_body("high") == {"reasoning_effort": "high"}
+    assert entry.level_of({"reasoning_effort": "high"}) == "high"
+    # Local Ollama is the same compatibility layer, so it gets the same member.
+    assert providers.find("ollama").extra_body("low") == {"reasoning_effort": "low"}

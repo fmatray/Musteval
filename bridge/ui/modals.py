@@ -210,14 +210,24 @@ class ValuePrompt(PromptBox[str | None]):
         self.dismiss(self.query_one("#value-input", Input).value.strip() or None)
 
 
-def _thinking_levels(entries: list[Any], provider_id: str) -> list[str]:
+def _thinking_levels(
+    entries: list[Any], provider_id: str, stored: str = ""
+) -> list[str]:
     """The levels to offer for `provider_id`, or none.
 
     `05` §7.1: a provider whose `extra_body` takes no level gets no picker, because a
     level written where the member is rejected turns every call into a 400.
     """
     entry = next((p for p in entries if p.id == provider_id), None)
-    return list(entry.thinking_levels) if entry is not None else []
+    if entry is None:
+        return []
+    levels = list(entry.thinking_levels)
+    # A level the row does not list but can express is still the reader's setting:
+    # Ollama names its values per model, so `max` on a `glm` model is real and the
+    # re-run must show it, not silently show `low` (`05` §13.6).
+    if stored and entry.extra_body(stored) and stored not in levels:
+        levels.append(stored)
+    return levels
 
 
 class _StepBox(PromptBox[Any]):
@@ -609,7 +619,7 @@ class ModelStep(_StepBox):
         self.entries = entries if entries is not None else [p for p in providers.BUILTIN]
 
     def fields(self) -> Any:
-        levels = _thinking_levels(self.entries, self.provider)
+        levels = _thinking_levels(self.entries, self.provider, self.thinking)
         yield_this = [
             Static(
                 f"{len(self.models)} models from {self.provider}"
@@ -633,7 +643,12 @@ class ModelStep(_StepBox):
             yield_this.append(
                 Select(
                     [(level, level) for level in levels],
-                    value=self.thinking if self.thinking in levels else "none",
+                    # `none` is not a level every provider can express: Ollama's
+                    # surface has no off switch, so its rows offer `low`/`high` only
+                    # (`05` §7.2). A stored member this provider cannot map therefore
+                    # seeds nothing, and the first row is shown — the level already
+                    # on the device is left alone unless the reader changes it.
+                    value=self.thinking if self.thinking in levels else levels[0],
                     allow_blank=False,
                     id="step-thinking",
                 )

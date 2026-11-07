@@ -379,7 +379,13 @@ async def test_thinking_reports_the_stored_level_and_the_levels_offered():
 
 async def test_thinking_refuses_a_provider_that_takes_no_level_without_a_frame():
     """The device would accept any flat member and 400 on the next prompt, so the
-    refusal has to be `$error` here, with no `config.set` on the wire."""
+    refusal has to be `$error` here, with no `config.set` on the wire.
+
+    The subject is `openai`, whose catalog row is `THINKING_NONE` because Chat
+    Completions allows function calling only at `reasoning_effort: none`. It used to
+    be `ollama-cloud`, which was recorded as levelless until Ollama's compatibility
+    page and `/api/show` showed `reasoning_effort` is supported (`05` §7.1).
+    """
     sent: list[str] = []
 
     def reply(line: bytes) -> list[bytes]:
@@ -389,7 +395,7 @@ async def test_thinking_refuses_a_provider_that_takes_no_level_without_a_frame()
         return _scripted()(line)
 
     async def body(app, pilot):
-        app._config = {"llm.providers": [{"id": "ollama-cloud", "model": "m"}]}
+        app._config = {"llm.providers": [{"id": "openai", "model": "m"}]}
         app._config_fetched = True
         await app._run_command("/thinking high")
         await pilot.pause(0.1)
@@ -469,3 +475,35 @@ async def test_a_command_that_reads_the_config_does_not_move_the_reader():
         assert "thinking:" in _text(app)
 
     await _run(_scripted(), body)
+
+
+async def test_thinking_accepts_a_level_on_ollama_cloud():
+    """`/thinking high` on an Ollama Cloud entry writes `reasoning_effort`, because
+    the provider's compatibility layer supports it and `/api/show` publishes each
+    model's values. It used to be refused, which was the catalog's error, not the
+    device's (`05` §7.1)."""
+    written: list[object] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "command" and frame.get("name") == "config.set":
+            written.append((frame.get("args") or {}).get("value"))
+        return _scripted()(line)
+
+    async def body(app, pilot):
+        app._config = {
+            "llm.providers": [
+                {"id": "ollama-cloud", "base_url": "https://ollama.com/v1",
+                 "model": "gemma4:31b", "api_key_ref": "nvs:llm_api_key"}
+            ]
+        }
+        app._config_fetched = True
+        await app._run_command("/thinking high")
+        await pilot.pause(0.2)
+        assert "thinking: high" in _text(app)
+
+    await _run(reply, body)
+    assert len(written) == 1, written
+    entry = written[0][0]
+    assert entry["id"] == "ollama-cloud"
+    assert entry["extra_body"] == {"reasoning_effort": "high"}

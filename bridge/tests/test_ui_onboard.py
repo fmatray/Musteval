@@ -233,7 +233,9 @@ def test_a_failed_join_says_which_two_things_to_check():
 
 
 def test_a_provider_that_publishes_no_list_is_named_as_such():
-    a = _answer(base_url="https://ollama.com/v1", api_key="k", provider="ollama-cloud")
+    """`custom` is the only built-in with no `models_url`; `ollama-cloud` serves an
+    OpenAI-shaped `/v1/models` and is listed from it (`05` §7.1)."""
+    a = _answer(base_url="https://example.invalid/v1", api_key="k", provider="custom")
     assert "publishes no model list" in onboard.verdict_provider([], a)
 
 
@@ -767,12 +769,17 @@ def test_a_budget_provider_turning_thinking_off_drops_the_member():
 def test_a_level_the_provider_does_not_take_is_refused_on_the_host():
     """The device accepts any flat member and turns every call into a 400, so the
     refusal has to happen where it can name the provider (`05` §7.2)."""
-    plan, why = onboard.thinking_writes("high", [{"id": "ollama-cloud", "model": "m"}])
+    plan, why = onboard.thinking_writes("high", [{"id": "openai", "model": "m"}])
     assert plan is None
     assert "takes no thinking level" in why
     plan, why = onboard.thinking_writes("maximal", [{"id": "groq", "model": "m"}])
     assert plan is None
-    assert "not a level" in why and "high" in why
+    assert "not offered" in why and "high" in why
+    # Not "the provider does not take it": Ollama's `max` is a real level on some of
+    # its models and absent from the row, and the reader is owed that distinction.
+    plan, why = onboard.thinking_writes("max", [{"id": "ollama-cloud", "model": "m"}])
+    assert plan is None
+    assert "not offered" in why and "takes" not in why
     plan, why = onboard.thinking_writes("high", [])
     assert plan is None and "/onboard" in why
 
@@ -838,3 +845,91 @@ async def test_the_model_step_offers_a_host_file_providers_levels():
             ModelStep(models=["m"], provider="local-thinker", model="m", entries=[custom])
         )
         assert await _mounted(pilot, "#step-thinking")
+
+
+async def test_the_model_step_offers_a_level_for_ollama_cloud():
+    """`03-config.md` §Provider compatibility records `reasoning_effort` for both
+    Ollama rows, so the step must show the picker for the entry `/onboard` offers.
+    The row used to be `THINKING_NONE` and the picker was absent (`05` §7.1)."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(
+                models=["gemma4:31b", "gpt-oss:120b"],
+                provider="ollama-cloud",
+                model="gemma4:31b",
+                thinking="high",
+                entries=list(providers.BUILTIN),
+            )
+        )
+        assert await _mounted(pilot, "#step-thinking")
+
+
+#: A slice of the real `GET https://ollama.com/v1/models` body, recorded 2026-11-07.
+_OLLAMA_LIST = (
+    b'{"object":"list","data":[{"id":"gemma4:31b","object":"model"},'
+    b'{"id":"gpt-oss:120b","object":"model"}]}'
+)
+
+
+async def test_the_wizard_fetches_ollama_cloud_models_without_a_key(monkeypatch):
+    """`05` §7.1: the cloud list is public, so step 2 offers names before the key is
+    proved. The fetch is asserted on the URL step 2 asks for, not on a fake's answer."""
+    asked: list[tuple[str, str]] = []
+    app = _app(Device())
+    original = providers.models
+
+    def spy(entry, key, fetch=None):
+        def recording(url, k):
+            asked.append((url, k))
+            return _OLLAMA_LIST
+
+        return original(entry, key, recording)
+
+    async with app.run_test():
+        monkeypatch.setattr(providers, "models", spy)
+        answers = _answer(provider="ollama-cloud", api_key="", base_url="https://ollama.com/v1")
+        names = await app._fetch_models(answers)
+        assert names == ["gemma4:31b", "gpt-oss:120b"]
+        assert asked == [("https://ollama.com/v1/models", "")]
+
+
+async def test_a_stored_level_the_row_does_not_offer_survives_a_re_run():
+    """`05` §13.6: a re-run must not be a silent downgrade.
+
+    Ollama names its levels per model, so `max` is a real stored setting that the
+    `ollama-cloud` row does not list. The step used to fall back to its first row
+    (`low`) and `answers.extra_body` is rebuilt from the picker, so accepting step 3
+    wrote `low` over `max`.
+    """
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(
+                models=["glm-5.3-flash"],
+                provider="ollama-cloud",
+                model="glm-5.3-flash",
+                thinking="max",
+                entries=list(providers.BUILTIN),
+            )
+        )
+        assert await _mounted(pilot, "#step-thinking")
+        picker = app.screen.query_one("#step-thinking")
+        assert picker.value == "max"
+        assert app.screen.answer()["thinking"] == "max"
+
+
+def test_an_absent_member_on_an_ollama_entry_reads_as_the_default_not_none():
+    """Ollama's surface has no off switch, so an absent `reasoning_effort` means the
+    model thinks at its own default — `glm-5.3-flash` defaults to `max`. Reporting
+    `none` would claim thinking was off when nothing was off (`05` §7.2)."""
+    chain = [{"id": "ollama-cloud", "model": "glm-5.3-flash"}]
+    said = onboard.thinking_line("none", chain)
+    assert "the provider's default" in said
+    assert "none" not in said.split("(")[0]
+    assert "low" in said and "high" in said
+
+    # A stored level is still reported as itself, even one the row does not offer.
+    assert onboard.thinking_line("none", [{"id": "ollama-cloud",
+                                           "extra_body": {"reasoning_effort": "max"}}]
+                                 ).startswith("thinking: max")

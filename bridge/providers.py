@@ -26,6 +26,12 @@ THINKING_BUDGET = "thinking_budget"
 THINKING_LEVELS = ("none", "low", "medium", "high")
 _BUDGETS = {"low": 1024, "medium": 4096, "high": 16384}
 
+#: The levels Ollama's request surface can express for any of its thinking models
+#: (`05` §7.2). `none` and `medium` are not among them: Ollama resolves an
+#: unsupported name to the model's own default, and several models default to their
+#: highest effort, so `none` would make thinking more intense rather than off.
+OLLAMA_LEVELS = ("low", "high")
+
 #: `03-config.md` §Full schema: `llm.providers[].extra_body` is at most four flat
 #: members, so a provider's own extra members must leave room for a level.
 EXTRA_BODY_MAX = 4
@@ -42,12 +48,19 @@ class Provider:
     models_url: str = ""
     thinking: str = THINKING_NONE
     needs_key: bool = True
+    #: The levels this provider's request surface can express, when that is narrower
+    #: than `THINKING_LEVELS`. `None` means the whole tuple. Ollama names its own
+    #: values per model and resolves an unsupported name to the model default, so a
+    #: level it cannot express is not a weaker setting — it is a different one.
+    levels: tuple[str, ...] | None = None
 
     @property
     def thinking_levels(self) -> tuple[str, ...]:
         """The levels to offer. A provider with no thinking member offers none, so
         the picker is absent rather than disabled — a level written into a provider
         that rejects the member turns every call into a 400."""
+        if self.levels is not None:
+            return self.levels
         return THINKING_LEVELS if self.thinking != THINKING_NONE else ()
 
     def extra_body(self, level: str) -> dict[str, object]:
@@ -55,27 +68,42 @@ class Provider:
         `none` is an explicit "no thinking" only where the provider takes one.
 
         `thinking_budget` has no token form of "off", so its `none` is the absence of
-        the member — which is what the caller gets, an empty dict."""
-        if self.thinking == THINKING_REASONING_EFFORT and level in THINKING_LEVELS:
+        the member — which is what the caller gets, an empty dict.
+
+        `reasoning_effort` is a free-form name, so *any* word the device already
+        stores is expressible even when this row does not offer it: Ollama names its
+        levels per model, so `max` on a `glm` model is a real setting that a
+        re-run of the wizard has to write back rather than overwrite. What a row
+        offers (`thinking_levels`) and what it can express are therefore two
+        questions, and only the first is a picker's business."""
+        if not level:
+            return {}
+        if self.thinking == THINKING_REASONING_EFFORT:
+            # `none` is only a member where the provider has an off switch; on
+            # Ollama's surface it is unexpressible, so it stays absent (`05` §7.2).
+            if level == THINKING_NONE and THINKING_NONE not in self.thinking_levels:
+                return {}
             return {"reasoning_effort": level}
-        if self.thinking == THINKING_BUDGET and level in THINKING_LEVELS[1:]:
-            return {"thinking_budget": _BUDGETS[level]}
+        if self.thinking == THINKING_BUDGET:
+            return {"thinking_budget": _BUDGETS[level]} if level in _BUDGETS else {}
         return {}
 
     def level_of(self, extra_body: object) -> str:
         """The level a stored `extra_body` names, or `none`.
 
         The inverse of `extra_body`, used to seed the wizard's picker from what the
-        device already holds (`05` §13.6). A member this mapping does not recognise
-        is reported as `none` rather than guessed at: the member is the reader's, and
-        the wizard writing over an unrecognised value would be a silent downgrade of
-        a setting the catalog does not model.
+        device already holds (`05` §13.6). A name this row does not offer is still
+        reported as itself rather than as `none`: the member is the reader's, and
+        answering `none` for a stored `max` would be a silent downgrade the wizard
+        then writes back.
         """
         if not isinstance(extra_body, dict):
             return THINKING_NONE
         if self.thinking == THINKING_REASONING_EFFORT:
+            # Reported as stored, not as offered: `max` on an Ollama model is a
+            # setting this row cannot list but must not deny.
             found = extra_body.get("reasoning_effort")
-            return found if found in THINKING_LEVELS else THINKING_NONE
+            return found if isinstance(found, str) and found else THINKING_NONE
         if self.thinking == THINKING_BUDGET:
             budget = extra_body.get("thinking_budget")
             for level, tokens in _BUDGETS.items():
@@ -130,15 +158,32 @@ BUILTIN: tuple[Provider, ...] = (
         id="ollama-cloud",
         label="Ollama Cloud",
         base_url="https://ollama.com/v1",
-        # The table says to read names from `/api/tags`, which is not the OpenAI
-        # `/models` shape this bridge parses, so the model is typed.
-        models_url="",
+        # Ollama's compatibility layer serves `/v1/models` in the OpenAI shape, so
+        # the list is readable here and the model no longer has to be typed. It
+        # needs no key: names are public (`docs.ollama.com/cloud`).
+        models_url="https://ollama.com/v1/models",
+        # `docs.ollama.com/api/openai-compatibility` lists `reasoning_effort` as a
+        # supported field, and `/api/show` publishes each model's own `values`.
+        # The catalog cannot know which model the reader will pick, so it offers
+        # the levels every published thinking model takes. A model with boolean
+        # controls maps `none` to `false` and any named level to `true`.
+        #
+        # `low` and `high` only. The names are model-defined and an unsupported one
+        # is not clamped, it resolves to the model's default — which is often the
+        # highest (`glm-5.3-flash` defaults to `max`). So `none` would *maximise*
+        # thinking, and `medium` would too; both are unexpressible here. `low` and
+        # `high` are the two names every published thinking model accepts, and on a
+        # boolean model both mean `true` (`05` §7.2).
+        thinking=THINKING_REASONING_EFFORT,
+        levels=OLLAMA_LEVELS,
     ),
     Provider(
         id="ollama",
         label="Ollama (local)",
         base_url="http://127.0.0.1:11434/v1",
         models_url="http://127.0.0.1:11434/v1/models",
+        thinking=THINKING_REASONING_EFFORT,
+        levels=OLLAMA_LEVELS,
         needs_key=False,
     ),
     Provider(
