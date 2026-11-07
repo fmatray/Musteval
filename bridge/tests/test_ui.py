@@ -656,3 +656,86 @@ async def test_an_agent_error_is_written_as_an_error_line():
         assert message in str(line.text)
         assert app.current_theme.error in styles, (str(line.text), styles)
         await session.close()
+
+
+async def test_every_chat_line_is_classified_and_markdown_is_prose_only():
+    """`05` §5.1: the kind decides the style, and only prose is Markdown.
+
+    A kind is not a prefix a caller remembers to type: the marker and the colour
+    are added by the one write path, so the plain text a screen reader gets is the
+    same text the colour terminal shows. The turn rule is the other half — the
+    first prompt has nothing above it to separate, and the second does.
+    """
+    from bridge.ui import BridgeApp
+
+    def markdown_reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] != "prompt":
+            return _reply(line)
+        # `## ` is a heading only if the line is parsed; left as text it would
+        # print its own hashes, which is how the assertion below can tell.
+        return [
+            encode(
+                Frame(
+                    type="agent.final",
+                    id="d-9",
+                    ts=0,
+                    body={
+                        "run_id": "r-1",
+                        "text": "## Title\n\n- one\n- two",
+                        "usage": {},
+                        "rounds": 1,
+                        "provider": "openai",
+                        "model": "gpt",
+                        "duration_ms": 3,
+                        "truncated": False,
+                        "todo_open": False,
+                    },
+                    reply_to=frame["id"],
+                )
+            )
+        ]
+
+    transport = FakeTransport(on_write=markdown_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.1)
+        app.submit("first")
+        await pilot.pause(0.3)
+        app.submit("second")
+        await pilot.pause(0.3)
+        chat = app.query_one("#chat-log")
+        app._chat().write("degraded", kind="warn")
+        app._chat().write("refused", kind="error")
+        app._chat().write("→ time.now()", kind="tool")
+        app._chat().write("waiting", kind="thinking")
+        await pilot.pause(0.1)
+
+        lines = [str(line.text) for line in chat.lines]
+        body = "\n".join(lines)
+        # The markers are added by the writer, so no caller can forget one.
+        assert "! degraded" in body
+        assert "✗ refused" in body
+        # The model's answer is parsed: a heading loses its hashes, a list its
+        # bullets of `-`. Printed as text, both would still be there.
+        assert "Title" in body
+        assert "## " not in body and "- one" not in body
+
+        rules = [line for line in chat.lines if set(str(line.text).strip()) == {"─"}]
+        # Exactly one: the boundary before the second prompt, none before the first.
+        assert len(rules) == 1, lines
+        assert "dim" in " ".join(str(seg.style) for seg in rules[0]._segments)
+
+        styled = {str(line.text).split(" ")[-1]: line for line in chat.lines}
+        assert app.current_theme.warning in " ".join(
+            str(s.style) for s in styled["degraded"]._segments
+        )
+        assert app.current_theme.error in " ".join(
+            str(s.style) for s in styled["refused"]._segments
+        )
+    await session.close()

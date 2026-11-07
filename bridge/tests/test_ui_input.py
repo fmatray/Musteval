@@ -19,6 +19,7 @@ from bridge.ui.modals import HelpModal
 from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, ChatScreen
 from bridge.ui.render import clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory
+from bridge.ui.testing import chat_lines
 from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
 from bridge.ui.task_prompt import TaskPrompt
 from bridge.ui.settings import ROWS, coerce, flatten, lookup, render_value
@@ -1136,7 +1137,9 @@ async def test_prompt_with_no_link_is_refused_at_once():
         await pilot.pause(0.1)
         app.submit("hello board")
         await pilot.pause(0.2)
-        lines = [str(line) for line in app.query_one("#chat-log").lines]
+        lines = chat_lines(app)
+        # The prefix and the prompt are two renderables laid out as a grid, so
+        # the line is not a `str` and `line.text` is its repr, not the text.
         assert any("you: hello board" in line for line in lines), lines
         # The refusal names the bar's word, not the internal state enum: a reader
         # comparing it with the prompt bar must never see two vocabularies.

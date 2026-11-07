@@ -15,6 +15,9 @@ from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from rich.table import Table
+from rich.markdown import Markdown
+from rich.rule import Rule
 from rich.text import Text
 
 from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
@@ -92,6 +95,11 @@ class ChatLog(RichLog):
     can_focus = False
 
 
+#: The code fence's colours, shared with the JSON blocks in the log so a fenced
+#: block and a tool payload do not speak two dialects of highlight.
+MARKDOWN_CODE_THEME = "ansi_dark"
+
+
 class ChatScreen(Vertical):
     """`05-bridge.md` §5.1: the conversation pane, composer at the bottom."""
 
@@ -126,6 +134,8 @@ class ChatScreen(Vertical):
         self._total = 0
         #: Index the arrows sit on. OMP opens the list with the top row chosen.
         self._cursor = 0
+        #: Prompts opened in this pane, which is what makes the first rule absent.
+        self._turns = 0
 
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
@@ -212,19 +222,51 @@ class ChatScreen(Vertical):
         # switching screens goes to whichever view held focus.
         self.query_one("#chat-input", Input).focus()
 
-    def write(self, text: str, error: bool = False) -> None:
-        """One line into the pane. `error` paints it in the theme's `$error` (`05` §13.2).
+    def write(self, text: str, kind: str = "info") -> None:
+        """One message into the pane, as one of `05` §5.1's seven kinds.
 
-        The flag, not a `Text`: the pane is `markup=False` and the plain string is
-        what a test and a screen reader both read. Colour is the enhancement, the
-        `✗` and the error code are the fact — a monochrome terminal loses nothing.
-        `$error` is CSS syntax and a Rich `Text` does not parse it, so the theme
-        variable is resolved here rather than hard-coded: a light terminal keeps a
-        contrast that holds.
+        The kind, not a caller's prefix, decides how the line reads: a line
+        cannot arrive unclassified, and the `!`/`✗` marker is added here so the
+        text a test and a screen reader read is the same text a colour terminal
+        shows. Colour is the enhancement, the marker is the fact.
+
+        `$accent` and `$error` are CSS syntax and Rich does not parse it, so the
+        theme slot is resolved here; a light terminal keeps a contrast that
+        holds. `user` and `assistant` are parsed as Markdown because they are
+        prose; every other kind is terminal text and is never parsed, so a tag a
+        device returned cannot become a heading.
         """
-        self.query_one("#chat-log", RichLog).write(
-            Text(text, style=f"bold {self.app.current_theme.error}") if error else text
-        )
+        log = self.query_one("#chat-log", RichLog)
+        theme = self.app.current_theme
+        if not isinstance(text, str):
+            # A caller that already built a renderable (`render_json_block`) owns
+            # its own presentation; wrapping it in a `Text` would crash on it.
+            log.write(text)
+            return
+        if kind in ("user", "assistant"):
+            style = theme.accent if kind == "user" else "none"
+            rendered = Markdown(text, style=style, code_theme=MARKDOWN_CODE_THEME)
+            if kind != "user":
+                log.write(rendered)
+                return
+            # `you: ` is its own column rather than a prefix inside the Markdown:
+            # glued on, a prompt that opens with a fence or a `#` stops being a
+            # fence or a heading, and the reader's own paste renders as noise.
+            grid = Table.grid(padding=0)
+            grid.add_column(no_wrap=True)
+            grid.add_column(ratio=1)
+            grid.add_row(Text("you: ", style=f"bold {theme.accent}"), rendered)
+            log.write(grid)
+            return
+        if kind == "warn":
+            text = f"! {text}"
+            style = theme.warning
+        elif kind == "error":
+            text = f"✗ {text}"
+            style = f"bold {theme.error}"
+        else:  # thinking, tool, info
+            style = "dim" if kind in ("thinking", "tool") else "none"
+        log.write(Text(text, style=style))
 
     def render_bar(self, line: str, styled: Text | None = None) -> None:
         """`05` §5.1: the fact line above the composer.
@@ -252,6 +294,21 @@ class ChatScreen(Vertical):
     def action_clear_log(self) -> None:
         """`05` §6.2: clear this session's scrollback, which is local only."""
         self.query_one("#chat-log", RichLog).clear()
+        self._turns = 0
+
+    def open_turn(self) -> None:
+        """`05` §5.1: separate this prompt from the turn before it.
+
+        A dim full-width rule, drawn only once a turn exists to separate: the
+        first prompt has nothing above it, and a rule there would be the top of
+        the pane drawn twice. The rule is the scroll landmark, which a blank line
+        is not — the pane has blank lines inside a message too.
+        """
+        if self._turns:
+            self.query_one("#chat-log", RichLog).write(
+                Rule(characters="─", style="dim")
+            )
+        self._turns += 1
 
     def _input(self) -> Input:
         return self.query_one("#chat-input", Input)
@@ -997,7 +1054,7 @@ class BridgeApp(App):
         try:
             value = coerce(row, typed)
         except ValueError as exc:
-            self._chat().write(f"✗ {exc}", error=True)
+            self._chat().write(f"{exc}", kind="error")
             return
         await self._request("config.set", {"path": row.path, "value": value})
 
@@ -1062,7 +1119,7 @@ class BridgeApp(App):
         try:
             self._logs().apply_filter(tag.strip(), level.strip() or None)
         except ValueError as exc:
-            self._chat().write(f"✗ {exc}", error=True)
+            self._chat().write(f"{exc}", kind="error")
 
     # -- files (`05` §5.8) ----------------------------------------------
 
@@ -1074,7 +1131,7 @@ class BridgeApp(App):
         try:
             path = sandbox_normalise(path)
         except SandboxPathError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         # A listing path is always a directory, so it is shown with its `/`
         # (`sandbox_display`), and `normalise` strips it again on the way out.
@@ -1112,7 +1169,7 @@ class BridgeApp(App):
         text = str(body.get("text", ""))
         if body.get("truncated"):
             # Editing a partial file would save the cut over the original.
-            self._chat().write(f"[warn] {path} is above the read cap; not opened")
+            self._chat().write(f"{path} is above the read cap; not opened", kind="warn")
             return
         edited = await self.push_screen_wait(FilePrompt(path, text))
         if edited is None or edited == text:
@@ -1171,7 +1228,7 @@ class BridgeApp(App):
             return
         path, _kind = chosen
         if path.rstrip("/") == SANDBOX_ROOT.rstrip("/"):
-            self._chat().write("[warn] /workspace cannot be moved")
+            self._chat().write("/workspace cannot be moved", kind="warn")
             return
         name = await self.push_screen_wait(
             ValuePrompt(f"Move {path} to", path)
@@ -1181,7 +1238,7 @@ class BridgeApp(App):
         try:
             target = sandbox_normalise(name)
         except SandboxPathError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         await self._request("sandbox.move", {"from": path, "to": target})
         await self.browse(self._files_path)
@@ -1193,7 +1250,7 @@ class BridgeApp(App):
         try:
             path = sandbox_join(self._files_path, name)
         except SandboxPathError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         await self._request("sandbox.mkdir", {"path": path})
         await self.browse(self._files_path)
@@ -1210,7 +1267,7 @@ class BridgeApp(App):
             return
         path, kind = chosen
         if path.rstrip("/") == SANDBOX_ROOT.rstrip("/"):
-            self._chat().write("[warn] /workspace itself is not downloadable")
+            self._chat().write("/workspace itself is not downloadable", kind="warn")
             return
         default = os.path.join(os.getcwd(), os.path.basename(path.rstrip("/")))
         target = await self.push_screen_wait(ValuePrompt("Download to", default))
@@ -1224,15 +1281,16 @@ class BridgeApp(App):
                     return
                 if body.get("truncated"):
                     self._chat().write(
-                        f"[warn] {path} is {body.get('bytes')} bytes, above the "
-                        f"{transfer.READ_CAP}-byte read cap; a copy would be a prefix"
+                        f"{path} is {body.get('bytes')} bytes, above the "
+                        f"{transfer.READ_CAP}-byte read cap; a copy would be a prefix",
+                        kind="warn",
                     )
                     return
                 nodes = [transfer.FileNode(path, str(body.get("text", "")))]
             else:
                 nodes = await transfer.collect(send, path)
         except transfer.TransferError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         try:
             if kind == "file":
@@ -1240,7 +1298,7 @@ class BridgeApp(App):
             else:
                 written = transfer.write_tree(target, nodes)
         except OSError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         self._chat().write(
             f"downloaded {len(written)} file" + ("" if len(written) == 1 else "s")
@@ -1256,10 +1314,10 @@ class BridgeApp(App):
         try:
             written = await transfer.upload(self._request, source, self._files_path)
         except transfer.TransferError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         except OSError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         self._chat().write(
             f"uploaded {len(written)} file" + ("" if len(written) == 1 else "s")
@@ -1274,7 +1332,7 @@ class BridgeApp(App):
         try:
             path = sandbox_join(self._files_path, name)
         except SandboxPathError as exc:
-            self._chat().write(f"[error] {exc}")
+            self._chat().write(f"{exc}", kind="error")
             return
         await self.save_file(path, "")
         await self.view_file(path)
@@ -1417,16 +1475,17 @@ class BridgeApp(App):
 
     def _on_agent_start(self, frame: Frame) -> None:
         self._last_input_bytes = frame.body.get("input_bytes", 0)
-        self._chat().write(f"( ) thinking… [run {frame.body.get('run_id')}]")
+        self._chat().write(f"thinking… [run {frame.body.get('run_id')}]", kind="thinking")
 
     def _on_agent_tool(self, frame: Frame) -> None:
-        self._chat().write(render_tool_call(frame.body))
+        self._chat().write(render_tool_call(frame.body), kind="tool")
 
     def _on_agent_tool_result(self, frame: Frame) -> None:
         # A failed tool result is an error line for the same reason a failed command
         # is: it is the only place the reader learns why the agent stopped.
         self._chat().write(
-            render_tool_result(frame.body), error=not frame.body.get("ok")
+            render_tool_result(frame.body),
+            kind="tool" if frame.body.get("ok") else "error",
         )
 
     def _on_agent_final(self, frame: Frame) -> None:
@@ -1434,10 +1493,10 @@ class BridgeApp(App):
         self._usage_total += usage.get("total_tokens", 0)
         self._refresh_bar()
         self._todo_open = bool(frame.body.get("todo_open"))
-        self._chat().write(str(frame.body.get("text", "")))
+        self._chat().write(str(frame.body.get("text", "")), kind="assistant")
 
     def _on_agent_error(self, frame: Frame) -> None:
-        self._chat().write(f"✗ {frame.body.get('code')}: {frame.body.get('message')}", error=True)
+        self._chat().write(f"{frame.body.get('code')}: {frame.body.get('message')}", kind="error")
 
     def _on_task_fired(self, frame: Frame) -> None:
         self._chat().write(
@@ -1455,7 +1514,7 @@ class BridgeApp(App):
     def _on_event(self, frame: Frame) -> None:
         kind = frame.body.get("kind")
         if kind == "link.rejected":
-            self._chat().write("✗ link rejected: bad token", error=True)
+            self._chat().write("link rejected: bad token", kind="error")
             return
         self._logs().write(f"event:{kind} {clip(str(frame.body.get('data')), 200)}")
 
@@ -1488,7 +1547,7 @@ class BridgeApp(App):
         name = body.get("name")
         if not body.get("ok"):
             error = body.get("error") or {}
-            self._chat().write(f"✗ {name}: {error.get('code')} {error.get('message')}", error=True)
+            self._chat().write(f"{name}: {error.get('code')} {error.get('message')}", kind="error")
             return
         result = body.get("result")
         if name == "status" and isinstance(result, dict):
@@ -1593,10 +1652,10 @@ class BridgeApp(App):
         try:
             reply = await self.session.request(frame)
         except SessionError as exc:
-            self._chat().write(f"✗ {exc}", error=True)
+            self._chat().write(f"{exc}", kind="error")
             return None
         except asyncio.TimeoutError:
-            self._chat().write("✗ the device did not answer in time", error=True)
+            self._chat().write("the device did not answer in time", kind="error")
             return None
         if reply.type != "command.result":
             return None
@@ -1611,7 +1670,8 @@ class BridgeApp(App):
 
     async def _send_prompt(self, text: str) -> None:
         self._last_prompt = text
-        self._chat().write(f"you: {text}")
+        self._chat().open_turn()
+        self._chat().write(text, kind="user")
         # `05-bridge.md` §5.1: a prompt with no link is answered immediately. The
         # ack timeout is 6x `connect_timeout`, so waiting would leave the reader
         # staring at their own line for half a minute with nothing to act on.
@@ -1620,23 +1680,23 @@ class BridgeApp(App):
         state = self.session.state
         if state.value in UNREACHABLE:
             self._chat().write(
-                f"✗ {LINK_WORDS[state.value]}; the prompt was not sent", error=True
+                f"{LINK_WORDS[state.value]}; the prompt was not sent", kind="error"
             )
             return
         frame = Frame(type="prompt", id=new_id("b"), ts=0, body={"text": text})
         try:
             reply = await self.session.request(frame)
         except SessionError as exc:
-            self._chat().write(f"✗ {exc}", error=True)
+            self._chat().write(f"{exc}", kind="error")
             return
         except asyncio.TimeoutError:
-            self._chat().write("✗ the run did not answer in time", error=True)
+            self._chat().write("the run did not answer in time", kind="error")
             return
         if reply.type == "agent.error":
             self._on_agent_error(reply)
         elif reply.type == "agent.start":
             self._on_agent_start(reply)
-            self._chat().write("waiting for the run…")
+            self._chat().write("waiting for the run…", kind="thinking")
 
     async def _run_command(self, text: str) -> None:
         head = text[1:].split()[0] if len(text) > 1 else ""
@@ -1655,7 +1715,7 @@ class BridgeApp(App):
             try:
                 target = sandbox_normalise(target)
             except SandboxPathError as exc:
-                self._chat().write(f"✗ {exc}", error=True)
+                self._chat().write(f"{exc}", kind="error")
                 return
             self._files_target = target
             self.action_show("files")
@@ -1679,7 +1739,7 @@ class BridgeApp(App):
             # `05-bridge.md` §8.1: masked modal, Esc cancels without sending.
             parts = text[1:].split()
             if len(parts) < 3 or parts[1] != "set":
-                self._chat().write("✗ usage: /secret set <key>", error=True)
+                self._chat().write("usage: /secret set <key>", kind="error")
                 return
             value = await self.push_screen_wait(SecretPrompt(parts[2]))
             if value is None:
@@ -1701,7 +1761,7 @@ class BridgeApp(App):
         try:
             frames = parse(text, state)
         except CommandError as exc:
-            self._chat().write(f"✗ {exc}", error=True)
+            self._chat().write(f"{exc}", kind="error")
             return
         if any(frame.type == "ping" for frame in frames):
             self._reader_pinged = True
@@ -1727,10 +1787,10 @@ class BridgeApp(App):
         try:
             reply = await self.session.request(outgoing)
         except SessionError as exc:
-            self._chat().write(f"✗ {exc}", error=True)
+            self._chat().write(f"{exc}", kind="error")
             return
         except asyncio.TimeoutError:
-            self._chat().write("✗ the device did not answer in time", error=True)
+            self._chat().write("the device did not answer in time", kind="error")
             self._pending_secret = None
             return
         if reply.type == "command.result":
@@ -1764,7 +1824,7 @@ class BridgeApp(App):
         state = self.session.state
         if state.value in UNREACHABLE:
             self._chat().write(
-                f"✗ {LINK_WORDS[state.value]}; /onboard was not sent", error=True
+                f"{LINK_WORDS[state.value]}; /onboard was not sent", kind="error"
             )
             return
         if not self._config_fetched:
@@ -1998,7 +2058,7 @@ class BridgeApp(App):
             ):
                 ok, why = await self._send_body(kind, body)
             if not ok:
-                self._chat().write(f"onboard: refused ({why})")
+                self._chat().write(f"onboard: refused ({why})", kind="warn")
                 return False
         return True
 
@@ -2064,7 +2124,7 @@ class BridgeApp(App):
                     providers_mod.models, entry, answers.api_key, _http_fetch
                 )
         except Exception as err:  # noqa: BLE001 - a failed fetch is a chat line
-            self._chat().write(f"model list: {err}")
+            self._chat().write(f"model list: {err}", kind="error")
             return []
 
     async def _onboard_scan(self) -> tuple[list[dict], list[str]]:

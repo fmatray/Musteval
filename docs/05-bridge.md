@@ -188,6 +188,32 @@ The primary interaction pane.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer.
   - `agent.error` stops the spinner and renders a red error box with the `code` and `message`.
+**Message kinds.** Every line in the pane has one of seven kinds, and the kind is
+what tells the reader whose words they are. It is a parameter of the one write
+path (`ChatScreen.write`), not a string prefix a caller remembers to type, so a
+line cannot land in the pane unclassified.
+
+| Kind | Who | Reads as |
+|---|---|---|
+| `user` | the operator's prompt, echoed | Markdown, on `$accent` |
+| `assistant` | `agent.final` | Markdown |
+| `thinking` | `agent.start`, `waiting for the run…` | dim |
+| `tool` | `agent.tool`, `agent.tool_result` | dim, indented |
+| `info` | a command's ordinary answer | plain |
+| `warn` | degraded but working | `$warning`, `!` |
+| `error` | refused, failed, or `agent.error` | `$error`, bold, `✗` |
+
+**Markdown is for the two kinds that are prose.** The operator's line and the
+model's answer are parsed as Markdown, so a fenced block, a list or a table reads
+as one rather than as punctuation. Every other kind is terminal text, never
+parsed: a tag a device returned must not become a heading, and a table a log line
+happens to contain must not cost the line its meaning.
+
+**A turn is separated from the one before it by a dim rule** — a full-width `─`
+line in `$text-muted`, written before the second and every later prompt. The
+first prompt needs none, because there is nothing above it to separate. The rule
+marks where the conversation restarted, which is the boundary a reader scrolls
+by; a blank line is not, because the pane has those inside a message too.
 
 **Mockup:**
 ```text
@@ -979,6 +1005,9 @@ and a contrast that still holds. A widget that draws in CSS writes `$error` and 
 stylesheet resolve it; a line written into a `RichLog` draws through Rich, which does not
 parse CSS variables, so it resolves `app.current_theme.error` itself. The one fixed colour
 is the splash gradient, which is the identity mark rather than chrome.
+
+The chat pane's seven kinds and the colour each one takes are §5.1's table; this
+section owns only the slots those kinds resolve to.
 
 **A line the device refused is `$error`, and it carries the device's own words.** An
 error line is the only place the reader learns why a run stopped, so it is written

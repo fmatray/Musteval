@@ -254,7 +254,7 @@ async def test_browsing_outside_the_sandbox_is_refused_locally():
         await app.browse("/workspace/../../etc")
         await pilot.pause(0.1)
         assert len(transport.written) == before
-        assert "[error]" in _text(app)
+        assert "✗" in _text(app)
         await session.close()
 
 

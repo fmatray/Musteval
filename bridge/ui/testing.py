@@ -42,6 +42,24 @@ class ModalCanvas(App[Any]):
     """
 
 
+def chat_lines(app: Any) -> list[str]:
+    """The chat pane as text, one string per rendered line.
+
+    A line written as a Rich renderable — Markdown, a `Table.grid`, a `Syntax`
+    block — is stored as a `Strip`, whose `str()` is its repr. A test that read
+    `line.text` would compare against `Strip([Segment(...)])` and pass on a
+    substring of the repr, which is not what the reader sees.
+    """
+    lines: list[str] = []
+    for line in app.query_one("#chat-log").lines:
+        text = getattr(line, "text", None)
+        if isinstance(text, str):
+            lines.append(text)
+        else:
+            lines.append("".join(segment.text for segment in line.segments))
+    return lines
+
+
 def chat_input(app: Any) -> Any:
     """The `#chat-input` widget, typed, without a test importing `textual`."""
     from textual.widgets import Input
