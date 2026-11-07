@@ -106,6 +106,11 @@ Goal: implement the serialized agent run and the tool execution engine.
  - Import caps: an upload whose assembled size exceeds the per-directory cap, or
    would push the directory past 16 entries, returns `E_STORAGE` and does not commit.
 
+Firmware status: `agent`, `tools` and `skills` are implemented and link clean, and
+`docs/13-acceptance-M4.md` records which rows were run on a board. Everything that
+is a property of a tool call sits behind a provider reply, so those rows are
+unproven here: the board this was built on joins no network and resolves no key.
+
 ### M5: Scheduler, MCP & Hardening
 Goal: Full automation, remote capabilities, and final security audit.
 - **Scope**: Trigger engine, `tasks.json` execution, MCP servers, redaction audit, NVS encryption (`nvs_keys` partition).
