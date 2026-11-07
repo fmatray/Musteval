@@ -325,18 +325,25 @@ void net_status(net_status_t *out)
     out->failovers = s_failovers;
 }
 
-esp_err_t net_post(const char *url, const char *content_type,
-                   const char *authorization, const char *body, size_t body_len,
-                   int32_t timeout_ms, net_response_t *resp)
+/* One exchange, shared by every caller that reaches the wire. The method, the extra
+ * headers and whether there is an entity are the only things that differ, so TLS
+ * policy, the body cap and the redirect rule are stated once
+ * (`06-security.md` T11). */
+static esp_err_t net_exchange(esp_http_client_method_t method, const char *url,
+                              const char *content_type, const char *authorization,
+                              const char *const *header_names,
+                              const char *const *header_values, size_t header_count,
+                              const char *body, size_t body_len, int32_t timeout_ms,
+                              net_response_t *resp)
 {
-    if (url == NULL || body == NULL || resp == NULL) return ESP_ERR_INVALID_ARG;
+    if (url == NULL || resp == NULL) return ESP_ERR_INVALID_ARG;
     if (!net_connected()) return ESP_ERR_INVALID_STATE;
 
     memset(resp, 0, sizeof *resp);
 
     esp_http_client_config_t config = {
         .url = url,
-        .method = HTTP_METHOD_POST,
+        .method = method,
         .timeout_ms = timeout_ms,
         /* The bundled roots are the whole trust decision (`06-security.md` T11). A
          * `http://` URL is the caller's explicit choice for a trusted LAN; this
@@ -349,12 +356,20 @@ esp_err_t net_post(const char *url, const char *content_type,
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) return ESP_ERR_NO_MEM;
 
-    esp_http_client_set_header(client, "Content-Type",
-                               content_type != NULL ? content_type : "application/json");
+    for (size_t i = 0; i < header_count; i++) {
+        if (header_names[i] != NULL && header_values[i] != NULL) {
+            esp_http_client_set_header(client, header_names[i], header_values[i]);
+        }
+    }
+    if (content_type != NULL) {
+        esp_http_client_set_header(client, "Content-Type", content_type);
+    }
     if (authorization != NULL && authorization[0] != '\0') {
         esp_http_client_set_header(client, "Authorization", authorization);
     }
-    esp_http_client_set_post_field(client, body, (int)body_len);
+    if (body != NULL) {
+        esp_http_client_set_post_field(client, body, (int)body_len);
+    }
 
     int64_t start = esp_timer_get_time() / 1000;
     esp_err_t err = esp_http_client_perform(client);
@@ -403,4 +418,41 @@ esp_err_t net_post(const char *url, const char *content_type,
 
     esp_http_client_cleanup(client);
     return ESP_OK;
+}
+
+esp_err_t net_post(const char *url, const char *content_type,
+                   const char *authorization, const char *body, size_t body_len,
+                   int32_t timeout_ms, net_response_t *resp)
+{
+    if (body == NULL) return ESP_ERR_INVALID_ARG;
+    return net_exchange(HTTP_METHOD_POST, url, content_type, authorization, NULL, NULL,
+                        0, body, body_len, timeout_ms, resp);
+}
+
+esp_err_t net_get(const char *url, const char *const *header_names,
+                  const char *const *header_values, size_t count,
+                  int32_t timeout_ms, net_response_t *resp)
+{
+    return net_exchange(HTTP_METHOD_GET, url, NULL, NULL, header_names, header_values,
+                        count, NULL, 0, timeout_ms, resp);
+}
+
+esp_err_t net_request(const char *method, const char *url,
+                      const char *const *header_names,
+                      const char *const *header_values, size_t count,
+                      const char *body, size_t body_len, int32_t timeout_ms,
+                      net_response_t *resp)
+{
+    if (method == NULL) return ESP_ERR_INVALID_ARG;
+    esp_http_client_method_t verb = HTTP_METHOD_GET;
+    if (strcmp(method, "POST") == 0) {
+        verb = HTTP_METHOD_POST;
+    } else if (strcmp(method, "GET") != 0) {
+        /* `tools/web.md` allows exactly GET and POST; anything else is the file's
+         * own validation failure, refused rather than mapped to a nearest verb. */
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return net_exchange(verb, url, body != NULL ? "application/json" : NULL, NULL,
+                        header_names, header_values, count, body, body_len, timeout_ms,
+                        resp);
 }

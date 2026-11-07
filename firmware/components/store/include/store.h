@@ -54,6 +54,7 @@ bool          json_add_null(json_node_t *obj, const char *key);
 json_node_t  *json_add_object(json_node_t *obj, const char *key);
 /* Append to an existing array node. */
 json_node_t  *json_array_push_string(json_node_t *array, const char *value);
+json_node_t  *json_array_push_int(json_node_t *array, int64_t value);
 
 /* Accessors. A missing key or a wrong type is reported, never asserted: config
  * files are user input. All return NULL/false rather than failing the doc. */
@@ -354,3 +355,17 @@ bool store_read_truncated(size_t read_n, size_t cap, size_t total);
  * Pure. */
 size_t store_utf8_prefix(const uint8_t *buf, size_t n);
 
+
+/* Enumerate one namespace's entry names, oldest first. NVS has no iterator that
+ * survives a close, so this is a cursor the caller advances: start with `index` 0,
+ * then pass back the same `*index` until it returns ESP_ERR_NOT_FOUND. `out` receives
+ * one key per call. The same shape `memory.list` needs and no more.
+ *
+ * The iteration is over a snapshot taken at the first call, because `nvs_entry_find`
+ * invalidates on any write and a `memory.list` that interleaved with a write would
+ * otherwise skip entries. */
+esp_err_t store_nvs_key_at(const char *namespace, size_t index, char *out,
+                           size_t cap);
+
+/* Delete one key. ESP_ERR_NVS_NOT_FOUND when it was not there. */
+esp_err_t store_nvs_erase(const char *namespace, const char *key);

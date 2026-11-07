@@ -140,6 +140,11 @@ typedef struct {
     const char *fw_version;  /* "1.0.0" */
     const char *boot_id;     /* hex, stable until reset */
     bool time_synced;
+    /* The live tool set, already a `name` array, filled by `app` through
+     * `tools_capability_names`. NULL leaves `tools: []`, which is the honest answer
+     * for a build where none is callable. */
+    const json_node_t *tools;
+    bool dangerous_tools;
 } link_hello_t;
 
 /* `hello_ack` BODY only (§3.2): `device`, `fw_version`, `protocol:1`, `boot_id`,
@@ -181,6 +186,17 @@ typedef struct {
     const char *llm_last_error;
     int32_t  llm_calls_hour, llm_calls_day;
     int32_t  llm_limit_hour, llm_limit_day;
+
+    /* `agent` (§3.9). `run_id` is NULL while idle; `busy` is a live run, and
+     * `queue_depth` counts runs accepted but not started. */
+    bool        agent_busy;
+    const char *agent_run_id;
+    int32_t     agent_queue_depth;
+
+    /* `sys.diagnostics` (`tools/sys.md`) reports the same two counters `status`
+     * does, so they are carried here rather than recounted. */
+    int32_t  tool_calls;
+    int32_t  tool_failures;
 } link_status_t;
 
 /* `status` BODY only (§3.9), the single canonical status object. Subsystems absent

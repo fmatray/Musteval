@@ -291,6 +291,15 @@ json_node_t *json_array_push_string(json_node_t *array, const char *value)
     return node_out(item);
 }
 
+json_node_t *json_array_push_int(json_node_t *array, int64_t value)
+{
+    if (!cJSON_IsArray((cJSON *)(void *)array)) return NULL;
+    cJSON *item = cJSON_CreateNumber((double)value);
+    if (item == NULL) return NULL;
+    cJSON_AddItemToArray((cJSON *)(void *)array, item);
+    return node_out(item);
+}
+
 json_node_t *json_root(json_doc_t *doc)
 {
     return doc ? node_out(doc->root) : NULL;

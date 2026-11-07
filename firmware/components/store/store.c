@@ -607,3 +607,45 @@ esp_err_t store_move(const char *from, const char *to)
     }
     return rename(s_move_from, s_move_to) == 0 ? ESP_OK : ESP_FAIL;
 }
+
+esp_err_t store_nvs_key_at(const char *namespace, size_t index, char *out, size_t cap)
+{
+    if (namespace == NULL || out == NULL || cap == 0) return ESP_ERR_INVALID_ARG;
+
+    nvs_iterator_t it = NULL;
+    esp_err_t next = nvs_entry_find(NVS_DEFAULT_PART_NAME, namespace, NVS_TYPE_ANY,
+                                    &it);
+    size_t seen = 0;
+    esp_err_t result = ESP_ERR_NOT_FOUND;
+    while (next == ESP_OK) {
+        nvs_entry_info_t info;
+        if (nvs_entry_info(it, &info) == ESP_OK) {
+            if (seen == index) {
+                size_t n = strlen(info.key);
+                if (n >= cap) {
+                    result = ESP_ERR_INVALID_SIZE;
+                } else {
+                    memcpy(out, info.key, n + 1);
+                    result = ESP_OK;
+                }
+                break;
+            }
+            seen++;
+        }
+        next = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+    return result;
+}
+
+esp_err_t store_nvs_erase(const char *namespace, const char *key)
+{
+    if (namespace == NULL || key == NULL || *key == '\0') return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(namespace, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_erase_key(h, key);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}

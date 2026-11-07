@@ -12,15 +12,38 @@
 
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 /* One scratch frame, static because the link task's 4 KiB stack (`02-firmware.md`
  * §3.3) cannot hold it and `out` must stay untouched on failure. The 16 KiB
  * BSS cost is acceptable for the sole link task. */
 static char s_tx[LINK_TX_MAX];
 
 /* The assembled frame for the emit paths below. Static for the same reason as
- * `s_tx`: a 16 KiB local would overflow the link task's stack. Only the link task
- * emits, so there is no second user. */
+ * `s_tx`: a 16 KiB local would overflow the link task's stack. Two tasks emit —
+ * the link task and the agent task — so `s_emit_lock` guards both this buffer and
+ * `s_tx`, and every frame is assembled and written inside it. */
 static char s_emit[LINK_TX_MAX];
+static SemaphoreHandle_t s_emit_lock;
+
+/* `link_emit_body` is called from the link task (`command.result`, `hello_ack`,
+ * `event`) and from the agent task (`agent.start`, `agent.tool`, `agent.final`);
+ * the log hook can fire from either. Without the lock two tasks would interleave
+ * halves of two lines in `s_tx`/`s_emit` and desynchronise the stream — the one
+ * failure the NDJSON reader cannot recover from (`04-protocol.md` §1.1).
+ *
+ * Recursive because `link_envelope_wrap` takes it for `s_tx` and its callers take
+ * it again for `s_emit`. */
+static void emit_lock_take(void)
+{
+    if (s_emit_lock != NULL) xSemaphoreTakeRecursive(s_emit_lock, portMAX_DELAY);
+}
+
+static void emit_lock_give(void)
+{
+    if (s_emit_lock != NULL) xSemaphoreGiveRecursive(s_emit_lock);
+}
 
 /* `d-<counter>` is per boot and never reused (`04-protocol.md` §2). The link task
  * is the only caller, so the counter needs no lock (`02-firmware.md` §3.3). */
@@ -170,27 +193,43 @@ esp_err_t link_envelope_wrap(json_doc_t *body, const char *type, const char *id,
     }
 
     /* Assemble envelope prefix. Order follows §3 examples. */
+    emit_lock_take();
     int n = snprintf(s_tx, sizeof(s_tx), "{\"v\":1,\"type\":\"%s\",\"id\":\"%s\",\"ts\":%" PRId64,
                      type, id, ts);
-    if (n < 0 || (size_t)n >= sizeof(s_tx)) return ESP_ERR_INVALID_SIZE;
+    if (n < 0 || (size_t)n >= sizeof(s_tx)) {
+        emit_lock_give();
+        return ESP_ERR_INVALID_SIZE;
+    }
     size_t len = (size_t)n;
 
     if (reply_to != NULL) {
         n = snprintf(s_tx + len, sizeof(s_tx) - len, ",\"reply_to\":\"%s\"", reply_to);
-        if (n < 0 || (size_t)n >= sizeof(s_tx) - len) return ESP_ERR_INVALID_SIZE;
+        if (n < 0 || (size_t)n >= sizeof(s_tx) - len) {
+            emit_lock_give();
+            return ESP_ERR_INVALID_SIZE;
+        }
         len += (size_t)n;
     }
 
     if (body == NULL) {
-        if (len + 1 >= sizeof(s_tx)) return ESP_ERR_INVALID_SIZE;
+        if (len + 1 >= sizeof(s_tx)) {
+            emit_lock_give();
+            return ESP_ERR_INVALID_SIZE;
+        }
         s_tx[len++] = '}';
         s_tx[len] = '\0';
     } else {
         /* Emit body JSON into scratch; splice members into our object. */
         size_t blen = 0;
         esp_err_t err = json_emit(body, s_tx + len + 1, sizeof(s_tx) - len - 1, &blen);
-        if (err != ESP_OK) return ESP_ERR_INVALID_SIZE; /* `04` §1.2 TX limit */
-        if (blen < 2) return ESP_ERR_INVALID_ARG; /* json_emit failed for object */
+        if (err != ESP_OK) { /* `04` §1.2 TX limit */
+            emit_lock_give();
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (blen < 2) { /* json_emit failed for object */
+            emit_lock_give();
+            return ESP_ERR_INVALID_ARG;
+        }
 
         if (blen == 2) {
             /* Body is empty {}, just close the envelope. */
@@ -207,9 +246,13 @@ esp_err_t link_envelope_wrap(json_doc_t *body, const char *type, const char *id,
 
     /* result fits out_cap? NUL at index len is not counted toward out_cap,
      * mirroring `json_emit` semantics. */
-    if (len >= out_cap) return ESP_ERR_INVALID_SIZE;
+    if (len >= out_cap) {
+        emit_lock_give();
+        return ESP_ERR_INVALID_SIZE;
+    }
     memcpy(out, s_tx, len + 1);
     *written = len;
+    emit_lock_give();
     return ESP_OK;
 }
 
@@ -295,7 +338,10 @@ esp_err_t link_frame_parse(const char *line, size_t len, json_doc_t **out,
 
 const char *link_next_id(void)
 {
-    /* Not thread-safe: the link task is the only caller (`02-firmware.md` §3.3). */
+    /* The result is a scratch buffer, so it is only valid until the next call and
+     * only for a caller that uses it before emitting (`link_envelope_wrap` copies
+     * it). The link task is the only caller (`02-firmware.md` §3.3); the agent task
+     * numbers its own frames. */
     snprintf(s_id, sizeof(s_id), "d-%" PRIu32, ++s_counter);
     return s_id;
 }
@@ -318,6 +364,9 @@ static link_writer_t s_writer = NULL;
 
 void link_set_writer(link_writer_t writer)
 {
+    /* Created here because this is the first call a booting device makes into the
+     * module, so the lock exists before either emitting task starts. */
+    if (s_emit_lock == NULL) s_emit_lock = xSemaphoreCreateRecursiveMutex();
     s_writer = writer;
 }
 
@@ -419,7 +468,9 @@ static int log_hook(const char *fmt, va_list args)
         /* Timestamps are the hook's own: `ts` is wall time from NTP, which the
          * sys layer owns and this module cannot read. `ts:0` means unsynced, which
          * is exactly true before SNTP completes. */
+        emit_lock_take();
         link_emit(frame, sizeof(s_log_frame), written);
+        emit_lock_give();
     }
 
     s_in_hook = false;
@@ -506,11 +557,13 @@ esp_err_t link_refuse_line(const char *line, size_t len, const char *name,
             json_free(doc);
             return ESP_ERR_NO_MEM;
         }
+        emit_lock_take();
         err = link_envelope_wrap(doc, "command.result", link_next_id(), ts,
                                  reply_to, frame, LINK_TX_MAX, &written);
+        if (err == ESP_OK) err = link_emit(frame, LINK_TX_MAX, written);
+        emit_lock_give();
         json_free(doc);
-        if (err != ESP_OK) return err;
-        return link_emit(frame, LINK_TX_MAX, written);
+        return err;
     }
 
     /* No recoverable id: the only answer §1.2 allows is the event. */
@@ -527,11 +580,13 @@ esp_err_t link_refuse_line(const char *line, size_t len, const char *name,
         json_free(doc);
         return ESP_ERR_NO_MEM;
     }
+    emit_lock_take();
     err = link_envelope_wrap(doc, "event", link_next_id(), ts, NULL, frame,
                              LINK_TX_MAX, &written);
+    if (err == ESP_OK) err = link_emit(frame, LINK_TX_MAX, written);
+    emit_lock_give();
     json_free(doc);
-    if (err != ESP_OK) return err;
-    return link_emit(frame, LINK_TX_MAX, written);
+    return err;
 }
 
 esp_err_t link_emit_pong(const char *reply_to, int64_t ts)
@@ -542,11 +597,13 @@ esp_err_t link_emit_pong(const char *reply_to, int64_t ts)
     json_doc_t *doc = json_new_object();
     if (doc == NULL) return ESP_ERR_NO_MEM;
 
+    emit_lock_take();
     esp_err_t err = link_envelope_wrap(doc, "pong", link_next_id(), ts, reply_to,
                                        frame, LINK_TX_MAX, &written);
+    if (err == ESP_OK) err = link_emit(frame, LINK_TX_MAX, written);
+    emit_lock_give();
     json_free(doc);
-    if (err != ESP_OK) return err;
-    return link_emit(frame, LINK_TX_MAX, written);
+    return err;
 }
 
 /* --- Bodies `app` fills (`04-protocol.md` §3.2, §3.9) ---------------------- */
@@ -555,10 +612,12 @@ static esp_err_t emit_frame(json_doc_t *body, const char *type, const char *id,
                             int64_t ts, const char *reply_to)
 {
     size_t written = 0;
+    emit_lock_take();
     esp_err_t err = link_envelope_wrap(body, type, id, ts, reply_to, s_emit,
                                        LINK_TX_MAX, &written);
-    if (err != ESP_OK) return err;
-    return link_emit(s_emit, LINK_TX_MAX, written);
+    if (err == ESP_OK) err = link_emit(s_emit, LINK_TX_MAX, written);
+    emit_lock_give();
+    return err;
 }
 
 esp_err_t link_emit_body(const char *type, const char *id, int64_t ts,
@@ -577,6 +636,17 @@ esp_err_t link_build_hello_ack(json_node_t *obj, const link_hello_t *hello)
     json_node_t *caps = json_add_object(obj, "capabilities");
     json_node_t *tools = caps != NULL ? json_new_array(caps, "tools") : NULL;
     json_node_t *mcp = caps != NULL ? json_new_array(caps, "mcp") : NULL;
+
+    /* The live set, copied from what `app` built, so `hello_ack` reports what is
+     * callable now rather than a compile-time constant (§3.2). */
+    if (hello->tools != NULL && tools != NULL) {
+        size_t n = json_array_len(hello->tools);
+        for (size_t i = 0; i < n; i++) {
+            json_node_t *item = json_array_at(hello->tools, i);
+            const char *name = json_string(item);
+            if (name != NULL) json_array_push_string(tools, name);
+        }
+    }
 
     bool ok = json_add_string(obj, "device",
                               hello->device != NULL ? hello->device : "musteval") &&
@@ -646,9 +716,10 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
          (st->llm_limit_day > 0 ? json_add_int(llm, "limit_day", st->llm_limit_day)
                                 : json_add_null(llm, "limit_day")) &&
          json_add_null(obj, "geo") &&
-         json_add_bool(agent, "busy", false) &&
-         json_add_null(agent, "run_id") &&
-         json_add_int(agent, "queue_depth", 0) &&
+         json_add_bool(agent, "busy", st->agent_busy) &&
+         (st->agent_run_id != NULL ? json_add_string(agent, "run_id", st->agent_run_id)
+                                   : json_add_null(agent, "run_id")) &&
+         json_add_int(agent, "queue_depth", st->agent_queue_depth) &&
          json_add_int(agent, "max_queue", 2) &&
          json_add_int(ufs, "used_bytes", st->userfs_used) &&
          json_add_int(ufs, "total_bytes", st->userfs_total) &&
@@ -659,8 +730,8 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
          json_add_int(mem, "psram_free", st->psram_free) &&
          json_add_bool(sysn, "safe_mode", st->safe_mode) &&
          json_add_int(sysn, "boot_failures", st->boot_failures) &&
-         json_add_int(sysn, "tool_calls", 0) &&
-         json_add_int(sysn, "tool_failures", 0) &&
+         json_add_int(sysn, "tool_calls", st->tool_calls) &&
+         json_add_int(sysn, "tool_failures", st->tool_failures) &&
          json_add_int(obj, "uptime_s", st->uptime_s) &&
          json_add_string(obj, "boot_id",
                          st->boot_id != NULL ? st->boot_id : "");

@@ -93,3 +93,31 @@ void net_rank(net_candidate_t *candidates, size_t count);
 
 /* The backoff wait before attempt `attempt` (0-based), clamped to the list. Pure. */
 int32_t net_backoff_ms(const int32_t *backoff, size_t count, size_t attempt);
+
+/* `GET <url>` with the caller's headers. The same trust decision as `net_post`:
+ * bundled roots, no redirect, no plaintext fallback. Every HTTP tool reaches the wire
+ * through this one call, so the allowlist is the only thing deciding reachability and
+ * `06-security.md` T11 holds for tools exactly as it does for `llm`.
+ *
+ * `header_names`/`header_values` are parallel arrays of `count` entries; either may
+ * be NULL when `count` is 0. `body` receives up to `body_cap` bytes of the response
+ * and is NUL-terminated; more than that is ESP_ERR_INVALID_SIZE rather than a
+ * truncation (`tools/web.md`). Returns ESP_ERR_INVALID_STATE when the link is down.
+ *
+ * Board-only (`net.c`). */
+esp_err_t net_get(const char *url, const char *const *header_names,
+                  const char *const *header_values, size_t count,
+                  int32_t timeout_ms, net_response_t *resp);
+
+/* One request with a method of the caller's choosing, for declarative `POST` tools.
+ * Same trust decision and same body cap as `net_get`. `body` may be NULL for a
+ * request with no entity. Board-only. */
+esp_err_t net_request(const char *method, const char *url,
+                      const char *const *header_names,
+                      const char *const *header_values, size_t count,
+                      const char *body, size_t body_len, int32_t timeout_ms,
+                      net_response_t *resp);
+
+/* The wire word for a state, which `04-protocol.md` §3.9 fixes: `off`, `connecting`,
+ * `connected`, `failed`. Pure, so `tools` and `status` cannot disagree about it. */
+const char *net_state_name(net_state_t state);

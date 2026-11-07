@@ -33,3 +33,14 @@ int32_t net_backoff_ms(const int32_t *backoff, size_t count, size_t attempt)
     size_t index = attempt < count ? attempt : count - 1;
     return backoff[index];
 }
+
+const char *net_state_name(net_state_t state)
+{
+    switch (state) {
+    case NET_STATE_OFF:        return "off";
+    case NET_STATE_CONNECTING: return "connecting";
+    case NET_STATE_CONNECTED:  return "connected";
+    case NET_STATE_FAILED:     return "failed";
+    }
+    return "off";
+}

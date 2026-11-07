@@ -24,9 +24,11 @@
 #include "clock.h"
 #include "llm.h"
 #include "net.h"
+#include "agent.h"
 #include "link.h"
 #include "store.h"
 #include "sys.h"
+#include "tools.h"
 
 static const char *TAG = "musteval";
 
@@ -42,6 +44,52 @@ static char s_boot_id[9];
 
 /* Boot guard state, published for `status` (§3.9) because `answer_command` runs on
  * `link_task` and cannot see `app_main`'s locals. */
+/* `02-firmware.md` §3.1 steps 4-8, shared by boot and `reload`. Each step logs and
+ * continues: a missing radio or an unreachable provider must not cost the operator
+ * the link, because the link is how they fix the config. Safe mode skips the radio
+ * entirely (§3.2), which is why the clock is left unsynced. `reload` runs this with
+ * `false` after clearing the flag, which is what makes it the way out (§3.2). */
+static void start_services(bool safe_mode)
+{
+    if (safe_mode) {
+        ESP_LOGW(TAG, "boot: safe mode: skipping network, clock and model");
+        return;
+    }
+
+    esp_err_t err = net_init();
+    if (err == ESP_OK) {
+        err = net_connect();
+    }
+    if (err != ESP_OK) {
+        /* `02-firmware.md` §4.2 names the failure `E_WIFI`, and the log is the only
+         * place an operator sees it: `ESP_ERR_INVALID_STATE` would read as a
+         * programming error rather than "no network". */
+        ESP_LOGW(TAG, "boot: wifi: %s (E_WIFI)",
+                 err == ESP_ERR_INVALID_STATE ? "no configured network joined"
+                                              : esp_err_to_name(err));
+    }
+
+    err = clock_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
+        ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
+    }
+    if (net_connected() && clock_sync() != ESP_OK) {
+        ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(ESP_ERR_INVALID_STATE));
+    }
+
+    err = llm_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "boot: llm: %s: provider commands answer E_LLM_UNAVAILABLE",
+                 esp_err_to_name(err));
+    }
+
+    /* After `link_start`, so a run's first frame has a writer (`02` §3.1). */
+    err = agent_start();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "boot: agent: %s", esp_err_to_name(err));
+    }
+}
+
 static bool s_safe_mode;
 static int32_t s_boot_failures = 0;
 
@@ -698,6 +746,10 @@ static void answer_command(const json_node_t *frame)
         llm_limits(&limit_hour, &limit_day);
         const char *llm_id = NULL, *llm_model = NULL;
         bool llm_available = llm_last_answer(&llm_id, &llm_model);
+        agent_status_t agent;
+        agent_status(&agent);
+        tool_counters_t tool_counts;
+        tools_counters(&tool_counts);
         link_status_t st = {
             .safe_mode = s_safe_mode,
             .boot_failures = s_boot_failures,
@@ -728,6 +780,11 @@ static void answer_command(const json_node_t *frame)
             .llm_calls_day = calls_day,
             .llm_limit_hour = limit_hour,
             .llm_limit_day = limit_day,
+            .agent_busy = agent.busy,
+            .agent_run_id = agent.run_id,
+            .agent_queue_depth = agent.queue_depth,
+            .tool_calls = tool_counts.calls,
+            .tool_failures = tool_counts.failures,
         };
         json_node_t *result = json_add_object(root, "result");
         json_add_string(root, "name", "status");
@@ -863,7 +920,14 @@ static void answer_command(const json_node_t *frame)
          * reconnecting the bridge. */
         if (store_nvs_set_int("boot_failures", 0) == ESP_OK) {
             s_boot_failures = 0;
+            bool was_safe = s_safe_mode;
             s_safe_mode = false;
+            /* Clearing the flag without starting the services left the device in a
+             * state that reported `safe_mode: false` and still refused every prompt:
+             * the queue, the radio and the model had never been created. Booting the
+             * services here is what makes `reload` the exit §3.2 promises. */
+            start_services(false);
+            if (was_safe) ESP_LOGI(TAG, "reload: safe mode cleared, services started");
         } else {
             ESP_LOGW(TAG, "boot counter not cleared on reload");
         }
@@ -931,20 +995,36 @@ static void on_link_frame(const json_node_t *frame)
 
     if (strcmp(type, "hello") == 0) {
         const char *reply_to = json_string(json_get(frame, "id"));
+        /* `§3.2`: the set callable *now*. Built from the same registry and the same
+         * `tools_offered` predicate `tools_json` uses, so a tool the model cannot
+         * call cannot be advertised either. */
+        json_doc_t *caps = json_new_object();
+        json_node_t *names = caps != NULL ? json_new_array(json_root(caps), "tools")
+                                          : NULL;
+        tools_context_t ctx;
+        tools_context_from_config(&ctx);
+        if (names != NULL) tools_capability_names(&ctx, NULL, names);
+
         link_hello_t hello = {
             .device = "musteval",
             .fw_version = "1.0.0",
             .boot_id = s_boot_id,
-            .time_synced = false,
+            .time_synced = clock_synced(),
+            .tools = names,
+            .dangerous_tools = ctx.policy.allow_dangerous,
         };
         json_doc_t *body = json_new_object();
-        if (body == NULL) return;
+        if (body == NULL) {
+            json_free(caps);
+            return;
+        }
         if (link_build_hello_ack(json_root(body), &hello) == ESP_OK) {
             link_emit_body("hello_ack", link_next_id(), 0, reply_to, body);
         } else {
             ESP_LOGE(TAG, "hello: body build failed");
         }
         json_free(body);
+        json_free(caps);
         return;
     }
 
@@ -957,11 +1037,29 @@ static void on_link_frame(const json_node_t *frame)
         return;
     }
 
-    if (strcmp(type, "ack") == 0 || strcmp(type, "cancel") == 0) {
-        /* §3.8: `ack` is advisory and an unknown `ack_of` is ignored. §3.5: a
-         * `cancel` with no run in flight has nothing to stop. Both are no-ops
-         * until the agent loop (M4) retains frames or runs — logging them would
-         * turn a normal handshake into warning noise. */
+    if (strcmp(type, "ack") == 0) {
+        /* §3.8: `ack` is advisory and an unknown `ack_of` is ignored. */
+        return;
+    }
+
+    if (strcmp(type, "cancel") == 0) {
+        /* §3.5: a live run answers with `agent.error{E_CANCELLED}` — which the run
+         * task emits, because it owns the terminal frame — and nothing in flight is
+         * `event{cancel.noop}` (`§3.19`), since silence would read as a hang. */
+        if (!agent_cancel()) {
+            json_doc_t *body = json_new_object();
+            if (body == NULL) return;
+            json_add_string(json_root(body), "kind", "cancel.noop");
+            json_node_t *data = json_add_object(json_root(body), "data");
+            if (data != NULL) {
+                json_add_string(data, "reason",
+                                json_string(json_get(frame, "run_id")) != NULL
+                                    ? "no run with that id in flight"
+                                    : "nothing to cancel");
+            }
+            link_emit_body("event", link_next_id(), 0, NULL, body);
+            json_free(body);
+        }
         return;
     }
 
@@ -994,12 +1092,54 @@ static void on_link_frame(const json_node_t *frame)
 
     if (strcmp(type, "prompt") == 0) {
         const char *reply_to = json_string(json_get(frame, "id"));
+        const char *text = json_string(json_get(frame, "text"));
+        if (reply_to == NULL) return;
+
+        if (s_safe_mode) {
+            /* `04` §4.11: the agent loop needs the network, which safe mode does not
+             * start. Answered before the submit so the reason names safe mode rather
+             * than the missing queue (`02-firmware.md` §3.2). */
+            json_doc_t *body = json_new_object();
+            if (body == NULL) return;
+            json_node_t *root = json_root(body);
+            json_add_string(root, "code", "E_SAFE_MODE");
+            json_add_string(root, "message",
+                            "safe mode: repair config, then reload");
+            json_add_bool(root, "retryable", false);
+            json_add_string(root, "reply_to", reply_to);
+            link_emit_body("agent.error", link_next_id(), 0, reply_to, body);
+            json_free(body);
+            return;
+        }
+
+        esp_err_t err = agent_submit(text, text != NULL ? strlen(text) : 0,
+                                     AGENT_SOURCE_PROMPT, reply_to);
+        if (err == ESP_OK) return;   /* the run answers with its own frames */
+
         json_doc_t *body = json_new_object();
         if (body == NULL) return;
         json_node_t *root = json_root(body);
-        json_add_string(root, "code", "E_INTERNAL");
-        json_add_string(root, "message", "agent loop not implemented before M4");
-        json_add_bool(root, "retryable", true);
+        if (err == ESP_ERR_INVALID_STATE) {
+            /* `04` §3.15's E_BUSY example, including the detail object. */
+            json_add_string(root, "code", "E_BUSY");
+            json_add_string(root, "message",
+                            "agent run in flight; queue full (2), prompt rejected");
+            json_add_bool(root, "retryable", true);
+            json_node_t *detail = json_add_object(root, "detail");
+            if (detail != NULL) {
+                json_add_int(detail, "queue_depth", AGENT_MAX_QUEUE);
+                json_add_int(detail, "max_queue", AGENT_MAX_QUEUE);
+            }
+        } else if (err == ESP_ERR_INVALID_SIZE) {
+            json_add_string(root, "code", "E_TOOL");
+            json_add_string(root, "message", "prompt exceeds agent.max_input_bytes");
+            json_add_bool(root, "retryable", false);
+        } else {
+            json_add_string(root, "code", "E_INTERNAL");
+            json_add_string(root, "message", "the agent loop is not started");
+            json_add_bool(root, "retryable", true);
+        }
+        json_add_string(root, "reply_to", reply_to);
         link_emit_body("agent.error", link_next_id(), 0, reply_to, body);
         json_free(body);
         return;
@@ -1093,45 +1233,7 @@ void app_main(void)
     }
     link_log_install("info");
 
-    /* `02-firmware.md` §3.1 steps 4-8. Each step logs and continues: a missing radio
-     * or an unreachable provider must not cost the operator the link, because the
-     * link is how they fix the config. Safe mode skips the radio entirely (§3.2),
-     * which is why the clock is left unsynced and `time_synced` stays false. */
-    if (safe_mode) {
-        ESP_LOGW(TAG, "boot: safe mode: skipping network, clock and model");
-    } else {
-        err = net_init();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "boot: wifi: no usable network: %s", esp_err_to_name(err));
-        } else {
-            err = net_connect();
-            if (err != ESP_OK) {
-                /* `02-firmware.md` §4.2 names the failure `E_WIFI`, and the log is the
-                 * only place an operator sees it: `ESP_ERR_INVALID_STATE` would read as
-                 * a programming error rather than "no network". */
-                ESP_LOGW(TAG, "boot: wifi: %s (E_WIFI)",
-                         err == ESP_ERR_INVALID_STATE ? "no configured network joined"
-                                                      : esp_err_to_name(err));
-            }
-        }
-
-        err = clock_init();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
-            ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
-        }
-        if (net_connected()) {
-            err = clock_sync();
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
-            }
-        }
-
-        err = llm_init();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "boot: llm: %s: provider commands answer E_LLM_UNAVAILABLE",
-                     esp_err_to_name(err));
-        }
-    }
+    start_services(safe_mode);
 
     ESP_LOGW(TAG, "boot stops before the scheduler: counter stays at %" PRId32,
              count);
