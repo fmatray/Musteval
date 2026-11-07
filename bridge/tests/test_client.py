@@ -292,6 +292,50 @@ async def test_three_missed_pongs_degrade_the_link():
     await session.close()
 
 
+async def test_a_command_in_flight_is_not_a_missed_heartbeat():
+    """A handler that blocks also stops the device reading `ping`.
+
+    `reload` reruns `net_connect` before it replies, so its reply can be later than
+    three ping intervals. Counting those pings as missed marked a working link
+    DEGRADED mid-wizard, and every later frame then timed out — which is the
+    "device did not answer in time" a reader saw between step 1 and step 2.
+    """
+    def handler(line: bytes) -> list[bytes]:
+        frame = __import__("json").loads(line)
+        if frame["type"] == "hello":
+            return [_ack(frame["id"])]
+        if frame["type"] == "command" and frame["name"] == "reload":
+            return []  # answered by `deliver` below, after the pings would have gone
+        if frame["type"] == "ping":
+            return []
+        return []
+
+    session = Session(
+        FakeTransport(on_write=handler),
+        ping_interval=0.02,
+        pong_timeout=0.02,
+        ack_timeout=0.2,
+        backoff=(9,),
+    )
+    await session.connect()
+    states: list[LinkState] = []
+    session._on_state = states.append
+    request = asyncio.create_task(
+        session.request(Frame(type="command", id="b-9", ts=0, body={"name": "reload"}))
+    )
+    # Long enough that three unanswered pings would have degraded the link.
+    await asyncio.sleep(0.2)
+    assert session.state is LinkState.CONNECTED, states
+    session._deliver(
+        Frame(type="command.result", id="d-9", ts=0, body={"name": "reload", "ok": True},
+              reply_to="b-9")
+    )
+    reply = await request
+    assert reply.body["ok"] is True
+    assert LinkState.DEGRADED not in states
+    await session.close()
+
+
 async def test_close_is_idempotent():
     session = Session(FakeTransport(on_write=_agent()), **FAST)
     await session.connect()

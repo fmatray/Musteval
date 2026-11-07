@@ -221,7 +221,10 @@ class _StepBox(PromptBox[Any]):
     the model step — each unlock is the previous step's proof.
     """
 
-    BINDINGS = [Binding("ctrl+s", "submit", "Continue", show=False)]
+    BINDINGS = [
+        Binding("ctrl+s", "submit", "Continue", show=False),
+        Binding("ctrl+g", "pass_step", "Keep as is", show=False),
+    ]
     CSS = (
         _CSS
         + """
@@ -250,13 +253,20 @@ class _StepBox(PromptBox[Any]):
     #: What this step proves, stated before the fields so the reason for the question
     #: is not deferred to the result.
     PROVES = ""
-    SUMMARY = "Ctrl+S: continue | Esc: cancel | blank fields are left alone"
+    SUMMARY = (
+        "Ctrl+S: continue | Ctrl+G: keep the current value | Esc: cancel | "
+        "blank fields are left alone"
+    )
 
     def __init__(self) -> None:
         super().__init__()
         #: Filled by `app.py` before the next step is shown: the line the previous
         #: step's own test produced, or empty on the first step.
         self.verdict = ""
+        #: Set by `Ctrl+G`. The step is dismissed with its stored values and writes
+        #: nothing, which is what makes re-running the wizard to fix one domain
+        #: leave the other two alone.
+        self.passed = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box step-box"):
@@ -266,6 +276,7 @@ class _StepBox(PromptBox[Any]):
                 for widget in self.fields():
                     yield widget
             yield Static(self.SUMMARY, classes="step-note")
+            yield Static(self.pass_note(), id="step-pass", classes="step-note")
             yield Static("", id="step-verdict", classes="step-note")
 
     def fields(self) -> Any:
@@ -279,6 +290,27 @@ class _StepBox(PromptBox[Any]):
 
     def action_submit(self) -> None:
         self.dismiss(self.answer())
+
+    def action_pass_step(self) -> None:
+        """Keep what the device has for this step and move on without writing.
+
+        Only offered when the step is already satisfied — a pass on an unconfigured
+        domain would send the reader to the next step with that domain still missing,
+        and the wizard exists to stop exactly that. `can_pass` is what the screen and
+        this action both consult, so the key cannot do more than the line promised.
+        """
+        if not self.can_pass():
+            return
+        self.passed = True
+        self.dismiss(self.answer())
+
+    def can_pass(self) -> bool:
+        """Whether the stored config already answers this step."""
+        return False
+
+    def pass_note(self) -> str:
+        """One line naming whether Ctrl+G is available and what it would keep."""
+        return ""
 
     def answer(self) -> Any:
         return None
@@ -397,6 +429,21 @@ class NetworkStep(_StepBox):
         ntp = self._existing(self.current, "ntp") or {}
         return str(ntp.get("timezone") or "") if isinstance(ntp, dict) else ""
 
+    def _stored_ssid(self) -> str:
+        networks = self._existing(self.current, "wifi.networks") or []
+        first = networks[0] if isinstance(networks, list) and networks else {}
+        return str(first.get("ssid") or "") if isinstance(first, dict) else ""
+
+    def can_pass(self) -> bool:
+        """A stored network and a stored zone: both halves of this step are answered."""
+        return bool(self._stored_ssid() and self._stored_tz())
+
+    def pass_note(self) -> str:
+        return (
+            "network and zone stored; Ctrl+G keeps both"
+            if self.can_pass() else "no stored network; fill this step in"
+        )
+
     def answer(self) -> onboard.Answers:
         typed = self.query_one("#step-ssid", Input).value.strip()
         chosen = self.query_one("#step-ssid-select", Select).value
@@ -421,6 +468,7 @@ class NetworkStep(_StepBox):
             auth=auth,
             timezone=timezone,
             ntp_server=server,
+            skip_network=self.passed,
         )
 
 
@@ -465,6 +513,23 @@ class ProviderStep(_StepBox):
             Input(password=True, id="step-api-key"),
         ]
 
+    def _stored(self) -> dict[str, Any]:
+        rows = self._existing(self.current, "llm.providers") or []
+        first = rows[0] if isinstance(rows, list) and rows else {}
+        return first if isinstance(first, dict) else {}
+
+    def can_pass(self) -> bool:
+        """A stored provider with a base url is usable as it stands."""
+        stored = self._stored()
+        return bool(stored.get("base_url") and stored.get("model"))
+
+    def pass_note(self) -> str:
+        stored = self._stored()
+        return (
+            f"{stored.get('id') or 'provider'} stored; Ctrl+G keeps it"
+            if self.can_pass() else "no stored provider; fill this step in"
+        )
+
     def on_select_changed(self, event: Select.Changed) -> None:
         """A provider choice fills the base url, so the reader does not retype it."""
         if event.select.id != "step-provider":
@@ -491,6 +556,7 @@ class ProviderStep(_StepBox):
             model="",
             provider=name,
             token_param=providers.TOKEN_PARAM.get(name, ""),
+            skip_provider=self.passed,
         )
 
 
@@ -561,7 +627,21 @@ class ModelStep(_StepBox):
             "#step-thinking"
         ) else None
         level = level_widget.value if level_widget is not None else "none"
-        return {"model": model, "thinking": level if isinstance(level, str) else "none"}
+        return {
+            "model": model,
+            "thinking": level if isinstance(level, str) else "none",
+            "skip_model": self.passed,
+        }
+
+    def can_pass(self) -> bool:
+        """A stored model is already a written provider; nothing left to choose."""
+        return bool(self.model)
+
+    def pass_note(self) -> str:
+        return (
+            f"{self.model} stored; Ctrl+G keeps it"
+            if self.can_pass() else "no stored model; pick one"
+        )
 
 
 class FilePrompt(PromptBox[str | None]):

@@ -87,9 +87,48 @@ async def _mounted(pilot, selector: str) -> bool:
 
 def _answer(**kwargs):
     """`Answers` with every field named, so a new field cannot silently default."""
-    base = {"ssid": "", "password": "", "base_url": "", "api_key": "", "model": ""}
+    base = {
+        "ssid": "", "password": "", "base_url": "", "api_key": "", "model": "",
+        "skip_network": False, "skip_provider": False, "skip_model": False,
+    }
     base.update(kwargs)
     return onboard.Answers(**base)
+
+
+# --- the pass option ------------------------------------------------------
+
+
+def test_a_passed_network_step_writes_neither_the_array_nor_the_zone():
+    """Ctrl+G means "keep what the device has", so nothing is sent for it."""
+    a = _answer(ssid="HomeLab", password="pw", auth="wpa2",
+                timezone="CET-1CEST,M3.5.0,M10.5.0/3",
+                ntp_server="0.europe.pool.ntp.org", skip_network=True)
+    assert onboard.writes_network(a) == []
+    assert onboard.writes_time(a) == []
+
+
+def test_a_passed_provider_step_keeps_the_stored_provider_and_writes_no_secret():
+    a = _answer(base_url="https://a/v1", api_key="k", model="m",
+                provider="openrouter", skip_provider=True)
+    plan = onboard.writes_provider(a)
+    assert [kind for kind, _ in plan] == ["config"], "no key was typed, none is written"
+    assert plan[0][1]["llm.providers"] == [{
+        "id": "openrouter", "base_url": "https://a/v1", "model": "m",
+        "api_key_ref": "nvs:llm_api_key",
+    }]
+
+
+def test_a_passed_model_step_writes_nothing_at_all():
+    """The provider is already written with its model; a rewrite would be a no-op."""
+    a = _answer(base_url="https://a/v1", api_key="k", model="m", skip_model=True)
+    assert onboard.writes_provider(a) == []
+
+
+def test_every_step_passed_writes_nothing():
+    a = _answer(ssid="HomeLab", password="pw", auth="wpa2", base_url="https://a/v1",
+                api_key="k", model="m", timezone="UTC0",
+                skip_network=True, skip_provider=True, skip_model=True)
+    assert onboard.writes(a) == []
 
 
 # --- the pure plan --------------------------------------------------------
@@ -317,6 +356,70 @@ async def test_the_network_step_translates_the_stored_zone_back_to_a_region():
     )
 
 
+async def test_the_network_step_offers_a_pass_only_when_both_halves_are_stored():
+    """Ctrl+G must not walk a reader past a domain the device has not got."""
+    app = _app(Device())
+    configured = {
+        "wifi.networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}],
+        "ntp": {"timezone": "UTC0"},
+    }
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep(configured, []))
+        assert await _mounted(pilot, "#step-region")
+        assert app.screen.can_pass()
+        assert "Ctrl+G keeps both" in str(app.screen.query_one("#step-pass").render())
+
+
+async def test_the_network_step_offers_no_pass_without_a_stored_network():
+    """The zone alone is half the step; passing would leave the station unwritten."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep({"ntp": {"timezone": "UTC0"}}, []))
+        assert await _mounted(pilot, "#step-region")
+        assert not app.screen.can_pass(), "no stored network: nothing to keep"
+        assert "Ctrl+G" not in str(app.screen.query_one("#step-pass").render())
+
+
+async def test_the_provider_step_passes_only_over_a_stored_provider():
+    entries, _ = providers.catalog()
+    app = _app(Device())
+    stored = {"llm.providers": [{"id": "p1", "base_url": "https://a/v1",
+                                 "model": "m"}]}
+    async with app.run_test() as pilot:
+        app.push_screen(ProviderStep(stored, entries))
+        assert await _mounted(pilot, "#step-provider")
+        assert app.screen.can_pass()
+        assert "Ctrl+G keeps it" in str(app.screen.query_one("#step-pass").render())
+
+
+async def test_the_provider_step_offers_no_pass_without_a_stored_provider():
+    entries, _ = providers.catalog()
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(ProviderStep({}, entries))
+        assert await _mounted(pilot, "#step-provider")
+        assert not app.screen.can_pass()
+        assert "Ctrl+G" not in str(app.screen.query_one("#step-pass").render())
+
+
+async def test_pressing_pass_marks_the_step_and_sends_nothing():
+    app = _app(Device())
+    configured = {
+        "wifi.networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}],
+        "ntp": {"timezone": "UTC0"},
+    }
+    box: list[object] = []
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep(configured, []), box.append)
+        assert await _mounted(pilot, "#step-region")
+        await pilot.press("ctrl+g")
+        await pilot.pause(0.2)
+    assert box and isinstance(box[0], onboard.Answers), box
+    answered = box[0]
+    assert answered.skip_network is True
+    assert onboard.writes_network(answered) == []
+
+
 async def test_a_stored_zone_the_table_lacks_keeps_its_own_row():
     app = _app(Device())
     async with app.run_test() as pilot:
@@ -385,6 +488,37 @@ async def test_the_wizard_tests_each_step_before_asking_the_next():
     # And a status read follows the reload, which is step 1's test.
     assert "status:" in order[reload_at:provider_at], order
     assert seen == ["NetworkStep", "ProviderStep", "ModelStep"]
+
+
+async def test_passing_every_step_sends_only_the_document_read():
+    """The reported use: re-run the wizard to inspect one domain, change none.
+
+    A pass must not reload either. `reload` is step 1's test, and a test whose write
+    did not happen would report on a document nobody touched.
+    """
+    device = Device()
+    app = _app(device)
+
+    async def fake_screen(screen):
+        if isinstance(screen, NetworkStep):
+            return _answer(ssid="HomeLab", password="pw", auth="wpa2",
+                           timezone="UTC0", skip_network=True)
+        if isinstance(screen, ProviderStep):
+            return _answer(base_url="https://openrouter.ai/api/v1", provider="openrouter",
+                           skip_provider=True)
+        if isinstance(screen, ModelStep):
+            return {"model": "", "thinking": "none", "skip_model": True}
+        return None
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        app.push_screen_wait = fake_screen  # type: ignore[method-assign]
+        app._config = {}
+        app._config_fetched = True
+        await app.onboard()
+
+    assert device.writes() == [], device.writes()
+    assert "reload:" not in device.order(), "a passed step has no write to apply"
 
 
 async def test_cancelling_the_network_step_writes_nothing():

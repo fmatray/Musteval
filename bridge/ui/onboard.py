@@ -89,6 +89,12 @@ class Answers:
     extra_body: dict[str, object] = field(default_factory=dict)
     timezone: str = ""
     ntp_server: str = ""
+    #: True when the reader pressed "keep what is there" on a step. The step sends no
+    #: frame and its verdict is not claimed: a pass proves nothing, and saying so is
+    #: cheaper than making the reader compare two screens to find out.
+    skip_network: bool = False
+    skip_provider: bool = False
+    skip_model: bool = False
 
 
 def needs_model(answers: Answers) -> bool:
@@ -108,6 +114,8 @@ def network_writable(answers: Answers) -> bool:
     `auth` is carried through for exactly this: the reader picked a row off the scan,
     and the form must not accept a password for a network the station will refuse.
     """
+    if answers.skip_network:
+        return False
     return bool(answers.ssid and answers.password) and answers.auth in JOINABLE_AUTH
 
 
@@ -145,7 +153,19 @@ def writes_provider(answers: Answers) -> list[tuple[str, dict[str, object]]]:
     document. The step asks for the provider and the key, then for the model from the
     list that key unlocks.
     """
-    if not (answers.base_url and answers.api_key and answers.model):
+    # A passed model step means the stored provider already names the stored model,
+    # so the entry step 3 would write is the entry already there: a no-op write is
+    # still a flash write and still a config document the device must re-validate.
+    if answers.skip_model:
+        return []
+    if not answers.model:
+        return []
+    if not answers.base_url:
+        return []
+    # `api_key_ref` is required, and a `nvs:` key that was never written is a
+    # document the device rejects — `03-config.md` rule 9. A passed step is the one
+    # exception, because passing asserts the key is already there.
+    if not (answers.api_key or answers.skip_provider):
         return []
     provider: dict[str, object] = {
         "id": answers.provider or "custom",
@@ -156,14 +176,17 @@ def writes_provider(answers: Answers) -> list[tuple[str, dict[str, object]]]:
     # `03-config.md` §Provider compatibility names `token_param` per provider, and
     # `extra_body` carries the thinking level. Both are optional; writing a member the
     # provider rejects turns every call into a 400.
-    if answers.token_param:
+    if not answers.skip_provider and answers.token_param:
         provider["token_param"] = answers.token_param
     if answers.extra_body:
         provider["extra_body"] = dict(answers.extra_body)
-    return [
-        ("secret", {"key": LLM_KEY, "value": answers.api_key}),
-        ("config", {"llm.providers": [provider]}),
-    ]
+    plan: list[tuple[str, dict[str, object]]] = []
+    # The key is only written when one was typed: a passed provider step has none to
+    # offer, and re-writing the secret would demand a value the reader did not enter.
+    if answers.api_key and not answers.skip_provider:
+        plan.append(("secret", {"key": LLM_KEY, "value": answers.api_key}))
+    plan.append(("config", {"llm.providers": [provider]}))
+    return plan
 
 
 def writes_time(answers: Answers) -> list[tuple[str, dict[str, object]]]:
@@ -174,7 +197,7 @@ def writes_time(answers: Answers) -> list[tuple[str, dict[str, object]]]:
     matches a region in the table: an arbitrary POSIX string names no pool, and
     guessing one would replace a working server with a European one.
     """
-    if not answers.timezone:
+    if answers.skip_network or not answers.timezone:
         return []
     plan: list[tuple[str, dict[str, object]]] = [
         ("config", {"ntp.timezone": answers.timezone})

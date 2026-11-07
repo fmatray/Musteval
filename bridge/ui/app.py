@@ -1801,6 +1801,12 @@ class BridgeApp(App):
         # `reload` applies both, and one `status` reply answers both — `wifi.state`
         # for the join and `time.tz` for the zone. Two reloads would each block up to
         # one `connect_timeout` per configured network to learn the same two facts.
+        if answers.skip_network:
+            # Nothing was written, so there is nothing to reload and nothing to
+            # report: a pass that printed a verdict would be claiming a test that
+            # never ran.
+            self._chat().write("onboard: network and zone kept as stored")
+            return answers
         plan = onboard.writes_network(answers) + onboard.writes_time(answers)
         for line in onboard.narration(answers, dict(self._config), "network"):
             self._chat().write(f"onboard: {line}")
@@ -1832,6 +1838,13 @@ class BridgeApp(App):
         if answers is None:
             self._chat().write("onboard: cancelled at the provider step")
             return None
+        if answers.skip_provider:
+            # A pass proves nothing, so it claims nothing: the stored provider is
+            # carried forward for the model step to complete, and the fetch is
+            # skipped because there is no key to fetch with.
+            self._chat().write("onboard: provider kept as stored")
+            answers.model_list = []
+            return answers
 
         models = await self._fetch_models(answers)
         self._chat().write(onboard.verdict_provider(models, answers))
@@ -1846,17 +1859,24 @@ class BridgeApp(App):
         step exists to catch.
         """
         models = list(getattr(answers, "model_list", []) or [])
+        stored = self._existing("llm.providers")
+        first = stored[0] if isinstance(stored, list) and stored else {}
+        stored_model = str(first.get("model") or "") if isinstance(first, dict) else ""
         step = ModelStep(
             models=models,
             provider=answers.provider or "",
-            model=models[0] if models else "",
+            model=(answers.model or stored_model or (models[0] if models else "")),
         )
         picked = await self.push_screen_wait(step)
         if picked is None:
             self._chat().write("onboard: cancelled at the model step")
             return None
+        answers.skip_model = bool(picked.get("skip_model"))
         answers.model = picked["model"]
         answers.extra_body = self._extra_body(answers.provider, picked["thinking"])
+        if answers.skip_model:
+            self._chat().write("onboard: model kept as stored")
+            return answers
         self._chat().write(onboard.verdict_model(models, answers))
         if not answers.model:
             return None
@@ -1888,7 +1908,9 @@ class BridgeApp(App):
             return {}
         return dict(entry.extra_body(level))
 
-    async def _send_body(self, kind: str, body: dict[str, Any]) -> "tuple[bool, str]":
+    async def _send_body(
+        self, kind: str, body: dict[str, Any], timeout: float | None = None
+    ) -> "tuple[bool, str]":
         """One frame of a step, with the device's own refusal code when it refuses.
 
         `_request` folds a rejection into `None`, which is the right shape for a
@@ -1915,7 +1937,7 @@ class BridgeApp(App):
             )
         frame = outgoing
         try:
-            reply = await self.session.request(frame)
+            reply = await self.session.request(frame, timeout=timeout)
         except SessionError as exc:
             return False, str(exc)
         except asyncio.TimeoutError:
@@ -1943,11 +1965,31 @@ class BridgeApp(App):
         The reply is the device's own account of the boot sequence it just reran, so a
         step that depends on the network being up can read it rather than guess.
         """
-        ok, why = await self._send_body("command", {"name": "reload"})
+        ok, why = await self._send_body(
+            "command", {"name": "reload"}, timeout=self._reload_budget()
+        )
         self._chat().write(
             "onboard: reload: " + ("applied" if ok else f"refused ({why})")
         )
         return ok
+
+    def _reload_budget(self) -> float:
+        """How long `reload` may take before it is called unanswered.
+
+        `reload` reruns the boot sequence inside the command handler, so its reply
+        waits on `net_connect` — up to one `wifi.connect_timeout_ms` per configured
+        network — and then on `clock_sync`. The session's default budget
+        (`ack_timeout * 6`) is sized for a command that answers at once, which is
+        why step 1 timed out on a device that was working.
+        """
+        networks = self._existing("wifi.networks")
+        count = len(networks) if isinstance(networks, list) else 0
+        per_ms = self._existing("wifi.connect_timeout_ms")
+        per = float(per_ms) if isinstance(per_ms, (int, float)) and per_ms else 15000.0
+        # One connect per network, plus a clock sync and the flash re-read. Bounded
+        # so a config naming eight networks and a two-minute timeout does not turn a
+        # wedged device into an eight-minute wait with no way out but Ctrl+C.
+        return min(120.0, 15.0 + (count * per / 1000.0))
 
     async def _read_status(self) -> "dict[str, object]":
         """The `status` blocks, for a step that has to observe a consequence."""

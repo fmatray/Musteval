@@ -89,6 +89,13 @@ class Session:
         #: future resolves on the same call that hands the frame to the sink, so a
         #: value written after `await` would still be the previous ping's.
         self._ping_sent: dict[str, float] = {}
+        #: Requests awaiting a reply, excluding pings. The heartbeat is suspended
+        #: while one is outstanding: a handler that blocks — `reload` waiting on
+        #: `net_connect`, `wifi.scan` dwelling per channel — also stops the device
+        #: reading `ping`, so those pings are never answered and counting them
+        #: marked a working link DEGRADED mid-wizard. The request's own timeout is
+        #: the detector for a device that really is wedged, and it names the command.
+        self._commands_in_flight = 0
         self._hello_ack: Frame | None = None
         self._first_attempt: asyncio.Event = asyncio.Event()
 
@@ -170,11 +177,16 @@ class Session:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Frame] = loop.create_future()
         self._pending[frame_id] = future
+        counted = frame.type != "ping"
+        if counted:
+            self._commands_in_flight += 1
         try:
             await self._send(outgoing)
             return await asyncio.wait_for(future, timeout=timeout or self._ack_timeout * 6)
         finally:
             self._pending.pop(frame_id, None)
+            if counted:
+                self._commands_in_flight -= 1
 
     async def send(self, frame: Frame) -> None:
         """Fire-and-forget: `ack`, `cancel` and anything with no dedicated reply."""
@@ -356,6 +368,8 @@ class Session:
     async def _ping_loop(self) -> None:
         while not self._stopping:
             await asyncio.sleep(self._ping_interval)
+            if self._commands_in_flight:
+                continue
             ping_id = new_id("b")
             future: asyncio.Future[Frame] = asyncio.get_running_loop().create_future()
             self._pending[ping_id] = future

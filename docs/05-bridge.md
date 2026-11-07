@@ -1030,6 +1030,7 @@ next is asked for:
 | Step | Asks | Writes | Test |
 |---|---|---|---|
 | 1. Network and time | SSID, passphrase, region | `wifi.networks`, `ntp.timezone`, `ntp.servers`, `nvs:wifi_psk` | `reload`, then `status`: `wifi.state` and `time.tz` |
+
 | 2. Provider | provider, base URL, API key | — (the list is the proof) | the provider's model list, fetched with this key |
 | 3. Model | model, thinking level | `llm.providers`, `nvs:llm_api_key` | the chosen name is in the list step 2 fetched |
 
@@ -1093,6 +1094,15 @@ directly always missed, which is how `CET-1CEST,M3.5.0,M10.5.0/3` was shown back
 reader who expected a place. `providers.region_for_timezone` does the reverse lookup,
 and a zone the table does not list keeps its own `custom: <tz>` row — with no
 `ntp.servers` written, because guessing a pool could replace a working server.
+
+**Each step can be passed over with `Ctrl+G` when the device already answers it.**
+A step is skipped only when its own domain is stored — a network *and* a zone for
+step 1, a provider with a `base_url` and a model for step 2, a model for step 3 — and
+`Ctrl+G` on an unconfigured step does nothing rather than advancing. A passed step
+sends no frame and prints no verdict: a test that did not run must not report, or the
+reader learns to distrust the line that a real test produced. The step's own line says
+which it is: `network and zone stored; Ctrl+G keeps both` or `no stored network; fill
+this step in`.
 
 **Cancelling a step writes nothing and stops the wizard.** Each step is its own modal,
 so `Esc` at step 2 leaves the step-1 writes in place — they were already tested and

@@ -591,8 +591,15 @@ reads are never refused.
 ### 4.2 `reload`
 
 Re-reads `/config.json`, `/tasks.json`, `/prompts/*.md`, `/skills/*.md` and
-`/tools/*.json` from flash without rebooting. Fields that only take effect at boot
-(`wifi.*`, `serial.*`, `ntp.servers`) are reported in `warnings`.
+`/tools/*.json` from flash without rebooting, and re-runs the service start-up that
+follows a boot when it can clear `boot_failures` — so `wifi.*` and `ntp.timezone` are
+re-applied, not merely re-read. `serial.*` still takes effect at the next boot and is
+reported in `warnings`.
+
+Because the handler reruns `net_connect` before it replies, the reply can arrive after
+one `wifi.connect_timeout_ms` per configured `wifi.networks[]` entry, plus a clock sync.
+A caller MUST size its timeout for that rather than for a command that answers at once;
+this is the one command whose reply is bounded by the network.
 
 ```json
 {"v":1,"type":"command","id":"b-9","ts":1730571200,"name":"reload","args":{}}
@@ -710,9 +717,13 @@ list says nothing about entries 1 and 2, and `03-config.md` requires each to be
 complete. A whole-array set (`{"path":"wifi.networks","value":[...]}`) replaces the
 array and is the way to add one.
 
-`requires_reboot` is `true` exactly when `04` §4.2 names the key as boot-only —
-`wifi.*`, `serial.*`, and `ntp.servers` — and `false` otherwise. `ntp.timezone` is
-`false`: `clock_init` applies it, and `reload` re-runs `clock_init`.
+`requires_reboot` is `true` when the key is not applied by the running firmware until
+the next boot *unless* a `reload` intervenes — `wifi.*`, `serial.*` and `ntp.servers`
+— and `false` otherwise. `ntp.timezone` is `false`: `clock_init` applies it, and
+`reload` re-runs `clock_init`. `true` is therefore not a demand to reboot: `reload`
+re-applies `wifi.*` and `ntp.servers` by rerunning the service start-up (§4.2), and
+`serial.*` is the only family that genuinely needs a reboot. Say `reload`, not
+`reboot`, when a caller asks what to do next.
 
 ```json
 {"v":1,"type":"command","id":"b-14","ts":1730571700,"name":"config.set","args":{"path":"device.log_level","value":"debug"}}
