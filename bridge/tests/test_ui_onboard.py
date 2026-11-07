@@ -311,3 +311,59 @@ async def test_the_scan_feeds_the_ssid_dropdown():
     assert device.args("wifi.networks") == [
         {"ssid": "HomeLab", "password_ref": f"nvs:{onboard.WIFI_KEY}"}
     ]
+
+
+
+async def _open_form(pilot) -> bool:
+    """Push the wizard and wait for its fields. False if it never mounted."""
+    pilot.app.run_worker(pilot.app.onboard())
+    for _ in range(40):
+        await pilot.pause(0.05)
+        try:
+            pilot.app.screen.query_one("#onboard-provider")
+        except Exception:
+            continue
+        return True
+    return False
+
+
+async def test_choosing_a_provider_does_not_crash_when_it_takes_no_level():
+    """A provider with no thinking member must not raise on selection.
+
+    The picker is mounted for every provider and hidden for those that take no
+    level, because a widget that is absent cannot be shown when the choice changes.
+    This is the crash: `query` returns a `DOMQuery`, not the widget.
+    """
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        assert await _open_form(pilot)
+        select = pilot.app.screen.query_one("#onboard-provider")
+
+        select.value = "openrouter"
+        await pilot.pause(0.15)
+        assert pilot.app.screen.query_one("#onboard-thinking").display is True
+
+        select = pilot.app.screen.query_one("#onboard-provider")
+        select.value = "ollama-cloud"
+        await pilot.pause(0.15)
+        assert pilot.app.screen.query_one("#onboard-thinking").display is False
+
+
+async def test_a_hidden_picker_contributes_no_extra_body():
+    """A level chosen for one provider must not survive into a provider that takes
+    none: the picker is hidden, not reset, so `answers` has to gate on the entry."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        assert await _open_form(pilot)
+
+        pilot.app.screen.query_one("#onboard-provider").value = "openrouter"
+        await pilot.pause(0.15)
+        pilot.app.screen.query_one("#onboard-thinking").value = "high"
+        await pilot.pause(0.05)
+        assert pilot.app.screen.answers().extra_body == {"reasoning_effort": "high"}
+
+        pilot.app.screen.query_one("#onboard-provider").value = "ollama-cloud"
+        await pilot.pause(0.15)
+        assert pilot.app.screen.answers().extra_body == {}

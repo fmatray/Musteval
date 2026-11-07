@@ -365,18 +365,15 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
                     "thinking (only where the provider accepts the member)",
                     classes="onboard-label",
                 )
-                levels = (
-                    _thinking_levels(self.providers, chosen_provider)
-                    if self.providers
-                    else []
+                # Mounted unconditionally and shown or hidden: a widget that exists
+                # only for some providers cannot be shown when the provider changes,
+                # and `_show_thinking` would have nothing to toggle.
+                yield Select(
+                    [(level, level) for level in providers.THINKING_LEVELS],
+                    value="none",
+                    allow_blank=False,
+                    id="onboard-thinking",
                 )
-                if levels:
-                    yield Select(
-                        [(level, level) for level in levels],
-                        value="none",
-                        allow_blank=False,
-                        id="onboard-thinking",
-                    )
 
                 yield Static("Time  →  ntp.timezone, ntp.servers", classes="onboard-section")
                 yield Static("region (fills the TZ string and the pool server)",
@@ -397,6 +394,11 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
                 classes="prompt-hint",
             )
 
+    def on_mount(self) -> None:
+        """Seed the picker's visibility from the provider already configured."""
+        chosen = self.query_one("#onboard-provider", Select).value
+        self._show_thinking(chosen if isinstance(chosen, str) else "")
+
     def _chosen(self, select_id: str, input_id: str) -> str:
         """The dropdown's value, or the text field's when one is typed.
 
@@ -416,9 +418,14 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
         provider_id = chosen_id if isinstance(chosen_id, str) else ""
         entry = next((p for p in self.providers if p.id == provider_id), None)
 
-        thinking = self.query("#onboard-thinking")
-        level = thinking.first(Select).value if thinking else "none"
-        extra = entry.extra_body(str(level or "none")) if entry is not None else {}
+        level = self.query_one("#onboard-thinking", Select).value
+        # A hidden picker keeps whatever it last held, so a provider that takes no
+        # level must contribute nothing rather than the previous provider's choice.
+        extra = (
+            entry.extra_body(level if isinstance(level, str) else "none")
+            if entry is not None and entry.thinking_levels
+            else {}
+        )
 
         base_url = self.query_one("#onboard-base-url", Input).value.strip()
         if not base_url and entry is not None:
@@ -459,8 +466,7 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
             self.query_one("#onboard-base-url", Input).value = entry.base_url
 
         # A thinking level is only meaningful for the provider it was chosen for.
-        thinking = self.query("#onboard-thinking")
-        thinking.set_display(bool(_thinking_levels(self.providers, provider_id)))
+        self._show_thinking(provider_id)
 
         if self._fetch_models is None or not entry.models_url:
             return
@@ -472,6 +478,18 @@ class OnboardPrompt(PromptBox["onboard.Answers | None"]):
             self.query_one("#onboard-model", Input).placeholder = (
                 "no list from this provider; type the model"
             )
+
+    def _show_thinking(self, provider_id: str) -> None:
+        """Show the level picker only where the provider's `extra_body` takes one.
+
+        `05` §7.1: a level written where the member is rejected turns every call into
+        a 400, so the picker is hidden rather than left offering a value that would
+        break the provider. Hidden, not disabled — a disabled row still reads as an
+        option the reader is being denied.
+        """
+        self.query_one("#onboard-thinking", Select).display = bool(
+            _thinking_levels(self.providers, provider_id)
+        )
 
     def _auth_for(self, ssid: str) -> str:
         """The scanned security of `ssid`, or empty for a hand-typed name.
