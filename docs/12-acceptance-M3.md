@@ -15,7 +15,7 @@ present (`.venv/bin/python`). Commands are shown exactly as typed.
 
 ## Preconditions
 
-- [ ] `bin/bridge --send /status` prints a JSON object. If it does not, the board
+- [X] `bin/bridge --send /status` prints a JSON object. If it does not, the board
       is not on the link and nothing below will work.
 
 Read its `boot_id`: the reboot below changes it, so it is how you tell a fresh boot
@@ -23,7 +23,7 @@ from the one you were already talking to. Read `sys.boot_failures` too. Every bo
 increments it, and only `reload` or `sys.reset_counter` clears it, so a run of
 reboots trips safe mode on the fourth boot. Before every reboot below, clear it:
 
-- [ ] `bin/bridge --send "/sys reset-counter"` answers `{"previous":N,"reset":"boot_failures","safe_mode":false}`.
+- [X] `bin/bridge --send "/sys reset-counter"` answers `{"previous":N,"reset":"boot_failures","safe_mode":false}`.
 
 Safe mode skips the radio, the clock and the model, so a boot in that state proves
 nothing about M3. If `/status` shows `sys.safe_mode: true`, run the command above
@@ -35,7 +35,7 @@ The board's `wifi.networks[0]` names an SSID this host cannot serve, so the
 expected outcome is a named refusal, not a connection. That is the half of the
 criterion a reader without a hotspot can still prove.
 
-- [ ] `bin/bridge --send /status` shows `wifi.state: failed`, `wifi.ssid: null`,
+- [X] `bin/bridge --send /status` shows `wifi.state: failed`, `wifi.ssid: null`,
       `wifi.ip: null` and `wifi.failovers: 1`.
 
 One refused network reports `failovers: 1`, the number of entries tried. With a
@@ -46,8 +46,8 @@ The boot log is the surface that names the failure. The bridge must be attached
 while the device boots: `link_start` runs after the log hook is installed, so
 frames emitted before the handshake are not replayed.
 
-- [ ] `bin/bridge`, dismiss the splash with `Esc`, `F2` for Chat.
-- [ ] In the chat bar, type `/sys reset-counter` and press Enter, then `/reboot`
+- [X] `bin/bridge`, dismiss the splash with `Esc`, `F2` for Chat.
+- [X] In the chat bar, type `/sys reset-counter` and press Enter, then `/reboot`
       and press Enter. Logs (`F5`) gains the lines below, in this order. `F5`
       follows the tail, so they appear within a second of the device restarting.
 
@@ -97,13 +97,13 @@ last entry"). The association itself needs an access point; this host has none.
 
 ## M3.2 Clock sync and `time.now`
 
-- [ ] `bin/bridge --send /status` shows `time.synced: false` and `time.tz: UTC0`
+- [X] `bin/bridge --send /status` shows `time.synced: false` and `time.tz: UTC0`
       while `wifi.state` is `failed`.
 
 `time.tz` is `UTC0` rather than `UTC`: `UTC` is a zone name the C library may not
 know, and `UTC0` is always a valid POSIX string (`03-config.md` §ntp).
 
-- [ ] `bin/bridge --send /status` twice, a minute apart. `time.unix` grows by
+- [X] `bin/bridge --send /status` twice, a minute apart. `time.unix` grows by
       roughly the elapsed seconds and stays far below the current epoch.
 
 An unsynced board reports the RTC's own count, not wall time. The field has the
@@ -141,7 +141,7 @@ this host cannot provide. With credentials this becomes: associate, wait for
 
 ## M3.3 The LLM status shape
 
-- [ ] `bin/bridge --send /status` shows `llm.limit_hour: 100` and
+- [X] `bin/bridge --send /status` shows `llm.limit_hour: 100` and
       `llm.limit_day: 1000` on a board whose `/config.json` has no `llm` limits.
 
 Those are the compiled defaults, which is the observable half of "the budget is
@@ -150,7 +150,7 @@ enforced": the numbers the module will charge against are visible before any cal
 they describe the last **successful** call, not the configured chain. A device that
 has never answered a call reports `null`, and that is not a fault.
 
-- [ ] `bin/bridge --send /status` keeps `llm.calls_hour: 0` and
+- [X] `bin/bridge --send /status` keeps `llm.calls_hour: 0` and
       `llm.calls_day: 0`. Nothing charges the budget until a call is attempted.
 
 ### Gap: prompt → `agent.start` → `agent.final`
@@ -158,7 +158,7 @@ has never answered a call reports `null`, and that is not a fault.
 `07-roadmap.md` §M3 requires a non-streaming prompt to run to `agent.final`. The
 agent loop is `07-roadmap.md` §M4, and the device says so:
 
-- [ ] `bin/bridge --send "hello"` prints `{'code': 'E_INTERNAL', 'message': 'agent
+- [X] `bin/bridge --send "hello"` prints `{'code': 'E_INTERNAL', 'message': 'agent
       loop not implemented before M4', 'retryable': True}`.
 
 `llm_query` exists and is tested on the host, but nothing in `firmware/` calls it.
@@ -193,7 +193,7 @@ is not: `/status` keeps reporting `llm.limit_hour: 100` until the device reboots
 The board's `/config.json` has no `llm.max_calls_per_hour`, and a typed set cannot
 create one, so the defect cannot be reached from the bridge at all:
 
-- [ ] `bin/bridge --send "/config set llm.max_calls_per_hour 2"` answers `E_CONFIG`
+- [X] `bin/bridge --send "/config set llm.max_calls_per_hour 2"` answers `E_CONFIG`
       / `no such path in config.json; a set never creates a parent key`.
 
 The staleness was measured by driving the session directly, with the whole `llm`
@@ -215,7 +215,7 @@ the command in `AGENTS.md`'s Test Strategy table: `cd firmware/test_host`, remov
 `build` and `sdkconfig`, then
 `idf.py -DCOVERAGE=ON --preview set-target linux build`.
 
-- [ ] `cd firmware/test_host && ./build/musteval_test_host.elf` prints
+- [X] `cd firmware/test_host && ./build/musteval_test_host.elf` prints
       `118 Tests 0 Failures 0 Ignored`. The M3 cases are the ones tagged `[m3]` in
       `main/test_m3.c`, and every name this file quotes is in that binary's output.
 

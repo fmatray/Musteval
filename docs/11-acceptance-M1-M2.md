@@ -28,11 +28,11 @@ banner in headless mode.
 
 ### M1.2 `ping`/`pong` round trip under 10 ms
 
-- [ ] `bin/bridge`, press `F2` for Chat if another screen is showing.
-- [ ] Type `/ping` in the input and press Enter.
-- [ ] The chat log gains a line `pong: 5.5 ms`, measured here at 1.2-5.5 ms on an
+- [X] `bin/bridge`, press `F2` for Chat if another screen is showing.
+- [X] Type `/ping` in the input and press Enter.
+- [X] The chat log gains a line `pong: 5.5 ms`, measured here at 1.2-5.5 ms on an
       idle link.
-- [ ] `F3` for Status shows the same number in the footer row `PING  5.5 ms`, in
+- [X] `F3` for Status shows the same number in the footer row `PING  5.5 ms`, in
       place of `PING  no pong yet`.
 
 The footer is a live measurement: the heartbeat refreshes it every ten seconds, and
@@ -126,12 +126,12 @@ reachable only by a script, and its firmware side has no host test either.
 What a user can observe is the refusal, which is the same rule seen from the other
 side. The path uses **numbers for array indices**, separated by dots:
 
-- [ ] `bin/bridge --send "/config set wifi.networks.0.password_ref nvs:no_such_key"`
+- [X] `bin/bridge --send "/config set wifi.networks.0.password_ref nvs:no_such_key"`
       answers `ok: false`, `code: E_CONFIG`, "a secret reference in the result does
       not resolve".
-- [ ] `bin/bridge --send "/config get wifi.networks.0.password_ref"` still returns
+- [X] `bin/bridge --send "/config get wifi.networks.0.password_ref"` still returns
       `nvs:wifi_test`: the rejected write changed nothing.
-- [ ] In the TUI, `/config get wifi.networks.0.password_ref` prints
+- [X] In the TUI, `/config get wifi.networks.0.password_ref` prints
       `{"path": "wifi.networks.0.password_ref", "value": "nvs:wifi_test"}` in the chat
       log.
 
@@ -145,8 +145,8 @@ that message, the spelling is wrong, not the reference.
 `secret.set` takes its value from a masked modal, so it is a TUI action, not a
 `--send` one.
 
-- [ ] `bin/bridge`, then type `/secret set wifi_test` in the chat bar and press Enter.
-- [ ] The prompt masks the value. Type a passphrase and press Enter. Then check all
+- [X] `bin/bridge`, then type `/secret set wifi_test` in the chat bar and press Enter.
+- [X] The prompt masks the value. Type a passphrase and press Enter. Then check all
       three places it could have leaked:
       - the chat log gains only `secret wifi_test stored (16 bytes)`: the key, the
         length, and never the value;
@@ -158,7 +158,7 @@ that message, the spelling is wrong, not the reference.
       type `/secret set wifi_test` and enter `ZZZ-marker-999` as the value, then
       search the terminal scrollback for `ZZZ-marker-999`. It must not appear. Overwrite
       it afterwards by repeating the two steps with the real passphrase.
-- [ ] `/reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
+- [X] `/reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
       again without a reboot.
 
 Measured: `secret.set` answers `{'key': 'wifi_test', 'length': 16, 'stored': true}`
