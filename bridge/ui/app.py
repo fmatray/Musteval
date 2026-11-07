@@ -31,7 +31,9 @@ from .modals import (
     ConfirmPrompt,
     FilePrompt,
     FilterPrompt,
-    OnboardPrompt,
+    ModelStep,
+    NetworkStep,
+    ProviderStep,
     SecretPrompt,
     ValuePrompt,
 )
@@ -1729,66 +1731,31 @@ class BridgeApp(App):
         return self._pending_secret or ""
 
     async def onboard(self) -> None:
-        """`05-bridge.md` §7 `/onboard`: collect answers, narrate, then write.
+        """`05-bridge.md` §7 `/onboard`: three steps, each tested before the next.
+
+        The order is the dependency order, and each step's test is the unlock for the
+        one after it: `reload` decides whether the station joins, the station decides
+        whether a provider can be reached, and the provider's list decides which model
+        names are real. Writing all three and testing at the end would tell the reader
+        after the fact, which is the shape that let a configured device sit with a
+        blank provider and a model list nobody could load.
 
         Refuses at once on a link that cannot answer, naming the bar's word — the
-        same rule `_send_prompt` follows, and for the same reason: the ack timeout
-        is long and the reader would be left guessing.
+        same rule `_send_prompt` follows.
         """
         state = self.session.state
         if state.value in UNREACHABLE:
-            self._chat().write(f"✗ {LINK_WORDS[state.value]}; onboarding needs a live link")
-            return
-        answers = await self._onboard_prompts()
-        if answers is None:
-            self._chat().write("onboarding cancelled")
-            return
-        plan = onboard.writes(answers)
-        if not plan:
-            # Not "every answer was empty": an ssid with no password is a real
-            # answer that writes nothing, and telling the reader otherwise
-            # hides the rule they just broke (`03` §Full schema).
             self._chat().write(
-                "nothing to write: a network needs an ssid and a password, "
-                "and a provider needs a base url, an api key and a model"
+                f"✗ {LINK_WORDS[state.value]}; /onboard was not sent"
             )
             return
-        lines = onboard.narration(answers, self._config)
-        if not await self.push_screen_wait(
-            ConfirmPrompt("Write this configuration?\n\n" + "\n".join(lines))
-        ):
-            self._chat().write("onboarding cancelled")
-            return
-        for kind, body in plan:
-            if kind == "secret":
-                await self._onboard_secret(body["key"], body["value"])
-            else:
-                for path, value in body.items():
-                    await self._request("config.set", {"path": path, "value": value})
-        await self._request("config.get")
-
-    async def _onboard_prompts(self) -> onboard.Answers | None:
-        """`05` §13.6: one form for all three domains. `None` means Esc, nothing written.
-
-        The scan runs first because its result is what the SSID dropdown offers, and a
-        device with no reachable network is exactly the device `/onboard` is for. A
-        refusal (`E_WIFI`) is one chat line and an empty list, not a failed command:
-        the manual SSID field remains, which is the only route on a board whose radio
-        will not start.
-        """
-        scan, notes = await self._onboard_scan()
-        for note in notes:
-            self._chat().write(note)
-        # The form pre-fills from the device's config, so the config has to have
-        # arrived. It is only fetched when the settings screen is opened, so a fresh
-        # process opened this form on an empty document and every field looked
-        # unconfigured — including the provider, which suppressed the model fetch.
-        # A whole-document reply also navigates to the settings grid, so the screen
-        # the reader was on is restored: the wizard is a modal over their screen, not
-        # a detour through another one.
         if not self._config_fetched:
-            # The reply navigates to the settings grid, so the screen the reader was
-            # on is named before the request and restored after it.
+            # The form pre-fills from the device's config, so the config has to have
+            # arrived. It is only fetched when the settings screen is opened, so a
+            # fresh process opened this form on an empty document and every field
+            # looked unconfigured — including the provider, which suppressed the model
+            # fetch. The reply also navigates to the settings grid, so the screen the
+            # reader was on is restored: the wizard is a modal over their screen.
             before = next(
                 (
                     name
@@ -1800,27 +1767,208 @@ class BridgeApp(App):
             )
             await self._request("config.get")
             self.action_show(before)
-        entries, catalog_notes = providers_mod.catalog()
-        for note in catalog_notes:
-            self._chat().write(note)
-        return await self.push_screen_wait(
-            OnboardPrompt(
-                self._config, scan=scan, providers=entries, fetch_models=self._fetch_models
-            )
-        )
 
-    async def _fetch_models(self, provider: Any, api_key: str) -> list[str]:
+        answers = await self._onboard_network()
+        if answers is None:
+            return
+        provider_answers = await self._onboard_provider()
+        if provider_answers is None:
+            return
+        answers.base_url = provider_answers.base_url
+        answers.api_key = provider_answers.api_key
+        answers.provider = provider_answers.provider
+        answers.token_param = provider_answers.token_param
+        if await self._onboard_models(answers) is None:
+            return
+
+    async def _onboard_network(self) -> "onboard.Answers | None":
+        """Step 1: write the network, reload, and report what `status` says.
+
+        The test is the reload's consequence, not the write's `ok`: `config.set`
+        answering ok means the document changed. Whether the station joined is a
+        different fact and the one the next step depends on.
+        """
+        scan, notes = await self._onboard_scan()
+        for note in notes:
+            self._chat().write(note)
+        step = NetworkStep(dict(self._config), scan)
+        answers = await self.push_screen_wait(step)
+        if answers is None:
+            self._chat().write("onboard: cancelled at the network step")
+            return None
+
+        # The network and the zone are one step because they are one test: a single
+        # `reload` applies both, and one `status` reply answers both — `wifi.state`
+        # for the join and `time.tz` for the zone. Two reloads would each block up to
+        # one `connect_timeout` per configured network to learn the same two facts.
+        plan = onboard.writes_network(answers) + onboard.writes_time(answers)
+        for line in onboard.narration(answers, dict(self._config), "network"):
+            self._chat().write(f"onboard: {line}")
+        if not plan:
+            self._chat().write(onboard.verdict_network(None))
+            return answers
+        if not await self._apply(plan):
+            return None
+        if not await self._reload():
+            return None
+        status = await self._read_status()
+        self._chat().write(onboard.verdict_network(status))
+        self._chat().write(onboard.verdict_time(status, answers.timezone))
+        return answers
+
+    async def _onboard_provider(self) -> "onboard.Answers | None":
+        """Step 2: take the provider and key, then fetch the list with them.
+
+        The fetch runs here rather than after the write, because the list is the
+        proof the key works. A provider that refuses it is named as such instead of
+        surfacing later as a 401 on the first prompt.
+        """
+        entries, notes = providers_mod.catalog()
+        for note in notes:
+            self._chat().write(note)
+        answers = await self.push_screen_wait(
+            ProviderStep(dict(self._config), entries)
+        )
+        if answers is None:
+            self._chat().write("onboard: cancelled at the provider step")
+            return None
+
+        models = await self._fetch_models(answers)
+        self._chat().write(onboard.verdict_provider(models, answers))
+        answers.model_list = models
+        return answers
+
+    async def _onboard_models(self, answers: "onboard.Answers") -> object | None:
+        """Step 3: the model, offered from the list step 2 fetched
+
+        The name is checked against that list before the write, because a typo the
+        device would answer with a 404 on the first prompt is exactly the failure this
+        step exists to catch.
+        """
+        models = list(getattr(answers, "model_list", []) or [])
+        step = ModelStep(
+            models=models,
+            provider=answers.provider or "",
+            model=models[0] if models else "",
+        )
+        picked = await self.push_screen_wait(step)
+        if picked is None:
+            self._chat().write("onboard: cancelled at the model step")
+            return None
+        answers.model = picked["model"]
+        answers.extra_body = self._extra_body(answers.provider, picked["thinking"])
+        self._chat().write(onboard.verdict_model(models, answers))
+        if not answers.model:
+            return None
+        # The provider write lands here, not in step 2: `03-config.md` makes `model`
+        # required, so a provider written before the model exists is a document the
+        # device refuses.
+        plan = onboard.writes_provider(answers)
+        for line in onboard.narration(answers, dict(self._config), "provider"):
+            self._chat().write(f"onboard: {line}")
+        if not await self._apply(plan):
+            return None
+        return answers
+
+    def _existing(self, path: str) -> object | None:
+        """One config value from the flat document `app.py` holds."""
+        if path in self._config:
+            return self._config[path]
+        value: object = self._config
+        for segment in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(segment)
+        return value
+
+    def _extra_body(self, provider: str, level: str) -> "dict[str, object]":
+        """The `extra_body` for a level, empty where the provider rejects the member."""
+        entry = providers_mod.find(provider) if provider else None
+        if entry is None or not entry.thinking_levels:
+            return {}
+        return dict(entry.extra_body(level))
+
+    async def _send_body(self, kind: str, body: dict[str, Any]) -> "tuple[bool, str]":
+        """One frame of a step, with the device's own refusal code when it refuses.
+
+        `_request` folds a rejection into `None`, which is the right shape for a
+        screen that only shows what succeeded. A step has to name the code — a
+        refused `config.set` and an unanswered one are different problems — so this
+        reads `ok` and `error.code` off the reply itself.
+        """
+        if kind == "secret":
+            outgoing = Frame(
+                type="secret.set", id=new_id("b"), ts=0,
+                body={"key": body["key"], "value": body["value"]},
+            )
+        elif kind == "config":
+            path = next(iter(body))
+            outgoing = Frame(
+                type="command", id=new_id("b"), ts=0,
+                body={"name": "config.set",
+                      "args": {"path": path, "value": body[path]}},
+            )
+        else:
+            outgoing = Frame(
+                type="command", id=new_id("b"), ts=0,
+                body={"name": body["name"], "args": body.get("args") or {}},
+            )
+        frame = outgoing
+        try:
+            reply = await self.session.request(frame)
+        except SessionError as exc:
+            return False, str(exc)
+        except asyncio.TimeoutError:
+            return False, "the device did not answer in time"
+        if reply.type != "command.result":
+            return False, "unexpected reply"
+        if reply.body.get("ok"):
+            return True, ""
+        error = reply.body.get("error")
+        code = error.get("code") if isinstance(error, dict) else error
+        return False, str(code or "no code")
+
+    async def _apply(self, plan: "list[tuple[str, dict[str, object]]]") -> bool:
+        """Send a step's frames in order, stopping at the first refusal."""
+        for kind, body in plan:
+            ok, why = await self._send_body(kind, body)
+            if not ok:
+                self._chat().write(f"onboard: refused ({why})")
+                return False
+        return True
+
+    async def _reload(self) -> bool:
+        """`reload` and report where the device says it got to.
+
+        The reply is the device's own account of the boot sequence it just reran, so a
+        step that depends on the network being up can read it rather than guess.
+        """
+        ok, why = await self._send_body("command", {"name": "reload"})
+        self._chat().write(
+            "onboard: reload: " + ("applied" if ok else f"refused ({why})")
+        )
+        return ok
+
+    async def _read_status(self) -> "dict[str, object]":
+        """The `status` blocks, for a step that has to observe a consequence."""
+        status = await self._request("status")
+        return status if isinstance(status, dict) else {}
+
+    async def _fetch_models(self, answers: "onboard.Answers") -> list[str]:
         """One provider's model names, fetched off the UI thread.
 
         `05` §7.1: the fetch runs in a worker thread and a failure is one chat line,
         never a broken write. `providers.models` holds the parsing and the exception
-        handling; this supplies the socket the L2 module may not open.
+        handling; this supplies the socket the L2 module may not open. Takes the
+        step's answers so a provider with no `models_url` is a stated fact rather than
+        a fetch that silently returns nothing.
         """
-        if not provider.models_url:
+        entry = providers_mod.find(answers.provider) if answers.provider else None
+        if entry is None or not entry.models_url:
             return []
         try:
             return await asyncio.to_thread(
-                providers_mod.models, provider, api_key, _http_fetch
+                providers_mod.models, entry, answers.api_key, _http_fetch
             )
         except Exception as err:  # noqa: BLE001 - a failed fetch is a chat line
             self._chat().write(f"model list: {err}")

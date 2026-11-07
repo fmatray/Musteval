@@ -219,11 +219,12 @@ need no provider. Recover from safe mode first if the board is in it.
       more access points than it reported, the difference being the hidden and the
       duplicate-SSID ones; that collapse is asserted exactly in
       `firmware/test_host/main/test_m3.c`, where the input is known.
-- [ ] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field.
+- [ ] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field,
+      and the region dropdown pre-selecting the stored zone's region.
       **Gap**: opening the wizard needs a terminal, and the board this was written
       against is driven over `/dev/ttyACM0` from scripts. The dropdown is asserted
       through Textual's pilot in `bridge/tests/test_ui_onboard.py`, which feeds a
-      canned scan through the same `OnboardPrompt`.
+      canned scan through `NetworkStep`.
 - [X] `bin/bridge --send "/config set ntp.timezone CET-1CEST,M3.5.0,M10.5.0/3"`
       succeeds on a device whose `config.json` has no `ntp` object, reporting
       `requires_reboot: false`; `bin/bridge --send "/config get ntp"` then shows
@@ -231,9 +232,13 @@ need no provider. Recover from safe mode first if the board is in it.
 - [X] `bin/bridge --send "/config set wifi.networks.3.ssid x"` returns `E_CONFIG`
       and writes nothing, because a set creates a missing object but never an array
       index.
-- [ ] `/onboard` with a real SSID and passphrase, then `bin/bridge --send /status`
-      showing that network's `ssid` and an `rssi`. **Gap**: needs the credentials of
-      the network, which are the reader's, not this file's.
+- [ ] `/onboard` step 1 with a real SSID and passphrase, the chat line reading
+      `network: joined <ssid>` and `time: zone <tz> applied`, then
+      `bin/bridge --send /status` agreeing with both. **Gap**: needs the credentials
+      of the network, which are the reader's, not this file's. The verdicts
+      themselves are asserted against canned `status` replies in
+      `bridge/tests/test_ui_onboard.py`; what is unproven is that the board's real
+      `reload` produces those replies.
 - [ ] The provider dropdown filling `base_url` from `05` §7.1's catalog, and the
       model list arriving for a provider that publishes one. **Gap**: the fetch is an
       HTTPS request carrying the typed key and there is no key here, so the shape is

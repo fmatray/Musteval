@@ -686,7 +686,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
 | `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
-| `/onboard` | `wifi.scan`, `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard: one form with three domains — network (SSID, password), LLM (provider, base URL, API key, model, thinking level) and time (timezone) — each pre-filled from the current config, then a confirm. The SSID comes from a `wifi.scan` dropdown or a manual entry; the provider, model and thinking level come from the bridge-side catalog (§7.1). One `Ctrl+S` submits every field, so an answer can be revised after reading a later one. Writes the secrets first, then `wifi.networks`, `llm.providers`, `ntp.servers` and `ntp.timezone` as whole values, then re-reads `config.get`. Refuses at once on `down`, `linking` or `refused` |
+| `/onboard` | `wifi.scan`, `status`, `reload`, `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard of three sequential steps: network and time (SSID, password, region), provider (provider, base URL, API key) and model (model, thinking level). Each step is pre-filled from the current config and each is **written and tested before the next is asked for** (§13.6). The SSID comes from a `wifi.scan` dropdown or a manual entry; the provider comes from the bridge-side catalog (§7.1). Writes whole values only, secrets always before the `config.set` naming their `nvs:` key. Refuses at once on `down`, `linking` or `refused` |
 | `/quit` | (Local) | none | Exits TUI |
 
 Commands marked `(Local)` render from state the bridge already holds from
@@ -782,7 +782,7 @@ for its list endpoint, that provider's `models_url` is left unset and the model 
 typed. The consequence of being wrong is a failed fetch and a chat line, not a
 broken write.
 
-Time is the third domain. `ntp.timezone` takes a **POSIX TZ string**, not an IANA
+Time belongs to step 1. `ntp.timezone` takes a **POSIX TZ string**, not an IANA
 name — the firmware applies it with `setenv("TZ", ...)`, which knows no
 `Europe/Amsterdam`. The dropdown therefore offers named regions and maps each to its
 POSIX string. The `ntp.servers` value is derived from the same choice: the ntppool
@@ -1024,56 +1024,79 @@ A list longer than a screen needs a way to narrow it without leaving the screen.
 
 ### 13.6 Onboarding
 
-`/onboard` groups its questions **by domain** in one form — a `Wi-Fi` section, an
-`LLM` section, a `Time` section, then a confirmation that lists every write — rather
-than one dialog per value. Sequential one-value prompts ask the reader to answer a
-question before they can see the next one, so they cannot change their mind about the
-first answer once they see the third, and there is no surface that says how many steps
-remain. `OnboardPrompt` in `bridge/ui/modals.py` is that form: a scrolling box with
-those three sections, all pre-filled from the config already held, secrets masked, and
-one `Ctrl+S` to submit the whole page.
+`/onboard` is **three sequential steps**, and each is written and tested before the
+next is asked for:
 
-Within a domain the fields are shown together, each labelled with the config path it
-writes, so the reader sees the whole of `wifi.*` before committing any of it.
+| Step | Asks | Writes | Test |
+|---|---|---|---|
+| 1. Network and time | SSID, passphrase, region | `wifi.networks`, `ntp.timezone`, `ntp.servers`, `nvs:wifi_psk` | `reload`, then `status`: `wifi.state` and `time.tz` |
+| 2. Provider | provider, base URL, API key | — (the list is the proof) | the provider's model list, fetched with this key |
+| 3. Model | model, thinking level | `llm.providers`, `nvs:llm_api_key` | the chosen name is in the list step 2 fetched |
 
-**A choice is a dropdown where the values are known and a text field where they are
-not.** The SSID, the provider, the model and the timezone are `Select`s, because each
-has a finite list the bridge can offer: the scan result, the catalog, the provider's
-model list, the region table. The password and the API key are masked `Input`s,
-because they are typed. Every dropdown keeps a manual route: an SSID the scan cannot
-see (a hidden network, a scan that answered `E_WIFI`), a model the provider does not
-publish, and a timezone region the table lacks are all reachable by typing, so the
-wizard never traps a reader behind a list that did not load. A `Select` whose list is
-empty is shown with its manual field open rather than as a closed box with no rows.
+The order is the dependency order: `reload` decides whether the station joins, the
+station decides whether a provider is reachable, and the provider's published list
+decides which model names are real. Writing all three and testing at the end reports
+after the fact — which is how a configured device sat with a blank provider and a
+model list nobody could load.
 
-**A loaded list is also a selected one.** A list in a `Select` with no value chosen
-reads the same as a field the reader has not reached yet, so the wizard selects the
-configured model when the provider still offers it and the first name otherwise. A
-provider's list is fetched when the form opens, not only when the reader changes the
-provider, because a reader may accept every pre-filled value and submit: a blank
-dropdown there is not a pending field, it is a domain the plan will skip. The list is
-fetched again when an API key is typed, because a provider that answers `401` without
-one returns nothing the first time.
+The provider entry is written in step **3**, not step 2, because `03-config.md` makes
+`model` required: there is no half-configured provider to write, and a device given one
+refuses the document.
+
+Network and time are one step because they are **one test**. A single `reload` reruns
+the boot sequence that applies both `wifi.*` and `ntp.timezone`, and one `status` reply
+answers both facts. Two steps would mean two reloads, each blocking up to one
+`connect_timeout` per configured network, to learn what one reply already says.
+
+**A step's test is a consequence, not the write's `ok`.** `config.set` answering ok
+means the document changed; it says nothing about whether the station associated or
+whether `setenv("TZ")` took. Each step therefore reads back the fact it depends on and
+says so in one chat line: `network: joined HomeLab`, or `network: the station is still
+not associated`, or `time: zone still UTC0; the write did not apply`.
 
 **The form reads the config in the shape the app holds it.** `app.py` keeps the config
 flattened to dotted paths (`settings.flatten`), so a pre-fill that reads nested keys
 finds nothing and the whole form opens empty — including the provider, which is what
-leaves the model list unloaded.
+left the model list unloaded.
+
+**The form fetches the config itself.** `_config` is filled by a `config.get` reply, and
+the only other request came from opening the settings screen. A process that opened the
+wizard first therefore pre-filled from an empty document, which looked identical to a
+device with nothing configured. `/onboard` requests the document before it shows the
+first step, and restores the screen the reader was on afterwards, because a
+whole-document reply also navigates to the settings grid.
+
+**A choice is a dropdown where the values are known and a text field where they are
+not.** The SSID, the provider, the model and the region are `Select`s, because each has
+a finite list the bridge can offer: the scan result, the catalog, the provider's model
+list, the region table. Every dropdown keeps a manual route — an SSID the scan cannot
+see (a hidden network, a scan that answered `E_WIFI`), a model the provider does not
+publish, and a region the table lacks — so the wizard never traps a reader behind a
+list that did not load.
+
+**A loaded list is also a selected one.** A list in a `Select` with no value chosen
+reads the same as a field the reader has not reached yet, so each step selects the
+configured value when the list still offers it and the first entry otherwise. The model
+list is fetched in step 2, before the model is asked for, and again when an API key is
+typed: a provider that answers `401` without one returns nothing the first time.
 
 **A stored id the catalog does not name is a row, not a value.** `id` is free text in
 `03-config.md`, so a device configured over raw frames holds whatever was written — the
 board holds `p1`. A `Select` whose value is absent from its own options raises
 `InvalidSelectValueError` on mount, so passing that id as the value killed the wizard
 before it drew, and only on a device that already had a provider. Every dropdown
-therefore offers the stored value as a row next to the known ones, which also shows the
-reader the provider they already have instead of pretending it is unconfigured.
+therefore offers the stored value as a row next to the known ones.
 
-**The form fetches the config itself.** `_config` is filled by a `config.get` reply,
-and the only other request came from opening the settings screen. A process that
-opened the wizard first therefore pre-filled from an empty document, which looked
-identical to a device with nothing configured. `/onboard` requests the document before
-it shows the form, and restores the screen the reader was on afterwards, because a
-whole-document reply also navigates to the settings grid.
+**A stored TZ string is translated back to its region, never shown raw.**
+`ntp.timezone` holds a POSIX string; the dropdown holds place names. Comparing the two
+directly always missed, which is how `CET-1CEST,M3.5.0,M10.5.0/3` was shown back to a
+reader who expected a place. `providers.region_for_timezone` does the reverse lookup,
+and a zone the table does not list keeps its own `custom: <tz>` row — with no
+`ntp.servers` written, because guessing a pool could replace a working server.
+
+**Cancelling a step writes nothing and stops the wizard.** Each step is its own modal,
+so `Esc` at step 2 leaves the step-1 writes in place — they were already tested and
+reported — and sends no further frame.
 
 ### 13.7 Empty and loading states
 

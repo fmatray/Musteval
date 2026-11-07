@@ -292,6 +292,22 @@ def region_names() -> list[str]:
     return [name for name, _, _ in REGIONS]
 
 
+def region_for_timezone(tz: str) -> str:
+    """The region name whose TZ string is `tz`, or `""` when the table has none.
+
+    The wizard pre-fills the region dropdown from `ntp.timezone`, which holds the TZ
+    string, not a region name. Comparing the two directly always missed, so the
+    dropdown inserted the raw string as a row of its own — which is how
+    `CET-1CEST,M3.5.0,M10.5.0/3` was shown back to a reader who expected "Europe /
+    Western". A string the table does not list stays empty here and is offered through
+    the manual field instead.
+    """
+    for name, value, _ in REGIONS:
+        if value == tz:
+            return name
+    return ""
+
+
 def timezone_for(region: str) -> tuple[str, str]:
     """`(ntp.timezone, ntp.servers[0])` for a region name.
 

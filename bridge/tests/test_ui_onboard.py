@@ -1,12 +1,15 @@
-"""L3 ui: the `/onboard` wizard (`05-bridge.md` §7), driven through the pilot.
+"""L3 ui: the four `/onboard` steps (`05-bridge.md` §7), driven through the pilot.
 
-What a reader sees and what reaches the device, against a scripted transport that
-records every frame. The ordering rule — both `secret.set` frames before any
-`config.set` naming their `nvs:` key — is asserted on the wire, not on the plan.
+The wizard is three screens plus a time zone, and each step is tested before the
+next is asked for. What that means for these tests: a step's assertions are about
+the frames it sends and the line its own test produced, not about a plan built from
+all four. The ordering rule that survived the split — a `secret.set` frame precedes
+any `config.set` naming its `nvs:` key — is asserted on the wire.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -14,12 +17,12 @@ import pytest
 from bridge.client import Session
 from bridge.link import FakeTransport
 from bridge import providers
-from bridge.protocol import Frame, encode, reset_ids
+from bridge.protocol import reset_ids
 from bridge.ui import BridgeApp
 from bridge.ui import onboard
+from bridge.ui.modals import ModelStep, NetworkStep, ProviderStep
 
 from .test_ui import _reply
-from .test_ui_input import _connected
 
 
 @pytest.fixture(autouse=True)
@@ -32,13 +35,27 @@ def _ids():
 class Device:
     """Answers like the shared fake, and remembers every frame in order."""
 
-    def __init__(self) -> None:
+    def __init__(self, status: dict | None = None) -> None:
         self.seen: list[dict] = []
+        self.status = status or {
+            "wifi": {"state": "connected", "ssid": "HomeLab", "rssi": -50, "ip": "1.2.3.4"},
+            "time": {"synced": True, "unix": 1730563200, "tz": "UTC0"},
+        }
 
     def __call__(self, line: bytes) -> list[bytes]:
         frame = json.loads(line)
         self.seen.append(frame)
+        if frame.get("name") == "status":
+            result = {"name": "status", "ok": True, "result": self.status,
+                      "duration_ms": 0}
+            return [json.dumps({"v": 1, "type": "command.result", "id": "d-9", "ts": 0,
+                                "reply_to": frame["id"], **result}).encode() + b"\n"]
         return _reply(line)
+
+    def writes(self) -> list[dict]:
+        """Only the frames that change the device, ignoring the handshake and probes."""
+        return [f for f in self.seen if f["type"] in ("secret.set",)
+                or f.get("name") in ("config.set", "reload")]
 
     def order(self) -> list[str]:
         out = []
@@ -51,533 +68,372 @@ class Device:
 
 
 def _app(device: Device) -> BridgeApp:
-    return BridgeApp(Session(FakeTransport(on_write=device), ack_timeout=1, ping_interval=99))
-
-
-async def _fill(pilot, widget: str, text: str) -> None:
-    """Type `text` into one field of the grouped form (`05` §13.6).
-
-    The form is one dialog, so a test fills fields instead of answering prompts
-    in sequence; the ordering rule is asserted on the wire either way.
-    """
-    await pilot.pause(0.05)
-    app = pilot.app
-    field = app.screen.query_one(widget)
-    field.focus()
-    field.value = text
-    await pilot.pause(0.02)
-
-
-async def _submit(pilot) -> None:
-    await pilot.pause(0.05)
-    pilot.app.screen.query_one("#onboard-ssid").focus()
-    await pilot.press("ctrl+s")
-
-
-async def test_onboard_writes_both_secrets_before_the_config():
-    device = Device()
-    app = _app(device)
-    async with app.run_test() as pilot:
-        await _connected(pilot)
-        app.run_worker(app.onboard())
-        for widget, answer in (
-            ("#onboard-ssid", "home"),
-            ("#onboard-password", "hunter2"),
-            ("#onboard-api-key", "sk-test"),
-            ("#onboard-model", "gpt-4o-mini"),
-        ):
-            await _fill(pilot, widget, answer)
-        await _submit(pilot)
-        await pilot.pause(0.3)
-        await pilot.press("y")
-        await pilot.pause(0.4)
-    order = device.order()
-    secret_rows = [i for i, row in enumerate(order) if row.startswith("secret:")]
-    config_rows = [i for i, row in enumerate(order) if row.startswith("config.set:")]
-    assert len(secret_rows) == 2 and config_rows
-    assert max(secret_rows) < min(config_rows), order
-
-
-async def test_onboard_refuses_without_a_link():
-    app = BridgeApp(
-        Session(FakeTransport(on_write=lambda line: []), ack_timeout=1, ping_interval=99)
+    return BridgeApp(
+        Session(FakeTransport(on_write=device), ack_timeout=1, ping_interval=99)
     )
-    async with app.run_test() as pilot:
-        await pilot.pause(0.2)
-        await app._run_command("/onboard")
-        await pilot.pause(0.2)
-        log = "\n".join(str(line.text) for line in app.query_one("#chat-log").lines)
-    assert "needs a live link" in log
-
-
-async def test_cancelling_the_confirm_writes_nothing():
-    device = Device()
-    app = _app(device)
-    async with app.run_test() as pilot:
-        await _connected(pilot)
-        app.run_worker(app.onboard())
-        for widget, answer in (
-            ("#onboard-ssid", "home"),
-            ("#onboard-password", "hunter2"),
-            ("#onboard-api-key", "sk-test"),
-            ("#onboard-model", "gpt"),
-        ):
-            await _fill(pilot, widget, answer)
-        await _submit(pilot)
-        await pilot.pause(0.3)
-        await pilot.press("n")
-        await pilot.pause(0.3)
-    assert not [row for row in device.order()
-                if row.startswith(("secret:", "config.set:"))]
-
-
-async def test_a_half_filled_domain_says_which_pair_it_needs():
-    """`03` `## Full schema` makes `password_ref` required, so an ssid alone
-    writes nothing; the report must name the pair, not call the answer empty."""
-    device = Device()
-    app = _app(device)
-    async with app.run_test() as pilot:
-        await _connected(pilot)
-        app.run_worker(app.onboard())
-        await _fill(pilot, "#onboard-ssid", "home")
-        await _submit(pilot)
-        for _ in range(40):
-            await pilot.pause(0.05)
-        log = "\n".join(str(line.text) for line in app.query_one("#chat-log").lines)
-    assert "an ssid and a password" in log
-    assert "every answer was empty" not in log
-    # Reads (the handshake's `status`, the wizard's `wifi.scan`) and nothing else:
-    # no `secret.set` and no `config.set` was sent.
-    assert not [row for row in device.order()
-                if row.startswith(("secret:", "config.set:"))]
-
-
-# --- the planner rules (`05` §7.1), asserted without a terminal ------------
-
-SCAN = {
-    "networks": [
-        {"ssid": "HomeLab", "rssi": -47, "auth": "wpa2"},
-        {"ssid": "Cafe-FREE", "rssi": -71, "auth": "open"},
-    ],
-    "truncated": False,
-}
-
-
-class ScanDevice(Device):
-    """The same fake, answering `wifi.scan` with a fixed list."""
-
-    def __call__(self, line: bytes) -> list[bytes]:
-        frame = json.loads(line)
-        if frame["type"] == "command" and frame["name"] == "wifi.scan":
-            self.seen.append(frame)
-            return [
-                encode(
-                    Frame(
-                        type="command.result",
-                        id="d-9",
-                        ts=0,
-                        body={"name": "wifi.scan", "ok": True, "result": SCAN,
-                              "duration_ms": 1},
-                        reply_to=frame["id"],
-                    )
-                )
-            ]
-        return super().__call__(line)
-
-    def args(self, path: str) -> object:
-        """The value of the last `config.set` for `path`, or None."""
-        found = None
-        for frame in self.seen:
-            if (
-                frame["type"] == "command"
-                and frame["name"] == "config.set"
-                and frame.get("args", {}).get("path") == path
-            ):
-                found = frame["args"].get("value")
-        return found
-
-
-def _config_value(plan, path: str):
-    """The value a plan writes to `path`, or None. Several `config` rows share a kind,
-    so the plan is searched rather than folded into a dict."""
-    for kind, body in plan:
-        if kind == "config" and path in body:
-            return body[path]
-    return None
-
-
-def _answers(**kwargs) -> onboard.Answers:
-    base = dict(ssid="", password="", base_url="", api_key="", model="")
-    base.update(kwargs)
-    return onboard.Answers(**base)
-
-
-def test_a_scanned_network_is_written_by_the_whole_array():
-    """`04` §4.9 creates a missing object but never an array, so the write is the
-    whole `wifi.networks` list even for one entry."""
-    answers = _answers(ssid="HomeLab", password="pw", auth="wpa2")
-    plan = onboard.writes(answers)
-    assert plan[0] == ("secret", {"key": onboard.WIFI_KEY, "value": "pw"})
-    assert ("config", {"wifi.networks": [
-        {"ssid": "HomeLab", "password_ref": f"nvs:{onboard.WIFI_KEY}"}
-    ]}) in plan
-
-
-def test_an_open_network_is_refused_with_a_reason():
-    """`04` §4.24: the station thresholds at WPA2_PSK, so an open SSID would look
-    like a successful write and leave the device offline."""
-    answers = _answers(ssid="Cafe-FREE", password="pw", auth="open")
-    assert not onboard.network_writable(answers)
-    assert [kind for kind, _ in onboard.writes(answers)] == []
-
-
-def test_a_hand_typed_ssid_carries_no_auth_and_is_written():
-    """An empty `auth` is the reader asserting a name no scan returned."""
-    answers = _answers(ssid="hidden-net", password="pw")
-    assert onboard.network_writable(answers)
-
-
-def test_a_region_writes_the_tz_and_its_pool_server():
-    """One region choice, two keys: the TZ string `setenv` applies and the server."""
-    tz, server = providers.timezone_for("US / Pacific")
-    answers = _answers(timezone=tz, ntp_server=server)
-    plan = onboard.writes(answers)
-    assert ("config", {"ntp.timezone": "PST8PDT,M3.2.0,M11.1.0"}) in plan
-    assert ("config", {"ntp.servers": ["0.north-america.pool.ntp.org"]}) in plan
-
-
-def test_thinking_lands_in_extra_body_with_the_token_param():
-    """`03` §Provider compatibility names `token_param` per provider, and the level
-    travels in `extra_body` — never as a top-level key the firmware would drop."""
-    entry = providers.find("groq")
-    answers = _answers(
-        base_url=entry.base_url,
-        api_key="sk-test",
-        model="openai/gpt-oss-120b",
-        provider=entry.id,
-        token_param=providers.TOKEN_PARAM[entry.id],
-        extra_body=entry.extra_body("medium"),
-    )
-    provider = _config_value(onboard.writes(answers), "llm.providers")[0]
-    assert provider["token_param"] == "max_completion_tokens"
-    assert provider["extra_body"] == {"reasoning_effort": "medium"}
-    assert provider["api_key_ref"] == f"nvs:{onboard.LLM_KEY}"
-
-
-def test_a_provider_without_thinking_writes_no_extra_body():
-    entry = providers.find("ollama")
-    answers = _answers(
-        base_url=entry.base_url, api_key="x", model="qwen2.5:7b",
-        provider=entry.id, extra_body=entry.extra_body("high"),
-    )
-    provider = _config_value(onboard.writes(answers), "llm.providers")[0]
-    assert "extra_body" not in provider
-
-
-def test_narration_does_not_promise_a_write_that_will_not_be_sent():
-    answers = _answers(ssid="Cafe-FREE", password="pw", auth="open")
-    lines = onboard.narration(answers, {})
-    assert any("cannot join open" in line for line in lines)
-    assert not any("wifi.networks" in line for line in lines)
-
-
-async def test_the_scan_feeds_the_ssid_dropdown():
-    """The scan's list is what the reader chooses from, and the choice is what gets
-    written — asserted on the wire, not on the widget."""
-    device = ScanDevice()
-    app = _app(device)
-    async with app.run_test() as pilot:
-        await _connected(pilot)
-        app.run_worker(app.onboard())
-        assert await _mounted(pilot, "#onboard-ssid-select")
-        form = app.screen.query_one("#onboard-ssid-select")
-        options = [value for _, value in form._options]
-        assert "HomeLab" in options and "Cafe-FREE" in options
-
-        form.value = "HomeLab"
-        await _fill(pilot, "#onboard-password", "hunter2")
-        await _fill(pilot, "#onboard-api-key", "sk-test")
-        await _fill(pilot, "#onboard-model", "gpt")
-        await _submit(pilot)
-        await pilot.pause(0.3)
-        await pilot.press("y")
-        await pilot.pause(0.4)
-
-    assert device.args("wifi.networks") == [
-        {"ssid": "HomeLab", "password_ref": f"nvs:{onboard.WIFI_KEY}"}
-    ]
-
 
 
 async def _mounted(pilot, selector: str) -> bool:
-    """Wait for a widget to be composed and mounted, not merely present.
-
-    A `Select` exists before its own `SelectCurrent` child does, and setting a value
-    in that window raises `NoMatches` on the child. Polling the child is what makes
-    the wait describe the state the test then mutates.
-    """
+    """Wait for a widget to be composed and mounted, not merely present."""
     for _ in range(80):
         await pilot.pause(0.05)
         try:
-            widget = pilot.app.screen.query_one(selector)
-            widget.query_one("#label")
+            pilot.app.screen.query_one(selector).query_one("#label")
         except Exception:
             continue
         return True
     return False
 
 
-async def _open_form(pilot) -> bool:
-    """Push the wizard and wait for its fields. False if it never mounted."""
-    pilot.app.run_worker(pilot.app.onboard())
-    return await _mounted(pilot, "#onboard-provider")
+def _answer(**kwargs):
+    """`Answers` with every field named, so a new field cannot silently default."""
+    base = {"ssid": "", "password": "", "base_url": "", "api_key": "", "model": ""}
+    base.update(kwargs)
+    return onboard.Answers(**base)
 
 
-async def test_choosing_a_provider_does_not_crash_when_it_takes_no_level():
-    """A provider with no thinking member must not raise on selection.
+# --- the pure plan --------------------------------------------------------
 
-    The picker is mounted for every provider and hidden for those that take no
-    level, because a widget that is absent cannot be shown when the choice changes.
-    This is the crash: `query` returns a `DOMQuery`, not the widget.
-    """
+
+def test_a_network_writes_its_secret_before_the_array_naming_it():
+    """`03-config.md` rule 9: a `nvs:` reference whose key is missing is rejected."""
+    plan = onboard.writes_network(
+        _answer(ssid="HomeLab", password="pw", auth="wpa2")
+    )
+    kinds = [kind for kind, _ in plan]
+    assert kinds == ["secret", "config"]
+    assert plan[0][1] == {"key": "wifi_psk", "value": "pw"}
+    assert plan[1][1] == {
+        "wifi.networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}]
+    }
+
+
+def test_an_open_network_is_refused_rather_than_written():
+    """`04` §4.24: the station thresholds at WPA2, so the join would fail silently."""
+    assert onboard.writes_network(_answer(ssid="Cafe", password="x", auth="open")) == []
+
+
+def test_a_hand_typed_ssid_carries_no_auth_and_is_written():
+    plan = onboard.writes_network(_answer(ssid="Hidden", password="pw", auth=""))
+    assert plan[1][1]["wifi.networks"][0]["ssid"] == "Hidden"
+
+
+def test_a_provider_writes_its_key_before_the_array_naming_it():
+    plan = onboard.writes_provider(
+        _answer(base_url="https://x/v1", api_key="sk", model="m", provider="custom")
+    )
+    assert [kind for kind, _ in plan] == ["secret", "config"]
+    assert plan[1][1]["llm.providers"][0]["model"] == "m"
+
+
+def test_a_provider_without_a_model_writes_nothing():
+    """`03-config.md` requires `model`; there is no half-configured provider."""
+    assert onboard.writes_provider(_answer(base_url="u", api_key="k", model="")) == []
+
+
+def test_thinking_lands_in_extra_body_with_the_token_param():
+    a = _answer(base_url="https://api.groq.com/openai/v1", api_key="k", model="m",
+                provider="groq", extra_body={"reasoning_effort": "medium"})
+    provider = onboard.writes_provider(a)[1][1]["llm.providers"][0]
+    assert provider["extra_body"] == {"reasoning_effort": "medium"}
+    assert providers.TOKEN_PARAM["groq"] == "max_completion_tokens"
+
+
+def test_a_region_writes_the_tz_and_its_pool_server():
+    plan = onboard.writes_time(
+        _answer(timezone="CET-1CEST,M3.5.0,M10.5.0/3",
+                ntp_server="0.europe.pool.ntp.org")
+    )
+    assert plan == [
+        ("config", {"ntp.timezone": "CET-1CEST,M3.5.0,M10.5.0/3"}),
+        ("config", {"ntp.servers": ["0.europe.pool.ntp.org"]}),
+    ]
+
+
+def test_a_zone_naming_no_region_writes_no_server():
+    """Guessing a pool would replace a working server with a European one."""
+    plan = onboard.writes_time(_answer(timezone="XYZ-5", ntp_server=""))
+    assert plan == [("config", {"ntp.timezone": "XYZ-5"})]
+
+
+def test_narration_names_one_step_at_a_time():
+    """The zone rides with the network, because one `reload` applies both."""
+    a = _answer(ssid="HomeLab", password="pw", auth="wpa2", model="m",
+                base_url="u", api_key="k", timezone="UTC0")
+    assert onboard.narration(a, {}, "network") == [
+        "creates wifi.networks (1 entry)", "stores nvs:wifi_psk",
+        "sets ntp.timezone UTC0",
+    ]
+    assert onboard.narration(a, {}, "provider") == [
+        "creates llm.providers (1 entry)", "provider model m", "stores nvs:llm_api_key"
+    ]
+
+
+def test_narration_does_not_promise_a_write_that_will_not_be_sent():
+    """An open network is narrated as skipped, never as created or replaced."""
+    lines = onboard.narration(_answer(ssid="Cafe", password="x", auth="open"), {},
+                              "network")
+    assert any("skips Cafe" in line for line in lines), lines
+    assert not any("creates" in line or "replaces" in line or "stores" in line
+                   for line in lines), lines
+
+
+# --- the verdicts ---------------------------------------------------------
+
+
+def test_a_joined_network_is_reported_from_status_not_from_the_write():
+    """`config.set` ok means the document changed, not that the station joined."""
+    assert onboard.verdict_network(
+        {"wifi": {"state": "connected", "ssid": "HomeLab"}}
+    ) == "network: joined HomeLab"
+
+
+def test_a_failed_join_says_which_two_things_to_check():
+    said = onboard.verdict_network({"wifi": {"state": "failed"}})
+    assert "passphrase" in said and "WPA2" in said
+
+
+def test_a_provider_that_publishes_no_list_is_named_as_such():
+    a = _answer(base_url="https://ollama.com/v1", api_key="k", provider="ollama-cloud")
+    assert "publishes no model list" in onboard.verdict_provider([], a)
+
+
+def test_a_refused_key_is_distinguished_from_an_unreachable_host():
+    a = _answer(base_url="https://openrouter.ai/api/v1", api_key="k",
+                provider="openrouter")
+    said = onboard.verdict_provider([], a)
+    assert "key is refused or the host is unreachable" in said
+
+
+def test_a_model_absent_from_the_list_is_reported_before_the_write():
+    a = _answer(base_url="u", api_key="k", model="gpt-9")
+    said = onboard.verdict_model(["gpt-4o-mini", "gpt-4o"], a)
+    assert "is not in the provider's list of 2" in said
+
+
+def test_a_zone_the_device_still_holds_old_is_reported():
+    said = onboard.verdict_time(
+        {"time": {"tz": "UTC0", "synced": True}}, "CET-1CEST,M3.5.0,M10.5.0/3"
+    )
+    assert "did not apply" in said
+
+
+def test_the_zone_the_device_holds_is_reported_as_applied():
+    said = onboard.verdict_time(
+        {"time": {"tz": "CET-1CEST,M3.5.0,M10.5.0/3", "synced": False}},
+        "CET-1CEST,M3.5.0,M10.5.0/3",
+    )
+    assert "applied" in said and "not synced" in said
+
+
+# --- the screens ----------------------------------------------------------
+
+
+async def test_the_network_step_offers_the_scan_and_keeps_the_configured_ssid():
     app = _app(Device())
+    scan = [{"ssid": "StoneBox", "rssi": -53, "auth": "wpa2"},
+            {"ssid": "HomeLab", "rssi": -70, "auth": "wpa2"}]
     async with app.run_test() as pilot:
-        await _connected(pilot)
-        assert await _open_form(pilot)
-        select = pilot.app.screen.query_one("#onboard-provider")
+        app.push_screen(NetworkStep({"wifi.networks": [{"ssid": "HomeLab"}]}, scan))
+        assert await _mounted(pilot, "#step-ssid-select")
+        select = app.screen.query_one("#step-ssid-select")
+        values = [value for _, value in select._options]
+        answered = app.screen.answer()
+    assert values == ["StoneBox", "HomeLab"]
+    assert answered.ssid == "HomeLab", "the configured ssid wins over the scan order"
 
+
+async def test_a_scanned_network_arrives_with_its_auth_word():
+    app = _app(Device())
+    scan = [{"ssid": "StoneBox", "rssi": -53, "auth": "wpa2"}]
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep({}, scan))
+        assert await _mounted(pilot, "#step-ssid-select")
+        app.screen.query_one("#step-password").value = "pw"
+        answered = app.screen.answer()
+    assert answered.ssid == "StoneBox" and answered.auth == "wpa2"
+
+
+async def test_choosing_a_provider_fills_the_base_url_and_keeps_an_unknown_id():
+    """`id` is free text, so a device configured elsewhere holds one no row names.
+
+    A `Select` whose value is absent from its options raises on mount, which made the
+    wizard unusable on a device that already had a provider.
+    """
+    entries, _ = providers.catalog()
+    app = _app(Device())
+    current = {"llm.providers": [{"id": "p1", "base_url": "https://a/v1",
+                                 "model": "m"}]}
+    async with app.run_test() as pilot:
+        app.push_screen(ProviderStep(current, entries))
+        assert await _mounted(pilot, "#step-provider")
+        select = app.screen.query_one("#step-provider")
+        ids = [row[1] for row in select._options]
+        assert select.value == "p1" and "p1" in ids
+        assert app.screen.query_one("#step-base-url").value == "https://a/v1"
         select.value = "openrouter"
-        await pilot.pause(0.15)
-        assert pilot.app.screen.query_one("#onboard-thinking").display is True
-
-        select = pilot.app.screen.query_one("#onboard-provider")
-        select.value = "ollama-cloud"
-        await pilot.pause(0.15)
-        assert pilot.app.screen.query_one("#onboard-thinking").display is False
+        await pilot.pause(0.3)
+        assert app.screen.query_one("#step-base-url").value.endswith("/api/v1")
+        answered = app.screen.answer()
+    assert answered.provider == "openrouter"
 
 
-async def test_a_hidden_picker_contributes_no_extra_body():
-    """A level chosen for one provider must not survive into a provider that takes
-    none: the picker is hidden, not reset, so `answers` has to gate on the entry."""
+async def test_the_model_step_offers_the_fetched_list_and_selects_the_first():
     app = _app(Device())
     async with app.run_test() as pilot:
-        await _connected(pilot)
-        assert await _open_form(pilot)
-
-        pilot.app.screen.query_one("#onboard-provider").value = "openrouter"
-        await pilot.pause(0.15)
-        pilot.app.screen.query_one("#onboard-thinking").value = "high"
-        await pilot.pause(0.05)
-        assert pilot.app.screen.answers().extra_body == {"reasoning_effort": "high"}
-
-        pilot.app.screen.query_one("#onboard-provider").value = "ollama-cloud"
-        await pilot.pause(0.15)
-        assert pilot.app.screen.answers().extra_body == {}
+        app.push_screen(ModelStep(models=["a/one", "b/two"], provider="openrouter"))
+        assert await _mounted(pilot, "#step-model-select")
+        select = app.screen.query_one("#step-model-select")
+        answered = app.screen.answer()
+    assert select.value == "a/one"
+    assert answered["model"] == "a/one"
 
 
-async def _open_with(pilot, **kwargs) -> bool:
-    """Push the wizard with explicit `OnboardPrompt` arguments."""
-    from bridge.ui.modals import OnboardPrompt
-
-    provider_rows = (kwargs.pop("current", {}) or {})
-    pilot.app.push_screen(OnboardPrompt(provider_rows, **kwargs))
-    return await _mounted(pilot, "#onboard-model-select")
-
-
-async def _stub_fetch(names: list[str]):
-    """A fetch callback standing in for the provider's own endpoint."""
-
-    async def fetch(entry, api_key: str) -> list[str]:
-        fetch.calls.append((entry.id, api_key))
-        return list(names)
-
-    fetch.calls = []
-    return fetch
-
-
-async def test_the_fetched_list_is_selected_not_just_offered():
-    """A list in the dropdown with nothing selected is an empty answer.
-
-    `Select.set_options` resets the selection, so the value has to be set again
-    afterwards. The symptom when it is not: a model list is visible, the reader
-    accepts it, and `answers()` still reads no model, which drops the whole
-    `llm.providers` write.
-    """
-    fetch = await _stub_fetch(["m-one", "m-two"])
-    app = BridgeApp(
-        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
-    )
+async def test_the_model_step_hides_thinking_where_the_provider_takes_none():
+    """`05` §7.1: a level the provider rejects turns every call into a 400."""
+    app = _app(Device())
     async with app.run_test() as pilot:
-        assert await _open_with(pilot, providers=providers.catalog()[0], fetch_models=fetch)
-        pilot.app.screen.query_one("#onboard-provider").value = "openrouter"
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if pilot.app.screen.query_one("#onboard-model-select").value == "m-one":
-                break
-        select = pilot.app.screen.query_one("#onboard-model-select")
-        answers = pilot.app.screen.answers()
-
-    assert select.value == "m-one"
-    assert answers.model == "m-one"
-    assert fetch.calls == [("openrouter", "")]
+        app.push_screen(ModelStep(models=["gpt-4o"], provider="openai"))
+        assert await _mounted(pilot, "#step-model-select")
+        assert not app.screen.query("#step-thinking")
+        answered = app.screen.answer()
+    assert answered["thinking"] == "none"
 
 
-async def test_the_list_loads_when_the_form_opens():
-    """The configured provider's list is there before the reader touches anything.
-
-    They may accept every pre-filled value and press `Ctrl+S`, so a blank dropdown
-    is not a field waiting to be filled — it is a write that will be skipped.
-    """
-    fetch = await _stub_fetch(["m-one", "m-two"])
-    app = BridgeApp(
-        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
+async def test_the_network_step_translates_the_stored_zone_back_to_a_region():
+    """`CET-1CEST,...` is what `ntp.timezone` holds; the dropdown holds place names."""
+    app = _app(Device())
+    tz = "CET-1CEST,M3.5.0,M10.5.0/3"
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep({"ntp": {"timezone": tz}}, []))
+        assert await _mounted(pilot, "#step-region")
+        select = app.screen.query_one("#step-region")
+        values = [value for _, value in select._options]
+        answered = app.screen.answer()
+    assert select.value == "Europe / Western"
+    assert tz not in values, "the raw TZ string is not a row"
+    assert (answered.timezone, answered.ntp_server) == providers.timezone_for(
+        "Europe / Western"
     )
-    current = {
-        "llm": {
-            "providers": [
-                {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1",
-                 "model": "m-two", "api_key_ref": "nvs:llm_api_key"}
-            ]
-        }
+
+
+async def test_a_stored_zone_the_table_lacks_keeps_its_own_row():
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep({"ntp": {"timezone": "XYZ-5"}}, []))
+        assert await _mounted(pilot, "#step-region")
+        select = app.screen.query_one("#step-region")
+        answered = app.screen.answer()
+    assert select.value == "XYZ-5"
+    assert (answered.timezone, answered.ntp_server) == ("XYZ-5", ""), \
+        "no pool is guessed for an unknown zone"
+
+
+# --- the wizard, end to end over the wire ---------------------------------
+
+
+async def test_the_wizard_tests_each_step_before_asking_the_next():
+    """The order is the dependency order, and each test is the next step's unlock.
+
+    Driven through `onboard()` with the three screens answered by name, so the wire
+    records what the app actually sends and in what order.
+    """
+    device = Device()
+    app = _app(device)
+    seen: list[str] = []
+
+    answers = {
+        "ssid": "HomeLab", "password": "pw", "auth": "wpa2",
+        "base_url": "https://openrouter.ai/api/v1", "api_key": "sk",
+        "model": "a/one", "provider": "openrouter",
+        "timezone": "UTC0", "ntp_server": "",
     }
+
+    async def fake_screen(screen):
+        name = type(screen).__name__
+        seen.append(name)
+        if isinstance(screen, NetworkStep):
+            return _answer(ssid="HomeLab", password="pw", auth="wpa2",
+                           timezone="UTC0")
+        if isinstance(screen, ProviderStep):
+            return _answer(base_url="https://openrouter.ai/api/v1", api_key="sk",
+                           provider="openrouter")
+        if isinstance(screen, ModelStep):
+            return {"model": "a/one", "thinking": "none"}
+        return None
+
+    async def fake_fetch(a):
+        return ["a/one", "b/two"]
+
     async with app.run_test() as pilot:
-        assert await _open_with(
-            pilot, current=current, providers=providers.catalog()[0], fetch_models=fetch
-        )
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if fetch.calls:
-                break
-        select = pilot.app.screen.query_one("#onboard-model-select")
-
-    assert fetch.calls == [("openrouter", "")]
-    assert select.value == "m-two", "the configured model is kept when still offered"
-
-
-async def test_typing_a_key_refetches_the_list():
-    """Most providers answer 401 without a key, so the list has to follow the key."""
-    fetch = await _stub_fetch(["m-one"])
-    app = BridgeApp(
-        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
-    )
-    async with app.run_test() as pilot:
-        assert await _open_with(pilot, providers=providers.catalog()[0], fetch_models=fetch)
-        pilot.app.screen.query_one("#onboard-provider").value = "openrouter"
         await pilot.pause(0.1)
-        before = len(fetch.calls)
-        await _fill(pilot, "#onboard-api-key", "sk-test")
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if len(fetch.calls) > before:
-                break
+        app.push_screen_wait = fake_screen  # type: ignore[method-assign]
+        app._fetch_models = fake_fetch  # type: ignore[method-assign]
+        app._config = {}
+        app._config_fetched = True
+        await app.onboard()
 
-    assert fetch.calls[-1] == ("openrouter", "sk-test")
+    order = device.order()
+    assert "config.set:wifi.networks" in order, order
+    # A reload follows the network write, before any provider frame.
+    network_at = order.index("config.set:wifi.networks")
+    reload_at = order.index("reload:")
+    provider_at = order.index("config.set:llm.providers")
+    assert network_at < reload_at < provider_at, order
+    # The zone is written in step 1 and applied by the same reload.
+    assert order.index("config.set:ntp.timezone") < reload_at, order
+    # And a status read follows the reload, which is step 1's test.
+    assert "status:" in order[reload_at:provider_at], order
+    assert seen == ["NetworkStep", "ProviderStep", "ModelStep"]
 
 
-def test_a_started_provider_without_a_model_says_it_will_skip():
-    """A half-filled LLM domain must narrate the skip, not do nothing quietly."""
-    answers = onboard.Answers(
-        ssid="", password="", base_url="https://openrouter.ai/api/v1",
-        api_key="sk-test", model="", provider="openrouter",
-    )
-    assert onboard.writes(answers) == [("secret", {"key": onboard.LLM_KEY, "value": "sk-test"})]
-    assert any("skips llm.providers" in line for line in onboard.narration(answers, {}))
+async def test_cancelling_the_network_step_writes_nothing():
+    device = Device()
+    app = _app(device)
 
+    async def fake_screen(screen):
+        return None
 
-async def test_a_flattened_config_still_prefills_the_form():
-    """`app.py` holds the config flattened, so a nested read found nothing.
-
-    Every field opened empty and the provider was blank, which is what left the model
-    list unloaded. The form has to read the shape the app actually holds, or the
-    pre-fill it promises never happens.
-    """
-    from bridge.ui.settings import flatten
-
-    nested = {
-        "wifi": {"networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}]},
-        "llm": {"providers": [{"id": "openrouter",
-                               "base_url": "https://openrouter.ai/api/v1",
-                               "model": "m-one", "api_key_ref": "nvs:llm_api_key"}]},
-        "ntp": {"timezone": "CET-1CEST,M3.5.0,M10.5.0/3"},
-    }
-    fetch = await _stub_fetch(["m-one", "m-two"])
-    app = BridgeApp(
-        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
-    )
     async with app.run_test() as pilot:
-        assert await _open_with(
-            pilot, current=flatten(nested), providers=providers.catalog()[0],
-            fetch_models=fetch,
-        )
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if fetch.calls:
-                break
-        screen = pilot.app.screen
-        provider = screen.query_one("#onboard-provider")
-        ssid = screen.query_one("#onboard-ssid-select")
-        base_url = screen.query_one("#onboard-base-url")
-        answers = screen.answers()
+        await pilot.pause(0.1)
+        app.push_screen_wait = fake_screen  # type: ignore[method-assign]
+        app._config = {}
+        app._config_fetched = True
+        await app.onboard()
 
-    assert provider.value == "openrouter"
-    assert ssid.value == "HomeLab"
-    assert base_url.value == "https://openrouter.ai/api/v1"
-    assert answers.model == "m-one"
-    assert fetch.calls == [("openrouter", "")]
+    assert device.writes() == [], "a cancelled first step writes nothing"
 
 
-async def test_a_provider_id_outside_the_catalog_does_not_crash_the_form():
-    """A device set up over raw frames holds whatever id was written.
-
-    The board holds `p1`, which no catalog row names. `Select` raises when its value
-    is absent from its own options, and the wizard is mounted on mount, so the form
-    died before the reader could see it — the second `/onboard` on a configured
-    device was unusable. The stored id has to arrive as a row.
-    """
-    app = BridgeApp(
-        Session(FakeTransport(on_write=Device()), ack_timeout=1, ping_interval=99)
-    )
-    current = {"llm.providers": [{"id": "p1", "base_url": "https://a/v1", "model": "m",
-                                  "api_key_ref": "nvs:llm_api_key"}]}
+async def test_onboard_refuses_without_a_link():
+    device = Device()
+    app = _app(device)
     async with app.run_test() as pilot:
-        assert await _open_with(pilot, current=current, providers=providers.catalog()[0])
-        screen = pilot.app.screen
-        provider = screen.query_one("#onboard-provider")
-        value, answers = provider.value, screen.answers()
-        base_url = screen.query_one("#onboard-base-url").value
-        ids = [row[1] for row in provider._options if isinstance(row[1], str)]
-
-    assert value == "p1"
-    assert "p1" in ids
-    assert answers.model == "m"
-    assert base_url == "https://a/v1"
+        await pilot.pause(0.1)
+        app.session._set_state(app.session.state.__class__.DOWN)
+        await app.onboard()
+    assert device.writes() == [], "nothing is written to a link that cannot answer"
 
 
-async def test_the_form_prefills_from_a_config_the_app_fetched_itself():
-    """`/onboard` on a fresh process must fetch the config before opening the form.
+async def test_the_wizard_prefills_from_a_config_it_fetched_itself():
+    """`_config` arrives only by a `config.get` reply, and only settings asked.
 
-    `_config` is filled by a `config.get` reply, which only the settings screen
-    requested. A process that opened the wizard first therefore pre-filled from `{}`:
-    every field looked unconfigured on a device that had one, the provider was blank,
-    and the model list never loaded. Asserted on what the form is handed, which is
-    the only thing the reader sees.
+    A fresh process opened the wizard on `{}`: every field looked unconfigured on a
+    device that had one, the provider was blank, and the model list never loaded.
     """
-    stored = {
-        "wifi": {"networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}]},
-        "llm": {"providers": [{"id": "p1", "base_url": "https://a/v1", "model": "m",
-                               "api_key_ref": "nvs:llm_api_key"}]},
-    }
+    stored = {"llm": {"providers": [{"id": "p1", "base_url": "https://a/v1",
+                                     "model": "m"}]}}
 
     def device(line: bytes) -> list[bytes]:
         frame = json.loads(line)
-        if frame.get("name") == "config.get":
+        if frame.get("name") == "config.get" and not frame.get("args"):
             body = {"name": "config.get", "ok": True, "result": {"config": stored},
                     "duration_ms": 0}
             return [json.dumps({"v": 1, "type": "command.result", "id": "d-1", "ts": 0,
                                 "reply_to": frame["id"], **body}).encode() + b"\n"]
         return _reply(line)
 
-    app = BridgeApp(Session(FakeTransport(on_write=device), ack_timeout=1, ping_interval=99))
+    app = BridgeApp(Session(FakeTransport(on_write=device), ack_timeout=1,
+                            ping_interval=99))
     seen: list[dict] = []
 
     async def capture(screen):

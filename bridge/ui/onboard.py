@@ -1,9 +1,15 @@
-"""`/onboard`: configure a fresh device through one wizard (`05-bridge.md` §7).
+"""`/onboard`: configure a fresh device through three tested steps (`05-bridge.md` §7).
 
-The planner is pure — `writes()` takes the answers and returns frames plus the
-lines a reader needs — so the ordering rules are testable without a terminal.
-The wizard itself lives in `modals.py`; `app.py` owns the scan and the model
-fetch, because both need the link and a thread.
+The planner is pure — the `writes_*` functions take the answers and return frames,
+and the `verdict_*` functions turn a device reading into one line — so both are
+testable without a terminal. The wizard lives in `modals.py`; `app.py` owns the scan,
+the model fetch and the `reload`, because each needs the link and a thread.
+
+Each step is tested before the next one is asked for, and the test is the device
+answering, not the bridge assuming: the network step writes and then reads `status`
+for a joined SSID `reload` was told to use, the provider step fetches the model list
+before any write can name a model from it, and the model step checks the chosen name
+is one the provider actually published.
 
 Three domains, because a fresh device needs three things before it can answer a
 prompt: a network to reach the provider over, a provider to answer, and a clock
@@ -62,9 +68,15 @@ def provider_id(base_url: str, provider: providers.Provider | None = None) -> st
     return _slug(head)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Answers:
-    """What the wizard collected. Empty strings mean "leave it alone"."""
+    """What the wizard collected. Empty strings mean "leave it alone".
+
+    Not frozen: the wizard fills it one step at a time, because each step's write is
+    sent and tested before the next step is asked for. A frozen value would force the
+    app to rebuild the whole answer set at every step, which is the single-form shape
+    this replaced.
+    """
 
     ssid: str
     password: str
@@ -99,97 +111,228 @@ def network_writable(answers: Answers) -> bool:
     return bool(answers.ssid and answers.password) and answers.auth in JOINABLE_AUTH
 
 
-def writes(answers: Answers) -> list[tuple[str, dict[str, object]]]:
-    """The frames to send, in order: secrets first, then the values naming them.
+def writes_network(answers: Answers) -> list[tuple[str, dict[str, object]]]:
+    """Step 1's frames: the passphrase, then the network array naming it.
 
     Whole arrays, not `wifi.networks.0.ssid`: `04` §4.9 creates a missing object
-    parent but never an array or an index, and a fresh device has no array.
-
-    A step is dropped when its secret is missing, because `03-config.md` §Full schema
-    makes `password_ref` and `api_key_ref` required: writing the array without the key
-    it names is exactly what rule 9 rejects.
+    parent but never an array or an index, and a fresh device has no array. The secret
+    precedes the reference because `03-config.md` rule 9 rejects a `nvs:` reference
+    whose key is missing.
     """
-    secrets: list[tuple[str, dict[str, object]]] = []
-    config: list[tuple[str, dict[str, object]]] = []
-    if answers.password and network_writable(answers):
-        secrets.append(("secret", {"key": WIFI_KEY, "value": answers.password}))
-    if answers.api_key:
-        secrets.append(("secret", {"key": LLM_KEY, "value": answers.api_key}))
-    if network_writable(answers):
-        config.append(
-            (
-                "config",
-                {
-                    "wifi.networks": [
-                        {"ssid": answers.ssid, "password_ref": f"nvs:{WIFI_KEY}"}
-                    ]
-                },
-            )
+    if not network_writable(answers):
+        return []
+    plan: list[tuple[str, dict[str, object]]] = []
+    if answers.password:
+        plan.append(("secret", {"key": WIFI_KEY, "value": answers.password}))
+    plan.append(
+        (
+            "config",
+            {
+                "wifi.networks": [
+                    {"ssid": answers.ssid, "password_ref": f"nvs:{WIFI_KEY}"}
+                ]
+            },
         )
-    if answers.base_url and answers.model and answers.api_key:
-        provider = {
-            "id": answers.provider or "custom",
-            "base_url": answers.base_url,
-            "model": answers.model,
-            "api_key_ref": f"nvs:{LLM_KEY}",
-        }
-        # `03-config.md` §Provider compatibility names `token_param` per provider, and
-        # `extra_body` carries the thinking level. Both are optional; writing a member
-        # the provider rejects turns every call into a 400.
-        if answers.token_param:
-            provider["token_param"] = answers.token_param
-        if answers.extra_body:
-            provider["extra_body"] = dict(answers.extra_body)
-        config.append(("config", {"llm.providers": [provider]}))
-    if answers.timezone:
-        # The pair, from one region choice: the TZ string the firmware applies with
-        # `setenv`, and the pool server that keeps the clock honest. `ntp.timezone`
-        # creates the `ntp` block on a device that has none (`04` §4.9).
-        config.append(("config", {"ntp.timezone": answers.timezone}))
-        if answers.ntp_server:
-            config.append(("config", {"ntp.servers": [answers.ntp_server]}))
-    return secrets + config
+    )
+    return plan
 
 
-def narration(answers: Answers, current: dict[str, object]) -> list[str]:
-    """What the confirm step says, naming what each write replaces."""
+def writes_provider(answers: Answers) -> list[tuple[str, dict[str, object]]]:
+    """Step 2's frames: the API key, then the provider array naming it.
+
+    A model is required here because `03-config.md` makes it required in the schema:
+    there is no half-configured provider to write, and a device given one refuses the
+    document. The step asks for the provider and the key, then for the model from the
+    list that key unlocks.
+    """
+    if not (answers.base_url and answers.api_key and answers.model):
+        return []
+    provider: dict[str, object] = {
+        "id": answers.provider or "custom",
+        "base_url": answers.base_url,
+        "model": answers.model,
+        "api_key_ref": f"nvs:{LLM_KEY}",
+    }
+    # `03-config.md` §Provider compatibility names `token_param` per provider, and
+    # `extra_body` carries the thinking level. Both are optional; writing a member the
+    # provider rejects turns every call into a 400.
+    if answers.token_param:
+        provider["token_param"] = answers.token_param
+    if answers.extra_body:
+        provider["extra_body"] = dict(answers.extra_body)
+    return [
+        ("secret", {"key": LLM_KEY, "value": answers.api_key}),
+        ("config", {"llm.providers": [provider]}),
+    ]
+
+
+def writes_time(answers: Answers) -> list[tuple[str, dict[str, object]]]:
+    """Step 1's second half: the TZ string and, when a region was chosen, its pool.
+
+    The pair comes from one region choice. `ntp.timezone` creates the `ntp` block on a
+    device that has none (`04` §4.9). The server is written only when the TZ string
+    matches a region in the table: an arbitrary POSIX string names no pool, and
+    guessing one would replace a working server with a European one.
+    """
+    if not answers.timezone:
+        return []
+    plan: list[tuple[str, dict[str, object]]] = [
+        ("config", {"ntp.timezone": answers.timezone})
+    ]
+    if answers.ntp_server:
+        plan.append(("config", {"ntp.servers": [answers.ntp_server]}))
+    return plan
+
+
+def writes(answers: Answers) -> list[tuple[str, dict[str, object]]]:
+    """Every step's frames in order. The wizard sends one step at a time; this is the
+    whole plan, which is what the tests describe. Step 1 is `writes_network` then
+    `writes_time`: one reload applies both, so they travel together."""
+    return (
+        writes_network(answers) + writes_time(answers) + writes_provider(answers)
+    )
+
+
+def verdict_network(status: dict[str, object] | None) -> str:
+    """What the device says about the network the step just wrote.
+
+    Read from `status`, not from the write's `ok`: `config.set` answering ok only
+    means the document changed. Whether the station joined is a different fact, and it
+    is the one the reader needs before typing an API key.
+    """
+    wifi = (status or {}).get("wifi") or {}
+    if not isinstance(wifi, dict):
+        return "network: the device did not report a wifi block"
+    state = str(wifi.get("state") or "off")
+    ssid = wifi.get("ssid")
+    if state == "connected":
+        return f"network: joined {ssid or '(no ssid reported)'}"
+    if state == "failed":
+        return (
+            "network: the station did not join; check the passphrase, or that the "
+            "router is in range and above WPA2 (`04` §4.24)"
+        )
+    if state == "connecting":
+        return f"network: still connecting to {ssid or 'the configured ssid'}"
+    return "network: the radio is off; the device may be in safe mode"
+
+
+def verdict_provider(models: list[str], answers: Answers) -> str:
+    """What the fetch proved about the provider and its key.
+
+    An empty list is not a failure to name: the three reasons are different problems
+    and the reader can only fix the one they were told about. A provider with no
+    `models_url` has no list to fetch; a provider that refuses the key answers 401;
+    and a provider whose host is unreachable is offline.
+    """
+    entry = providers.find(answers.provider) if answers.provider else None
+    if not answers.base_url:
+        return "provider: no base url"
+    if not answers.api_key:
+        return "provider: no key typed, so the list cannot be checked"
+    if entry is None or not entry.models_url:
+        return (
+            f"provider: {answers.provider or 'custom'} publishes no model list; "
+            "type the model name"
+        )
+    if not models:
+        return (
+            f"provider: {answers.provider} returned no models; the key is refused or "
+            "the host is unreachable"
+        )
+    return f"provider: {len(models)} models"
+
+
+def verdict_model(models: list[str], answers: Answers) -> str:
+    """Whether the chosen model is one the provider just published.
+
+    A name absent from a non-empty list is a typo the device would answer with a 404
+    on the first prompt, which is exactly the failure this step exists to catch before
+    the write. When the provider published nothing there is nothing to compare, and a
+    typed name is taken at face value.
+    """
+    if not answers.model:
+        return "model: none chosen"
+    if not models:
+        return f"model: {answers.model} (unchecked; the provider listed none)"
+    if answers.model in models:
+        return f"model: {answers.model}"
+    return (
+        f"model: {answers.model} is not in the provider's list of {len(models)}; "
+        "pick one from the dropdown"
+    )
+
+
+def narration(
+    answers: Answers, current: dict[str, object], step: str = "all"
+) -> list[str]:
+    """What the confirm step says, naming what each write replaces.
+
+    `step` is `"network"`, `"provider"` or `"all"`. The wizard narrates one step at a
+    time because each is written and tested before the next is asked for, so a
+    confirmation that described all three would promise writes that have not been
+    decided yet. The zone belongs to the network step: one `reload` applies both.
+    """
     lines: list[str] = []
     networks = current.get("wifi.networks")
-    if answers.ssid and answers.auth not in JOINABLE_AUTH:
-        lines.append(
-            f"skips {answers.ssid}: the station cannot join {answers.auth} "
-            f"(`04` §4.24)"
-        )
-    # Same gates as `writes`: narrating a step that will not be sent is a lie.
-    if network_writable(answers):
-        if isinstance(networks, list):
-            lines.append(f"replaces wifi.networks ({len(networks)} entries → 1)")
-        else:
-            lines.append("creates wifi.networks (1 entry)")
     providers_now = current.get("llm.providers")
-    if needs_model(answers):
-        lines.append("skips llm.providers: no model, and the schema requires one")
-    if answers.base_url and answers.model and answers.api_key:
-        if isinstance(providers_now, list):
+    ntp = current.get("ntp")
+    servers = ntp.get("servers") if isinstance(ntp, dict) else None
+
+    if step in ("network", "all"):
+        if answers.ssid and answers.auth not in JOINABLE_AUTH:
             lines.append(
-                f"replaces llm.providers ({len(providers_now)} entries → 1)"
+                f"skips {answers.ssid}: the station cannot join {answers.auth} "
+                f"(`04` §4.24)"
             )
-        else:
-            lines.append("creates llm.providers (1 entry)")
-        lines.append(f"provider model {answers.model}")
-        if answers.extra_body:
-            lines.append(f"thinking: {answers.extra_body}")
-    if answers.timezone:
+        # Same gate as `writes_network`: narrating a step that will not be sent is a lie.
+        if network_writable(answers):
+            if isinstance(networks, list):
+                lines.append(f"replaces wifi.networks ({len(networks)} entries → 1)")
+            else:
+                lines.append("creates wifi.networks (1 entry)")
+            lines.append(f"stores nvs:{WIFI_KEY}")
+
+    if step in ("provider", "all"):
+        if needs_model(answers):
+            lines.append("skips llm.providers: no model, and the schema requires one")
+        if answers.base_url and answers.model and answers.api_key:
+            if isinstance(providers_now, list):
+                lines.append(
+                    f"replaces llm.providers ({len(providers_now)} entries → 1)"
+                )
+            else:
+                lines.append("creates llm.providers (1 entry)")
+            lines.append(f"provider model {answers.model}")
+            if answers.extra_body:
+                lines.append(f"thinking: {answers.extra_body}")
+            lines.append(f"stores nvs:{LLM_KEY}")
+
+    if step in ("network", "all") and answers.timezone:
         lines.append(f"sets ntp.timezone {answers.timezone}")
         if answers.ntp_server:
-            ntp = current.get("ntp") or {}
-            existing = ntp.get("servers") if isinstance(ntp, dict) else None
-            if isinstance(existing, list) and existing:
-                lines.append(f"replaces ntp.servers ({len(existing)} → 1)")
+            if isinstance(servers, list) and servers:
+                lines.append(f"replaces ntp.servers ({len(servers)} → 1)")
             else:
                 lines.append(f"sets ntp.servers {answers.ntp_server}")
-    if answers.password and network_writable(answers):
-        lines.append(f"stores nvs:{WIFI_KEY}")
-    if answers.api_key:
-        lines.append(f"stores nvs:{LLM_KEY}")
     return lines
+
+
+def verdict_time(status: dict[str, object] | None, wanted: str) -> str:
+    """What the device says about the zone just written.
+
+    `status.time.tz` is the TZ string the device is actually holding, which is the
+    only readable consequence of `ntp.timezone`: `setenv("TZ")` is applied at boot and
+    by `reload`, and nothing else reports it. A device that reran its boot sequence
+    and still holds the old string did not take the write, whatever the reply said.
+    """
+    block = (status or {}).get("time") or {}
+    if not isinstance(block, dict):
+        return "time: the device did not report a time block"
+    tz = block.get("tz")
+    if wanted and tz == wanted:
+        suffix = "" if block.get("synced") else "; the clock has not synced yet"
+        return f"time: zone {tz} applied{suffix}"
+    if tz:
+        return f"time: zone still {tz}; the write did not apply"
+    return "time: the device reports no zone"
