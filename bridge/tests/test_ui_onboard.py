@@ -380,6 +380,27 @@ async def test_the_network_step_offers_no_pass_without_a_stored_network():
         assert "Ctrl+G" not in str(app.screen.query_one("#step-pass").render())
 
 
+async def test_the_network_pass_note_names_the_half_that_is_missing():
+    """A configured network with no zone must not be reported as no network."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep(
+            {"wifi.networks": [{"ssid": "HomeLab", "password_ref": "nvs:wifi_psk"}]}, []
+        ))
+        assert await _mounted(pilot, "#step-region")
+        note = str(app.screen.query_one("#step-pass").render())
+    assert "zone" in note and "network" not in note.split("no stored ")[1], note
+
+
+async def test_the_network_pass_note_names_both_when_both_are_absent():
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(NetworkStep({}, []))
+        assert await _mounted(pilot, "#step-region")
+        note = str(app.screen.query_one("#step-pass").render())
+    assert "no stored network or zone" in note, note
+
+
 async def test_the_provider_step_passes_only_over_a_stored_provider():
     entries, _ = providers.catalog()
     app = _app(Device())

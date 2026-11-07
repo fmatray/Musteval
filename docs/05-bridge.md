@@ -1101,8 +1101,10 @@ step 1, a provider with a `base_url` and a model for step 2, a model for step 3 
 `Ctrl+G` on an unconfigured step does nothing rather than advancing. A passed step
 sends no frame and prints no verdict: a test that did not run must not report, or the
 reader learns to distrust the line that a real test produced. The step's own line says
-which it is: `network and zone stored; Ctrl+G keeps both` or `no stored network; fill
-this step in`.
+which it is: `network and zone stored; Ctrl+G keeps both`, or the half that is
+actually absent — `no stored zone; fill it in or Ctrl+S to write it`. Naming the missing
+half matters on the device that prompted the pass key: a configured network with no
+zone must not be reported as a missing network.
 
 **Cancelling a step writes nothing and stops the wizard.** Each step is its own modal,
 so `Esc` at step 2 leaves the step-1 writes in place — they were already tested and

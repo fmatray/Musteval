@@ -439,10 +439,19 @@ class NetworkStep(_StepBox):
         return bool(self._stored_ssid() and self._stored_tz())
 
     def pass_note(self) -> str:
-        return (
-            "network and zone stored; Ctrl+G keeps both"
-            if self.can_pass() else "no stored network; fill this step in"
-        )
+        """Name the half that is missing, not the step.
+
+        "No stored network" on a device whose Wi-Fi is configured and whose zone is
+        not is a lie the reader has to disprove by opening the settings screen.
+        """
+        missing = [
+            label for label, value in
+            (("network", self._stored_ssid()), ("zone", self._stored_tz()))
+            if not value
+        ]
+        if not missing:
+            return "network and zone stored; Ctrl+G keeps both"
+        return f"no stored {' or '.join(missing)}; fill it in or Ctrl+S to write it"
 
     def answer(self) -> onboard.Answers:
         typed = self.query_one("#step-ssid", Input).value.strip()
@@ -479,7 +488,7 @@ class ProviderStep(_StepBox):
 
     AUTO_FOCUS = "#step-api-key"
     TITLE = "Provider"
-    PATH = "writes llm.providers[0] and the nvs secret llm_api_key"
+    PATH = "writes nothing yet: the list is the test, and the entry lands next step"
     PROVES = "the provider's model list, fetched with this key"
 
     def __init__(self, current: dict[str, Any], providers_: list[Any] | None = None) -> None:
@@ -569,7 +578,7 @@ class ModelStep(_StepBox):
 
     AUTO_FOCUS = "#step-model"
     TITLE = "Model"
-    PATH = "completes llm.providers[0].model; then the time zone"
+    PATH = "writes llm.providers[0] and the nvs secret llm_api_key"
     PROVES = "the chosen name is one the provider listed"
 
     def __init__(
