@@ -126,10 +126,10 @@ reachable only by a script, and its firmware side has no host test either.
 What a user can observe is the refusal, which is the same rule seen from the other
 side. The path uses **numbers for array indices**, separated by dots:
 
-- [ ] `bin/bridge --send /config set wifi.networks.0.password_ref nvs:no_such_key`
+- [ ] `bin/bridge --send "/config set wifi.networks.0.password_ref nvs:no_such_key"`
       answers `ok: false`, `code: E_CONFIG`, "a secret reference in the result does
       not resolve".
-- [ ] `bin/bridge --send /config get wifi.networks.0.password_ref` still returns
+- [ ] `bin/bridge --send "/config get wifi.networks.0.password_ref"` still returns
       `nvs:wifi_test`: the rejected write changed nothing.
 - [ ] In the TUI, `/config get wifi.networks.0.password_ref` prints
       `{"path": "wifi.networks.0.password_ref", "value": "nvs:wifi_test"}` in the chat
@@ -140,9 +140,33 @@ on dots only, so `0` must be its own segment. A bracket path fails one step earl
 with "no such path in config.json; a set never creates a parent key". If you reach
 that message, the spelling is wrong, not the reference.
 
+### M2.2 `secret.set` then `reload`
+
+`secret.set` takes its value from a masked modal, so it is a TUI action, not a
+`--send` one.
+
+- [ ] `bin/bridge`, then type `/secret set wifi_test` in the chat bar and press Enter.
+- [ ] The prompt masks the value. Type a passphrase and press Enter. Then check all
+      three places it could have leaked:
+      - the chat log gains only `secret wifi_test stored (16 bytes)`: the key, the
+        length, and never the value;
+      - the input line you typed into showed dots, not characters, while you typed;
+      - the terminal scrollback above the TUI contains no copy of the value, because
+        the bridge never echoes a submitted line.
+
+      To prove the third one rather than assume it, use a marker you cannot miss:
+      type `/secret set wifi_test` and enter `ZZZ-marker-999` as the value, then
+      search the terminal scrollback for `ZZZ-marker-999`. It must not appear. Overwrite
+      it afterwards by repeating the two steps with the real passphrase.
+- [ ] `/reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
+      again without a reboot.
+
+Measured: `secret.set` answers `{'key': 'wifi_test', 'length': 16, 'stored': true}`
+and never echoes the value.
+
 ### M2.3 `config.get` redacts
 
-- [X] `bin/bridge --send /config get wifi.networks.0.password_ref` prints
+- [X] `bin/bridge --send "/config get wifi.networks.0.password_ref"` prints
       `{'path': 'wifi.networks.0.password_ref', 'value': 'nvs:wifi_test'}`.
 
 The value is the `nvs:` reference, never the stored secret. A leak would print the
@@ -154,7 +178,7 @@ passphrase itself in `value`.
 declared file extensions. `fs.put` takes its bytes over the wire, so a slash command
 cannot express one.
 
-- [X] `bin/bridge --send /sandbox list` prints
+- [X] `bin/bridge --send "/sandbox list"` prints
       `{'entries': [{'bytes': 0, 'dir': True, 'name': 'd'}, ...], 'path': '/workspace/'}`
       — measured; the directory and its files are both listed.
 - [X] `bin/bridge --send "/fs put /prompts/x.md"` prints `no file loaded to upload`
@@ -168,8 +192,8 @@ cannot express one.
 
 ### M2.5 Config writes are atomic
 
-- [X] `bin/bridge --send /config set wifi.networks.0.ssid ""` is rejected with
-      `E_CONFIG`, and `bin/bridge --send /config get wifi.networks.0.ssid` still
+- [X] `bin/bridge --send '/config set wifi.networks.0.ssid ""'` is rejected with
+      `E_CONFIG`, and `bin/bridge --send "/config get wifi.networks.0.ssid"` still
       returns the previous value.
 
 `config.set` validates a clone and keeps the old document on failure.
