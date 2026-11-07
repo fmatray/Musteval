@@ -183,7 +183,9 @@ esp_err_t link_log_frame(const char *tag, const char *msg, const char *level,
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t err = link_envelope_wrap(body, "log", link_next_id(), ts, NULL, out,
+    char id[16];
+    link_next_id(id, sizeof id);
+    esp_err_t err = link_envelope_wrap(body, "log", id, ts, NULL, out,
                                        out_cap, written);
     json_free(body);
     return err;

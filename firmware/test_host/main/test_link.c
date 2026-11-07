@@ -142,23 +142,27 @@ TEST_CASE("an envelope id outside the frozen charset is refused", "[link]")
 
 TEST_CASE("device ids are allocated per boot and never reused", "[link]")
 {
-    /* The accessor returns one static buffer, so each id must be copied before
-     * the next call: that reuse is the contract, not an accident. The counter is
-     * process-global, so the assertion is relative — an earlier test may already
-     * have spent ids. */
+    /* `04` §2 gives the device one counter, so the two tasks that emit cannot each
+     * keep one: `d-1` and `a-1` existing together would make "never reused" false.
+     * The caller owns the buffer because the next allocation must not overwrite an
+     * id that has not been copied into its frame yet. The counter is
+     * process-global, so the assertion is relative — an earlier test spends ids. */
     char first[16];
     char second[16];
 
-    strcpy(first, link_next_id());
-    strcpy(second, link_next_id());
+    link_next_id(first, sizeof first);
+    link_next_id(second, sizeof second);
 
     TEST_ASSERT_EQUAL_STRING("d-", strncmp(first, "d-", 2) == 0 ? "d-" : first);
     TEST_ASSERT_TRUE(strcmp(first, second) != 0);
 
-    /* Monotonic by exactly one: `d-<n>` then `d-<n+1>`. */
+    /* Monotonic by exactly one: `d-<n>` then `d-<n+1>`, and the earlier buffer is
+     * untouched by the later allocation. */
     unsigned long a = strtoul(first + 2, NULL, 10);
     unsigned long b = strtoul(second + 2, NULL, 10);
     TEST_ASSERT_EQUAL_UINT32((uint32_t)(a + 1), (uint32_t)b);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)a,
+                             (uint32_t)strtoul(first + 2, NULL, 10));
 }
 
 /* --- §1.2 refusals -------------------------------------------------------- */

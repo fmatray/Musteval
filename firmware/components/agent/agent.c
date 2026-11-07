@@ -201,14 +201,16 @@ static int64_t now_s(void)
     return (int64_t)time(NULL);
 }
 
-/* `link_emit_body` refuses a NULL id, so a frame without one is dropped silently.
- * The agent task owns these ids: `link_next_id` is the link task's scratch buffer
- * and is not thread-safe (`02-firmware.md` §3.3). */
+/* `link_emit_body` refuses a NULL id, so a frame without one is dropped silently,
+ * which reads exactly like a hang. `04` §2 gives the device one counter for the
+ * whole link, so this goes through `link_next_id` rather than keeping a second
+ * one: `d-1` and `a-1` coexisting would make "never reused" false. The buffer is
+ * per call because the next allocation would otherwise overwrite an id that has
+ * not been copied into its frame yet. */
 static const char *agent_frame_id(void)
 {
     static char s_id[16];
-    static uint32_t s_seq;
-    snprintf(s_id, sizeof s_id, "a-%" PRIu32, ++s_seq);
+    link_next_id(s_id, sizeof s_id);
     return s_id;
 }
 

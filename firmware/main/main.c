@@ -101,6 +101,17 @@ static int64_t uptime_s(void)
 #define SANDBOX_READ_CAP 8192
 #define SANDBOX_LIST_MAX STORE_WS_FILE_COUNT
 
+/* `04` §2: an id is allocated per frame from the device's one counter, so a frame
+ * emitted here cannot collide with one the link or agent task emits. Dispatch is
+ * single-threaded (§4.16) and `link_next_id` copies under the emit lock, so a
+ * per-call buffer is enough. */
+static const char *frame_id(void)
+{
+    static char s_id[16];
+    link_next_id(s_id, sizeof s_id);
+    return s_id;
+}
+
 /* `04` §3.20 requires `duration_ms` on every `command.result`. It is stamped from
  * here, one place, because a handler is not the thing that knows when the frame
  * arrived. Dispatch is single-threaded (§4.16), so one file-scope start is exact. */
@@ -133,7 +144,7 @@ static esp_err_t emit_failure_detail(const char *name, const char *reply_to,
             }
         }
     }
-    esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
+    esp_err_t e = link_emit_body("command.result", frame_id(), 0, reply_to, body);
     json_free(body);
     return e;
 }
@@ -962,7 +973,7 @@ static void answer_command(const json_node_t *frame)
             json_add_int(result, "grace_ms", delay_ms);
         }
         json_add_int(root, "duration_ms", cmd_duration_ms());
-        esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
+        esp_err_t e = link_emit_body("command.result", frame_id(), 0, reply_to, body);
         (void)e;
         json_free(body);
         vTaskDelay(pdMS_TO_TICKS((uint32_t)delay_ms));
@@ -980,7 +991,7 @@ static void answer_command(const json_node_t *frame)
 
     if (built == ESP_OK) {
         json_add_int(root, "duration_ms", cmd_duration_ms());
-        esp_err_t e = link_emit_body("command.result", link_next_id(), 0, reply_to, body);
+        esp_err_t e = link_emit_body("command.result", frame_id(), 0, reply_to, body);
         if (e == ESP_ERR_INVALID_SIZE) {
             emit_failure(name, reply_to, "E_STORAGE", "Frame too large");
         }
@@ -1019,7 +1030,7 @@ static void on_link_frame(const json_node_t *frame)
             return;
         }
         if (link_build_hello_ack(json_root(body), &hello) == ESP_OK) {
-            link_emit_body("hello_ack", link_next_id(), 0, reply_to, body);
+            link_emit_body("hello_ack", frame_id(), 0, reply_to, body);
         } else {
             ESP_LOGE(TAG, "hello: body build failed");
         }
@@ -1057,7 +1068,7 @@ static void on_link_frame(const json_node_t *frame)
                                     ? "no run with that id in flight"
                                     : "nothing to cancel");
             }
-            link_emit_body("event", link_next_id(), 0, NULL, body);
+            link_emit_body("event", frame_id(), 0, NULL, body);
             json_free(body);
         }
         return;
@@ -1084,7 +1095,7 @@ static void on_link_frame(const json_node_t *frame)
         if (err != ESP_OK) {
             emit_failure("secret.set", reply_to, code, message);
         } else {
-            link_emit_body("command.result", link_next_id(), 0, reply_to, body);
+            link_emit_body("command.result", frame_id(), 0, reply_to, body);
         }
         json_free(body);
         return;
@@ -1107,7 +1118,7 @@ static void on_link_frame(const json_node_t *frame)
                             "safe mode: repair config, then reload");
             json_add_bool(root, "retryable", false);
             json_add_string(root, "reply_to", reply_to);
-            link_emit_body("agent.error", link_next_id(), 0, reply_to, body);
+            link_emit_body("agent.error", frame_id(), 0, reply_to, body);
             json_free(body);
             return;
         }
@@ -1140,7 +1151,7 @@ static void on_link_frame(const json_node_t *frame)
             json_add_bool(root, "retryable", true);
         }
         json_add_string(root, "reply_to", reply_to);
-        link_emit_body("agent.error", link_next_id(), 0, reply_to, body);
+        link_emit_body("agent.error", frame_id(), 0, reply_to, body);
         json_free(body);
         return;
     }

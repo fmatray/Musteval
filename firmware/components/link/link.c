@@ -45,10 +45,11 @@ static void emit_lock_give(void)
     if (s_emit_lock != NULL) xSemaphoreGiveRecursive(s_emit_lock);
 }
 
-/* `d-<counter>` is per boot and never reused (`04-protocol.md` §2). The link task
- * is the only caller, so the counter needs no lock (`02-firmware.md` §3.3). */
+/* `d-<counter>` is per boot and never reused (`04-protocol.md` §2). Both the link
+ * task and the agent task allocate ids, so the counter is taken under the emit
+ * lock, and the caller supplies the buffer: a shared one could be overwritten by
+ * the other task between the allocation and `link_envelope_wrap` copying it. */
 static uint32_t s_counter = 0;
-static char s_id[16];
 
 /* The refusal message for a malformed line, which must name the byte offset
  * (`04-protocol.md` §1.2). Static because the link task stack is 4096 bytes and the
@@ -336,14 +337,12 @@ esp_err_t link_frame_parse(const char *line, size_t len, json_doc_t **out,
     return ESP_OK;
 }
 
-const char *link_next_id(void)
+void link_next_id(char *out, size_t cap)
 {
-    /* The result is a scratch buffer, so it is only valid until the next call and
-     * only for a caller that uses it before emitting (`link_envelope_wrap` copies
-     * it). The link task is the only caller (`02-firmware.md` §3.3); the agent task
-     * numbers its own frames. */
-    snprintf(s_id, sizeof(s_id), "d-%" PRIu32, ++s_counter);
-    return s_id;
+    if (out == NULL || cap < 8) return;
+    emit_lock_take();
+    snprintf(out, cap, "d-%" PRIu32, ++s_counter);
+    emit_lock_give();
 }
 
 esp_err_t link_set_sink(const link_sink_t *sink)
@@ -558,7 +557,9 @@ esp_err_t link_refuse_line(const char *line, size_t len, const char *name,
             return ESP_ERR_NO_MEM;
         }
         emit_lock_take();
-        err = link_envelope_wrap(doc, "command.result", link_next_id(), ts,
+        char id[16];
+        link_next_id(id, sizeof id);
+        err = link_envelope_wrap(doc, "command.result", id, ts,
                                  reply_to, frame, LINK_TX_MAX, &written);
         if (err == ESP_OK) err = link_emit(frame, LINK_TX_MAX, written);
         emit_lock_give();
@@ -581,7 +582,9 @@ esp_err_t link_refuse_line(const char *line, size_t len, const char *name,
         return ESP_ERR_NO_MEM;
     }
     emit_lock_take();
-    err = link_envelope_wrap(doc, "event", link_next_id(), ts, NULL, frame,
+    char id[16];
+    link_next_id(id, sizeof id);
+    err = link_envelope_wrap(doc, "event", id, ts, NULL, frame,
                              LINK_TX_MAX, &written);
     if (err == ESP_OK) err = link_emit(frame, LINK_TX_MAX, written);
     emit_lock_give();
@@ -598,7 +601,9 @@ esp_err_t link_emit_pong(const char *reply_to, int64_t ts)
     if (doc == NULL) return ESP_ERR_NO_MEM;
 
     emit_lock_take();
-    esp_err_t err = link_envelope_wrap(doc, "pong", link_next_id(), ts, reply_to,
+    char id[16];
+    link_next_id(id, sizeof id);
+    esp_err_t err = link_envelope_wrap(doc, "pong", id, ts, reply_to,
                                        frame, LINK_TX_MAX, &written);
     if (err == ESP_OK) err = link_emit(frame, LINK_TX_MAX, written);
     emit_lock_give();

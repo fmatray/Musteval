@@ -629,9 +629,12 @@ on a board rather than in the host suite.
 
 **A frame with no `id` is not emitted.** `link_emit_body` rejects a NULL id, and the
 rejection is silent, so a caller that forgets one produces a run that starts and
-then says nothing — indistinguishable from a hang. The agent task numbers its own
-frames `a-<n>` through `agent_frame_id`; it cannot use `link_next_id`, whose scratch
-buffer belongs to the link task.
+then says nothing — indistinguishable from a hang. Every emitter allocates through
+`link_next_id`, which takes a caller-owned buffer: `04-protocol.md` §2 gives the
+device one counter for the whole link, so a second one in the agent task would let
+`d-1` and `a-1` coexist and make "never reused" false. The buffer is per call
+because the next allocation would otherwise overwrite an id that has not yet been
+copied into its frame.
 
 **Frames are assembled and written under one lock.** `link_emit_body` is called from
 the link task (`command.result`, `hello_ack`, `event`) and from the agent task

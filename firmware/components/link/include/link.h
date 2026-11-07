@@ -71,8 +71,12 @@ esp_err_t link_frame_parse(const char *line, size_t len, json_doc_t **out,
  * frame in the wrong direction is `E_PROTOCOL` at dispatch, not at parse. */
 bool link_type_inbound(const char *type);
 
-/* Allocate the next device id, `d-<counter>`, per boot and never reused (§2). */
-const char *link_next_id(void);
+/* Allocate the next device id into `out` as `d-<counter>`, per boot and never
+ * reused (§2). Safe to call from the link task, the agent task and the log hook:
+ * the counter is taken under the emit lock. The caller owns the buffer because a
+ * returned scratch pointer could be rewritten by another task before the id is
+ * copied into a frame. */
+void link_next_id(char *out, size_t cap);
 
 /* Log bridging (`00-overview.md` D9, `04` §3.10). `esp_log_set_vprintf` is the
  * board half; these two are the half that decides what a log line becomes, so they
