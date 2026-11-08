@@ -13,6 +13,7 @@ This document defines the working rules for AI agents contributing to the Mustev
 ## Engineering Standards
 
 ### Documentation
+- **Language**: English only. Every document, comment, test name, commit message, and reply is written in English, whatever language the conversation is held in.
 - **Format**: Use plain Markdown.
 - **Visuals**: Use Mermaid.js for diagrams and ASCII tables for data. No images unless absolutely necessary.
 - **Consistency**: Always use the frozen contract names for config keys, protocol messages, and module APIs.

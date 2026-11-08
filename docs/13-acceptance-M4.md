@@ -231,17 +231,77 @@ prefix, and never counted keys. `memory.set` also omitted the documented
 (`a memory key obeys the documented alphabet and length`, `a reserved memory prefix
 is refused and named`), failing before the fix.
 
-### Not reachable on this board
+### The second board session: every delayed fix observed
 
-The board left the USB bus during this audit and did not re-enumerate, so the
-fixes above that landed after that point are **built, host-tested and unflashed**:
-the `E_TOOL`/`E_STORAGE` split, `memory`'s bounds and `stored:true`, and the
-`geo`/`mqtt` milestone messages. They are not claimed as observed. The two defects
-the sweep itself found — the `fs.list` stack overflow and the `E_STORAGE` code —
-were both seen on the board before the fix.
+The board returned on `/dev/ttyACM0` a day later. The four fixes the earlier session
+had left unflashed are now observed, and the session found two more defects.
 
-A later read-only pass over the same command paths found four more, all built and
-host-tested and none observed on a board:
+Observed on the board, in this order:
+
+- **`sandbox.delete` recursive during a run → `E_BUSY`.** With `agent.busy: true`
+  read from `/status`, `{"path":"/workspace/pt","recursive":true}` answered
+  `{"code":"E_BUSY","message":"recursive delete refused while a run is in flight"}`.
+- **The prompt queue's third entry → `E_BUSY` with its depth.** Three prompts
+  during one run answered
+  `{"code":"E_BUSY","message":"agent run in flight; queue full (2), prompt rejected","retryable":true,"detail":{"max_queue":2,"queue_depth":2}}`.
+- **`tasks.run` in safe mode → `E_SAFE_MODE`**, not the unwired-scheduler message,
+  while `sys.safe_mode: true` and `boot_failures: 4`.
+- **`template.get {"name":"../brief.md"}` → `E_PROTOCOL`**, "name is not
+  `[A-Za-z0-9._-]+.md`".
+- **A `prompt` with no `text` → `E_PROTOCOL`**, "prompt.text is required",
+  `retryable:false`.
+- **Memory's bounds.** `memory.set sys_x` → `E_TOOL` "the sys_ prefix is reserved for
+  firmware state"; `memory.set has.dot` → `E_TOOL` "key must be 1-15 bytes of
+  `[A-Za-z0-9_]`"; `memory.set ok_key hello` → `stored:true`.
+- **`fs.read` on an absent path → `E_TOOL`**, "fs.read: no such readable text file" —
+  not `E_STORAGE`.
+- **`geo.locate` → `E_TOOL`**, "geo.locate is not implemented before M6".
+- **`agent.max_input_bytes`.** 3072 bytes was accepted with `input_bytes: 3072`;
+  3073 was refused `E_PROTOCOL`, "prompt exceeds agent.max_input_bytes".
+- **A prompt round trip.** `say pong` → `agent.final` "pong", `rounds:0`,
+  `prompt_tokens:1340`.
+- **Multi-turn.** Run 1 was asked to remember `4271`; run 2 answered `4271` with
+  `prompt_tokens:1557`. A third run calling `time.now` answered
+  `2026-11-08T09:31:24+0100`, `rounds:1`.
+
+### The two defects this session found
+
+Both were drifts between a documented default and the code, and both were proven by
+behaviour before being fixed:
+
+- **`agent.max_input_bytes` was 8192 in the code and 3072 in `03-config.md`.** One
+  constant was doing two jobs: the documented default *and* the input buffer's cap.
+  A 3500-byte and a 4000-byte prompt were accepted (`input_bytes: 4000`) where the
+  documented default refuses above 3072. The default and the buffer cap are now two
+  constants, and the resolution lives in `agent_settings.c` so a host test fails it.
+- **`llm.max_tool_rounds` was 6 in the code and 8 in `03-config.md`.** Corrected,
+  and covered by the same test.
+
+The test asserts the resolved value, not the constant: comparing a constant to
+itself would have passed with either number.
+
+### The defect that made every prompt fail
+
+`E_LLM_UNAVAILABLE` with `ollama: http 400: {"error":{"message":"invalid character
+',' looking for beginning of value"}}` blocked this whole session. The body was not
+malformed when assembled: the device's own parser accepted it, and so did Python
+after the device logged it back. The board's parser, pointed at the same bytes with
+a bracket-depth scan, named the byte — offset 75 of 5615, `"content":"You are
+Musteval.\n"},,{`.
+
+The cause was `agent_history_truncate(s_history, &s_history_used, 0)`, which leaves
+the buffer holding `[]` with `*used == 2`. `agent_history_append` read `*used == 0`
+as "nothing written yet", so it overwrote the `]` with `,` and produced `[,{…}]`.
+Every run that followed a finished run sent that body, so the provider refused every
+request after the first. The append now treats a buffer with no messages as empty.
+`an append into an emptied history stays a valid array` fails with `[,{…}]` before
+the fix.
+
+The lesson is worth keeping: **two independent parsers accepted a body a third
+rejected by a byte offset.** "It parses" is not proof of what crossed the wire.
+
+A read-only pass over the same command paths found four more. All four were built and
+host-tested in that session and have since been observed on the board, above:
 
 - **A `prompt` with no `text` answered `E_INTERNAL`** "the agent loop is not
   started" with `retryable:true`, so a malformed frame was invited to be resent.
@@ -261,6 +321,7 @@ The first, second and fourth were unreachable by a host test while the code sat 
 board-only `main.c`, `tools.c` and `agent.c`; each rule moved into a pure file, and
 every one of them fails its new test when reverted.
 
+### Still not reachable on this board
 
 - **HTTP allowlist and response projection.** A declarative tool outside
   `tools.http_allow_hosts` answering `E_TOOL`, and a `response_path` subtree. The
@@ -361,10 +422,15 @@ the command in `AGENTS.md`'s Test Strategy table: `cd firmware/test_host`, remov
 `idf.py -DCOVERAGE=ON build`.
 
 - [X] `cd firmware/test_host && ./build/musteval_test_host.elf` prints
-      `163 Tests 0 Failures 0 Ignored`. The M4 cases are the ones tagged `[m4]` in
+      `215 Tests 0 Failures 0 Ignored`. The M4 cases are the ones tagged `[m4]` in
       `main/test_m4.c`, and every name this file quotes is in that binary's output.
-- [X] `./coverage.sh` passes its 80 % line gate, reporting 89 % over the
+- [X] `./coverage.sh` passes its 80 % line gate, reporting 92 % over the
       host-built sources.
+
+The image built after these fixes is 1 176 901 bytes: 37.4 % of the 3 MiB `factory`
+partition, 62.6 % free. DIRAM is 296 699 of 341 760 bytes (86.82 %, 45 061 B of
+headroom); IRAM is 16 384 bytes, 100 % of its budget, which is the pre-existing
+figure and not a regression from this work.
 
 The binary takes no filter argument, so it runs every case; `grep` its output for a
 name above to see the individual line.
