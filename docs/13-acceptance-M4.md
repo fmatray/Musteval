@@ -240,6 +240,28 @@ the `E_TOOL`/`E_STORAGE` split, `memory`'s bounds and `stored:true`, and the
 the sweep itself found — the `fs.list` stack overflow and the `E_STORAGE` code —
 were both seen on the board before the fix.
 
+A later read-only pass over the same command paths found four more, all built and
+host-tested and none observed on a board:
+
+- **A `prompt` with no `text` answered `E_INTERNAL`** "the agent loop is not
+  started" with `retryable:true`, so a malformed frame was invited to be resent.
+  `04` §4 makes a missing required argument `E_PROTOCOL`. Reaching it needed
+  `agent_submit` to stop returning one code for both a full queue and a queue that
+  never existed.
+- **The `/tools/*.json` loader read its HTTP members from the file's root** while
+  `03-config.md` §tools and `tools/web.md` put them under `http`, so every
+  conforming file was dropped as malformed. `http.headers` was also emitted empty
+  whatever the file said.
+- **`sandbox.delete` had no `E_BUSY` guard** for the recursive form `04` §4.19's
+  table promises, so the host could remove a subtree a live run was reading.
+- **`tasks.run` in safe mode answered the unwired message**, not the `E_SAFE_MODE`
+  `02-firmware.md` §safe mode names, so the bridge never learned the way out.
+
+The first, second and fourth were unreachable by a host test while the code sat in
+board-only `main.c`, `tools.c` and `agent.c`; each rule moved into a pure file, and
+every one of them fails its new test when reverted.
+
+
 - **HTTP allowlist and response projection.** A declarative tool outside
   `tools.http_allow_hosts` answering `E_TOOL`, and a `response_path` subtree. The
   gate half is host-tested; the projection half needs a declarative tool, and no
