@@ -439,6 +439,67 @@ TEST_CASE("extra_body members join the request object", "[m3]")
     TEST_ASSERT_NULL(strstr(out, "extra_body"));
 }
 
+/* The stored `extra_body` is what reaches the assembler, so its *emitted shape* is
+ * the contract, not the document's. This failed before the fix: the loader kept
+ * `{"extra_body":{...}}`, the assembler stripped one level of braces as it must, and
+ * the wrapper's own key reached the provider — every member under it, level included,
+ * was inert on the wire. */
+TEST_CASE("the stored extra_body is a flat object, not a wrapper", "[m3]")
+{
+    json_doc_t *doc = NULL;
+    const char *src = "{\"extra_body\":{\"reasoning_effort\":\"high\",\"temperature\":0.2}}";
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(src, strlen(src), &doc));
+    char out[256];
+    size_t n = llm_flatten_members(json_get(json_root(doc), "extra_body"), out, sizeof out);
+    TEST_ASSERT_GREATER_THAN(0, n);
+    TEST_ASSERT_NULL(strstr(out, "\"extra_body\""));
+    /* Asserted on the emitted document, not its bytes: `put_number` prints a double
+     * at full precision (`0.20000000000000001`), which is the same JSON number, so
+     * pinning the text would pin the emitter rather than the flattening. */
+    json_doc_t *flat = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(out, n, &flat));
+    json_node_t *root = json_root(flat);
+    TEST_ASSERT_TRUE(json_is_object(root));
+    TEST_ASSERT_EQUAL_size_t(2, json_object_len(root));
+    TEST_ASSERT_EQUAL_STRING("high",
+                             json_string(json_get(root, "reasoning_effort")));
+    TEST_ASSERT_TRUE(json_is_number(json_get(root, "temperature")));
+    json_free(flat);
+    json_free(doc);
+}
+
+/* Refused rather than truncated (`02-firmware.md` §llm): a clipped member is not a
+ * smaller request, it is a body the provider rejects. */
+TEST_CASE("an extra_body that does not fit is refused, not truncated", "[m3]")
+{
+    json_doc_t *doc = NULL;
+    char big[400];
+    memset(big, 'x', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    char src[512];
+    snprintf(src, sizeof src, "{\"extra_body\":{\"a\":\"%s\"}}", big);
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(src, strlen(src), &doc));
+    char out[64];
+    out[0] = 'z';
+    TEST_ASSERT_EQUAL_size_t(0, llm_flatten_members(json_get(json_root(doc), "extra_body"),
+                                                    out, sizeof out));
+    /* An empty buffer, never a partial one. */
+    TEST_ASSERT_EQUAL_STRING("", out);
+    json_free(doc);
+}
+
+/* A non-object `extra_body` is no members at all, not a crash: validation refuses it,
+ * but the loader runs before any reader has been told why. */
+TEST_CASE("a non-object extra_body contributes nothing", "[m3]")
+{
+    llm_request_t r = {.model = "m", .user_prompt = "x"};
+    char out[512];
+    TEST_ASSERT_GREATER_THAN(
+        0, llm_assemble_prompt(&r, "[]", out, sizeof out));
+    TEST_ASSERT_NULL(strstr(out, "extra_body"));
+    TEST_ASSERT_NULL(strstr(out, "[]"));
+}
+
 /* `tools` is omitted when there are none and passed through when there are. */
 TEST_CASE("tools are sent only when offered", "[m3]")
 {
@@ -568,3 +629,35 @@ TEST_CASE("the exhausted chain sentinel ends the walk", "[m3]")
     TEST_ASSERT_FALSE(llm_provider_loop_ok(llm_next_provider(0, 0), 0));
 }
 
+
+/* The whole path, in the order `llm_init` and `llm_assemble_prompt` run it: a config
+ * `extra_body` object, flattened by the loader, merged by the assembler. This is the
+ * shape that was broken on the wire — the wrapper's own `extra_body` key survived the
+ * merge, so the provider read a nested object where a top-level member was intended
+ * and every member under it, the thinking level included, was inert. */
+TEST_CASE("a config extra_body reaches the request root, not as a nested object", "[m3]")
+{
+    json_doc_t *cfg = NULL;
+    const char *src =
+        "{\"reasoning_effort\":\"high\",\"temperature\":0.2,\"seed\":7}";
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(src, strlen(src), &cfg));
+    char stored[256];
+    TEST_ASSERT_GREATER_THAN(0, llm_flatten_members(json_root(cfg), stored,
+                                                    sizeof stored));
+    json_free(cfg);
+
+    llm_request_t r = {.model = "m", .user_prompt = "x"};
+    char body[1024];
+    size_t n = llm_assemble_prompt(&r, stored, body, sizeof body);
+    TEST_ASSERT_GREATER_THAN(0, n);
+
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(body, n, &doc));
+    json_node_t *root = json_root(doc);
+    /* At the root, where the provider reads it. */
+    TEST_ASSERT_EQUAL_STRING("high", json_string(json_get(root, "reasoning_effort")));
+    TEST_ASSERT_TRUE(json_is_number(json_get(root, "temperature")));
+    /* And the wrapper is gone rather than nested one level down. */
+    TEST_ASSERT_NULL(json_get(root, "extra_body"));
+    json_free(doc);
+}

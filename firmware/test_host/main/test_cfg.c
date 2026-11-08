@@ -170,6 +170,66 @@ TEST_CASE("an empty network list is refused", "[cfg]")
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(src, why, sizeof why));
 }
 
+/* `03-config.md` §llm `extra_body`: at most four members, flat scalars only, and none
+ * of `model`/`messages`/`tools`/`stream`. The table's `CFG_OBJECT` row proves only
+ * that the value is an object, so before this the rules were decorative: the device
+ * accepted a fifth member, a nested object and a `stream` override, and the provider
+ * answered 400 on the next prompt instead of the write naming what was wrong. */
+static esp_err_t validate_extra(const char *extra, char *why, size_t cap)
+{
+    char src[512];
+    snprintf(src, sizeof src,
+             "{\"version\":1,\"wifi\":{\"networks\":[{\"ssid\":\"a\","
+             "\"password_ref\":\"nvs:k\"}]},\"llm\":{\"providers\":[{\"id\":\"p\","
+             "\"base_url\":\"http://h\",\"model\":\"m\",\"api_key_ref\":\"nvs:k\","
+             "\"extra_body\":%s}]}}", extra);
+    return validate(src, why, cap);
+}
+
+TEST_CASE("extra_body accepts one flat member", "[cfg]")
+{
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_extra("{\"reasoning_effort\":\"high\"}", why, sizeof why));
+    TEST_ASSERT_EQUAL(ESP_OK, validate_extra("{\"temperature\":0.2}", why, sizeof why));
+}
+
+TEST_CASE("a fifth extra_body member is refused", "[cfg]")
+{
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_extra("{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5}",
+                                     why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "4"));
+}
+
+TEST_CASE("extra_body refuses the four reserved keys", "[cfg]")
+{
+    /* A member named `stream` or `tools` rewrites the request's structure, which no
+     * provider accepts and no reader intended. */
+    char why[96] = "";
+    const char *reserved[] = { "model", "messages", "tools", "stream" };
+    for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
+        char extra[64];
+        snprintf(extra, sizeof extra, "{\"%s\":\"x\"}", reserved[i]);
+        TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate_extra(extra, why, sizeof why));
+        TEST_ASSERT_NOT_NULL(strstr(why, reserved[i]));
+    }
+}
+
+TEST_CASE("extra_body refuses a nested member", "[cfg]")
+{
+    /* Flat scalars only: the merge copies members into the request root, and a nested
+     * object is exactly the shape Anthropic's thinking member wants, which
+     * `03-config.md` says this field cannot express. */
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_extra("{\"thinking\":{\"type\":\"enabled\"}}",
+                                     why, sizeof why));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_extra("{\"stop\":[\"a\"]}", why, sizeof why));
+}
+
 TEST_CASE("redaction replaces every occurrence and never grows the line", "[cfg]")
 {
     /* `06-security.md` §secret handling: a secret leaves the device once. */

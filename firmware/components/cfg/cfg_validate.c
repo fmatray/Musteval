@@ -210,6 +210,43 @@ static esp_err_t check_rule(const json_node_t *node, const cfg_rule_t *rule,
     return ESP_OK;
 }
 
+/* `03-config.md` §Full schema step 8 and the `extra_body` row: at most four members,
+ * flat scalars only, and none of the four keys that would rewrite the request's
+ * structure. The table's `CFG_OBJECT` row only proves `json_is_object`, which left
+ * every one of those rules unenforced — a body with a nested member is a 400 from the
+ * provider and an unnameable failure for the reader. */
+static esp_err_t check_extra_body(const json_node_t *extra, char *why, size_t cap)
+{
+    if (extra == NULL) return ESP_OK;
+    if (!json_is_object(extra)) return fail(why, cap, "extra_body: not an object", NULL);
+    if (json_object_len(extra) > 4) {
+        return fail(why, cap, "extra_body: more than 4 members", NULL);
+    }
+    static const char *reserved[] = { "model", "messages", "tools", "stream" };
+    size_t count = json_object_len(extra);
+    for (size_t i = 0; i < count; i++) {
+        const char *key = json_object_key(extra, i);
+        const json_node_t *value = json_object_value(extra, i);
+        if (key == NULL || value == NULL) {
+            return fail(why, cap, "extra_body: member unreadable", NULL);
+        }
+        for (size_t r = 0; r < RULE_COUNT(reserved); r++) {
+            if (strcmp(key, reserved[r]) == 0) {
+                return fail(why, cap, "extra_body: reserved key %s", key);
+            }
+        }
+        /* Flat scalar only: a nested object or array cannot be represented as a
+         * request member by the flat merge, and a provider that wants one wants it
+         * under a name the firmware does not know. Any other JSON scalar — string,
+         * number, bool — is a member a provider can read, and `temperature: 0.2` is
+         * the ordinary case. */
+        if (!(json_is_string(value) || json_is_number(value) || json_is_bool(value))) {
+            return fail(why, cap, "extra_body: %s is not a flat scalar", key);
+        }
+    }
+    return ESP_OK;
+}
+
 /* One member of `wifi.networks` / `llm.providers` / `mcp.servers`. */
 static esp_err_t check_member(const json_node_t *member, const char *group,
                               char *why, size_t cap)
@@ -228,6 +265,12 @@ static esp_err_t check_member(const json_node_t *member, const char *group,
         }
         esp_err_t err = check_rule(v, rule, why, cap);
         if (err != ESP_OK) return err;
+        /* The object's *contents* are a rule the table cannot express; `CFG_OBJECT`
+         * only proves it is an object. */
+        if (rule->kind == CFG_OBJECT && strcmp(key, "extra_body") == 0) {
+            err = check_extra_body(v, why, cap);
+            if (err != ESP_OK) return err;
+        }
     }
     return ESP_OK;
 }

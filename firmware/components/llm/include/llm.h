@@ -13,6 +13,7 @@
 #include "esp_err.h"
 
 #include "net.h"
+#include "store.h"
 
 /* `03-config.md` §llm bounds. */
 #define LLM_MAX_PROVIDERS 4
@@ -20,8 +21,15 @@
 /* The request body is assembled into a caller buffer. `docs/02-firmware.md` §llm
  * gives `llm_query(prompt, history, tools_json, response_buf, len)`, and the assembly
  * rule is the frozen contract, so this is the same shape with the provider chosen by
- * the module rather than the caller. */
-#define LLM_BODY_MAX 8192
+ * the module rather than the caller.
+ *
+ * It must exceed the parts that are always present: the 25-entry tool array is
+ * ~5.1 KiB and the system prompt may be up to 8 KiB (`03-config.md`
+ * §`agent.system_prompt`), so an 8 KiB body could not carry a request even with an
+ * empty history — every run failed `request body too large` and, because history is
+ * never reset, stayed failed until reboot. Matched to `net.h`'s `NET_BODY_MAX`, the
+ * largest reply this transport holds. */
+#define LLM_BODY_MAX 16384
 
 /* How much of a provider's rejection body `llm_last_error()` keeps. The status alone
  * never names the offending member; the provider's own words do, and the first 192
@@ -97,6 +105,16 @@ size_t llm_endpoint(const char *base_url, char *out, size_t cap);
  * carry the closing brace along: `llm` spliced `[{...}]}` into its own object, closed
  * it early, and the provider refused the body. */
 size_t llm_slice_member(const char *json, char *out, size_t cap);
+
+/* Emits `extra`'s members as one flat object into `out`. Returns the written length,
+ * or 0 when it does not fit or `extra` is not an object.
+ *
+ * `00-overview.md` D4 and `02-firmware.md` §llm: `extra_body`'s members *are* request
+ * members, so they are emitted at the root. Emitting `{"extra_body":{...}}` and
+ * keeping that text is the defect this function exists to remove: the body builder
+ * strips one level of braces, so the wrapper's own `extra_body` key survived and every
+ * member under it was inert on the wire. */
+size_t llm_flatten_members(const json_node_t *extra, char *out, size_t cap);
 
 /* Which provider to try, given the chain and an index that has already failed.
  * Returns the next index, or -1 when the chain is exhausted. */

@@ -113,22 +113,17 @@ esp_err_t llm_init(void)
 
         json_node_t *extra = json_get(entry, "extra_body");
         if (extra != NULL) {
-            json_doc_t *holder = json_new_object();
-            if (holder != NULL) {
-                json_add_node(json_root(holder), "extra_body", extra);
-                size_t written = 0;
-                char buf[sizeof p->extra_body];
-                if (json_emit(holder, buf, sizeof buf, &written) == ESP_OK) {
-                    /* Re-emitted so the body builder never sees the live document: a
-                     * `reload` frees it while a request is in flight. */
-                    const char *open = strchr(buf, '{');
-                    const char *close = strrchr(buf, '}');
-                    if (open != NULL && close != NULL) {
-                        snprintf(p->extra_body, sizeof p->extra_body, "%.*s",
-                                 (int)(close - open + 1), open);
-                    }
-                }
-                json_free(holder);
+            /* Flat, at the root: `extra_body`'s members *are* request members
+             * (`03-config.md` §llm). The shape rule lives in the host-tested module,
+             * which also refuses a document that does not fit rather than truncating
+             * it. */
+            size_t written = llm_flatten_members(extra, p->extra_body,
+                                                 sizeof p->extra_body);
+            if (written == 0) {
+                /* Named, because an inert `extra_body` is a 400 whose cause is a
+                 * setting too long for the buffer, which no log otherwise implies. */
+                ESP_LOGW(TAG, "llm: %s: extra_body not sent; it does not fit %u bytes",
+                         p->id, (unsigned)sizeof p->extra_body);
             }
         }
 
@@ -199,9 +194,12 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
         }
         if (llm_assemble_prompt(&attempt, p->extra_body[0] != '\0' ? p->extra_body : NULL,
                            s_body, sizeof s_body) == 0) {
+            /* Every provider shares `s_body` and its cap, so a body that does not fit
+             * fits nowhere: walking the chain only spends budget. The caller trims
+             * history to fit and retries (`02-firmware.md` §llm). */
             snprintf(s_last_error, sizeof s_last_error, "%s: request body too large", p->id);
-            index = llm_next_provider(index, (int)s_provider_count);
-            continue;
+            s_available = false;
+            return ESP_ERR_INVALID_SIZE;
         }
         snprintf(s_auth, sizeof s_auth, "Bearer %s", p->api_key);
 

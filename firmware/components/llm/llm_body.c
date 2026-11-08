@@ -232,6 +232,31 @@ size_t llm_slice_member(const char *json, char *out, size_t cap)
     return len;
 }
 
+size_t llm_flatten_members(const json_node_t *extra, char *out, size_t cap)
+{
+    if (extra == NULL || out == NULL || cap == 0 || !json_is_object(extra)) return 0;
+    json_doc_t *holder = json_new_object();
+    if (holder == NULL) return 0;
+    json_node_t *flat = json_root(holder);
+    size_t count = json_object_len(extra);
+    bool ok = true;
+    for (size_t i = 0; i < count && ok; i++) {
+        const char *key = json_object_key(extra, i);
+        json_node_t *value = json_object_value(extra, i);
+        /* `json_add_node` deep-copies, so the emitter never reads the live document:
+         * a `reload` frees it while a request is in flight. */
+        ok = key != NULL && value != NULL && json_add_node(flat, key, value) != NULL;
+    }
+    size_t written = 0;
+    esp_err_t err = ok ? json_emit(holder, out, cap, &written) : ESP_FAIL;
+    json_free(holder);
+    if (err != ESP_OK) {
+        if (cap > 0) out[0] = '\0';
+        return 0;
+    }
+    return written;
+}
+
 int llm_next_provider(int current, int count)
 {
     int next = current + 1;
