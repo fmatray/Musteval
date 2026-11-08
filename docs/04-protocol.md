@@ -179,11 +179,14 @@ never mid-run, so a run's tool array stays stable across rounds.
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `text` | string | yes | User input, UTF-8. Capped by `agent.max_input_bytes`. |
-| `template` | string | no | Prompt template name from `/prompts/` used to prefix `text`. |
 
 ```json
 {"v":1,"type":"prompt","id":"b-2","ts":1730563210,"text":"What time is it on the device?"}
 ```
+
+A prompt has no template field: templates are a scheduled-task action
+(`03-config.md` §tasks, `action.kind: "template"`), rendered by the scheduler before
+the run is submitted, so the loop only ever receives finished text.
 
 Reply: `agent.start` with `reply_to` equal to this `id`. Rejection: `agent.error`
 with `reply_to` equal to this `id` and code `E_BUSY`, `E_CONFIG` or `E_PROTOCOL`.
