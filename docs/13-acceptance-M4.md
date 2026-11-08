@@ -114,80 +114,139 @@ exactly like a hang. Ids are now `a-<n>`, distinct from the link task's `d-<n>`.
 - [X] `bin/bridge --send /cancel` with no run in flight answers
       `event {kind: "cancel.noop", data: {reason: "nothing to cancel"}}`.
 
-### Gap: `E_CANCELLED` from a run in flight
+### `E_CANCELLED` from a run in flight
 
 `07-roadmap.md` §M4 requires `cancel` to interrupt the current run and answer
-`E_CANCELLED`. Every run on this board fails within milliseconds — at the budget
-or at the provider chain — so there is no window in which a `cancel` can land
-mid-run. Reaching it needs a provider that answers slowly enough to be interrupted:
-a joined network and a resolvable key. The reply path itself is implemented
-(`agent.c` checks `s_cancel` before each round and each tool call) and is not
-provable by hand here.
+`E_CANCELLED`. The reply path was implemented but had a hole: `s_cancel` was checked
+before each round and around each tool call, never after the provider call returned,
+so a `cancel` arriving during that call was dropped and the run completed normally.
+Observed three times on this board before the fix — `agent.final` with the full
+answer, tens of seconds after the cancel.
 
-## M4.5 The tool criteria need a live provider
+With the check added after `llm_query`, the same sequence now ends as
+`agent.error`/`E_CANCELLED` with the run's `run_id`, and the following run completes
+normally.
 
-Each criterion below is a property of a tool call, and a tool call exists only
-inside a provider reply. They are listed so a reader with credentials knows what to
-run, and marked as gaps because this board cannot reach them.
+## M4.5 The tool criteria were proven live
 
-### Gap: tool round, gating, path confinement, quota
+The board reached its provider during this audit, so the criteria that need a tool
+call are no longer gaps. What was observed on `/dev/ttyACM0`, in one session:
 
-With a network and a key:
+- **A tool round.** `time.now` was called and its result used:
+  `agent.start` → `agent.tool` (`time.now`) → `agent.tool_result ok:true` →
+  `agent.final` reading `2026-11-08T02:26:07+0100`, `rounds:1`,
+  `prompt_tokens:2805`.
+- **Multi-turn.** Run 1 stored `4271`; run 2 asked for it and answered `4271`, with
+  `prompt_tokens:1532` — a conversation, not a re-sent question.
+- **Cancel.** `cancel` during the provider call ended the run as
+  `agent.error`/`E_CANCELLED` with the run's `run_id`, and the next run completed
+  normally, so an aborted run leaves no half turn behind.
+- **The system prompt reaches the model.** Asked who it was, the model answered
+  `I am Musteval.` — the 18 bytes of `/prompts/system.md`.
 
-- `time.now` and `gpio.read` execute and their results appear as
-  `agent.tool_result` between `agent.tool` and `agent.final`.
-- `gpio.write` answers `E_TOOL` while `tools.allow_dangerous` is `false`.
-- `fs.write` to `/config.json`, to `/workspace/../config.json` and to
-  `/workspace/a/../../config.json` each answers `E_TOOL`; `/workspace/sub/x.txt`
-  succeeds; `/workspace/./a//b.txt` resolves to `/workspace/a/b.txt`.
-- A write that would exceed 64 KiB or 64 files answers `E_STORAGE` and leaves the
-  existing file intact.
+### Fixed by inspection: the loop's history contract
 
-The rules underneath are host-tested: `tools_gate.c` for the gate and the host
-allowlist, `tools_spec.c` for argument validation, and `store_delete_action`,
-`store_move_verdict`, `store_path_is_under` and `store_is_staging_entry` for the
-sandbox. What is not proven is a live round trip.
+Seven defects were found by reading board-only code, or by the board itself once a
+provider was reachable. Each is fixed; the host-testable ones carry a test that
+fails without the fix (`test_m4.c`, `test_m3.c`).
 
-### Gap: HTTP allowlist and response projection
+- The run's prompt never entered the history, so from round 1 the request carried
+  tool results with no user turn, and a second run carried every earlier answer and
+  no earlier question (`02-firmware.md` §4.1 step 4). It is now pushed before the
+  first round and `user_prompt` stays NULL from then on.
+- `agent.system_prompt` is a path (`CFG_PATH`, default `/prompts/system.md`), and it
+  was being sent verbatim as the system message. It is now read from `userfs`.
+- The same key had no default applied: `cfg_get` returns NULL for an absent key, so
+  an unconfigured device sent **no** system message at all. Every other setting in
+  the run goes through a `*_or` helper; this one did not. It now falls back to
+  `/prompts/system.md`.
+- The request body was 8 KiB but had to hold a ~5 KiB tool array, an 8 KiB system
+  prompt and the history at once. No request could be built, so every run answered
+  `request body too large` — and because history is never reset, forever, until a
+  reboot. The body is now `NET_BODY_MAX` (16 KiB) with a separate 8 KiB history cap,
+  and a body that still does not fit drops history until it does.
+- A cancel arriving during the provider call was discarded, because the only checks
+  were before the call and around each tool. The run then finished as if nothing had
+  been asked (`04-protocol.md` §3.4 requires `E_CANCELLED`). It is now checked again
+  immediately after the call returns.
+- History trimming dropped the oldest messages blindly, which could keep a
+  `role:"tool"` result whose `assistant` call had just been dropped — a shape a
+  provider rejects. A trim now advances past a leading tool message, and a
+  truncation that would cut the pair at the tail drops the call too.
+- A full history dropped the message being appended and returned an error every
+  caller ignored, where `02-firmware.md` §4.2 says truncate the oldest entry. The
+  append now evicts and appends.
 
-A declarative tool pointed at a host outside `tools.http_allow_hosts` answers
-`E_TOOL`; a `response_path` returns only that subtree, and an unresolvable one is
-`E_TOOL` with no partial body. The allowlist half is host-tested
-(`the gate allowlists http.get by exact host`, `the gate extracts the host and
-refuses plain http`); the projection half needs a body from a network.
+One more was a false refusal: `fs.list` and `fs.read` were confined to `/workspace/`
+through the write-path resolver, so `/skills/`, `/prompts/` and `/tools/` were
+unreachable — which also made the skill index always empty. `06-security.md` §6.1
+makes both mounts listable and readable; only `fs.write`/`fs.delete` are confined.
 
-### Gap: `weather_now` and `web_search`
+### Tool calls, observed
 
-`00-overview.md` §7 ships these two as ordinary `/tools/*.json` files in the default
-`userfs` image. That image does not exist yet, and building it is
-`07-roadmap.md` §M5's deliverable (`bridge/tools/build_userfs.py`). So neither tool
-is on this board, and neither criterion — a keyless result, a `brave_key` refusal,
-no secret in any frame — can be reached. This is a documentation inconsistency to
-resolve when the image lands: §7 lists them under M4's surface, §M5 owns the
-mechanism that puts them there.
+The whole built-in surface was driven through the model instead of called directly,
+so each line below is a real round trip: `agent.tool` → `agent.tool_result` →
+`agent.final`. These answered `ok:true` with the documented result shape:
 
-### Gap: peripherals
+| Tool | Observed |
+|---|---|
+| `time.now` | `2026-11-08T02:26:07+0100` |
+| `fs.list` `/workspace` | five entries, `path` and `kind` per entry |
+| `fs.read` `/prompts/system.md` | the file's exact 18 bytes |
+| `memory.set` / `memory.get` | round-trips `platypus`, returns `stored:true` |
+| `memory.list` | the key set |
+| `sys.diagnostics` | `free_heap`, `min_free_heap`, `uptime_s`, `tool_calls` |
+| `todo` `init` | the phase/task tree back |
+| `task.list` | `E_TOOL` "the scheduler is not implemented before M5" |
 
-`adc.read` on D0/D1/D3 with raw and millivolts; `i2c.scan` finding a device on a
-configured bus; `i2c.read` capping at 64 bytes; `i2c.write` observed by a following
-`i2c.read`, refused at `allow_dangerous: false`, and a NACK surfacing `E_TOOL` with
-the address in `detail`. All are tool calls, and the bus is not configured on this
-board, so three of the twenty-five built-ins are not even advertised. The pin
-allowlist and the argument bounds are host-tested (`the pin allowlist admits header
-pins and nothing else`, `tools_validate enforces the ADC pin allowlist`,
-`tools_validate enforces the i2c bounds`).
+Refusals, which are criteria too, answered `ok:false` with the documented code:
 
-### Gap: memory, diagnostics, progress, close-out, import
+- `fs.read` `/config.json` → `E_TOOL` "fs.read: config.json is not readable by a tool".
+- `fs.list` `/workspace/nope_dir` → `E_TOOL` "fs.list: no such directory".
+- `fs.write` with `tools.allow_dangerous: false` → `E_TOOL` naming the setting.
+- `skill.read` an absent name → `E_TOOL` naming the skill.
 
-`memory.*` round-trip across a reboot, the `tools.memory_max_bytes` cap, the
-reserved-prefix refusal and the "no path into memory from `fs.read`" isolation;
-`sys.diagnostics` per-scope subsets and the absence of a secret in them; the
-`todo` ops, their bounds, the one-`in_progress` rule, the close-out re-prompt and
-`todo_open`; `fs.put` into `/skills/` with its per-directory caps. Every one is
-either a tool call or a consequence of a run, so every one is behind the provider.
-`todo`'s rules are host-tested in `test_m4.c`, including the close-out verdicts and
-the normalization rule; what those tests cannot prove is that a live run reaches
-`agent.final` with `todo_open: false` for the right reason.
+Two real defects came out of this sweep, both fixed:
+
+- **`fs.list` panicked the board.** `call_fs` built `store_entry_t entries[64]` on
+  the stack — 4.6 KiB against the agent task's 8 KiB — so listing a directory with
+  entries in it overflowed and rebooted. The serial line carried
+  `A stack overflow in task agent has been detected` and no frame at all. The
+  buffer now lives in PSRAM, allocated once, because a static array would spend
+  4.6 KiB of the 34 KiB DIRAM margin instead.
+- **A tool refusal was reported as `E_STORAGE`.** `04` §5 maps "tool refused or
+  failed" to `E_TOOL`, and every `docs/tools/*.md` §Errors agrees, but
+  `ESP_ERR_NOT_FOUND` fell through to the storage arm. A missing path, an absent
+  skill and a missing memory key all answered `E_STORAGE`, which tells the bridge
+  the flash failed. Fixed in the mapping; `E_STORAGE` is now only the quota and
+  mount arm the docs reserve it for.
+
+### Memory's documented bounds, observed as unenforced
+
+`tools/memory.md` §Limits fixes three rules: a key is 1–15 bytes of `[A-Za-z0-9_]`,
+those four prefixes are reserved, and the namespace holds at most 32 keys. The
+code enforced none of them — it accepted `[a-z0-9_.-]{1,64}`, never looked at a
+prefix, and never counted keys. `memory.set` also omitted the documented
+`stored:true`. All four are fixed and the first two are host-tested
+(`a memory key obeys the documented alphabet and length`, `a reserved memory prefix
+is refused and named`), failing before the fix.
+
+### Not reachable on this board
+
+- **HTTP allowlist and response projection.** A declarative tool outside
+  `tools.http_allow_hosts` answering `E_TOOL`, and a `response_path` subtree. The
+  gate half is host-tested; the projection half needs a declarative tool, and no
+  `/tools/*.json` can exist on this image yet.
+- **`weather_now` and `web_search`.** `00-overview.md` §7 ships them as ordinary
+  `/tools/*.json` files in a default `userfs` image that does not exist; building
+  it is `07-roadmap.md` §M5's deliverable (`bridge/tools/build_userfs.py`).
+- **Peripherals.** `adc.read`, `i2c.scan`, `i2c.read`, `i2c.write` — the bus is not
+  configured, so those three are not advertised at all. The pin allowlist and the
+  argument bounds are host-tested.
+- **`fs.put` into `/skills/` and its per-directory caps.** A bridge command, not a
+  tool call, and the cap is a quota the suite covers as pure logic.
+- **`memory.*` surviving a reboot.** Needs a reboot between the write and the read;
+  the NVS namespace is exercised, the survival across a reset is not.
 
 ## M4.6 `reload` re-runs the services
 
