@@ -122,8 +122,9 @@ esp_err_t skills_parse(const char *stem, const char *text, size_t len,
                     out->has_max_body = true;
                 }
             }
-            /* `keywords` and `tools` are validated by the config layer; the index
-             * needs neither, and neither can grant anything. */
+            /* `keywords` and `tools` are not parsed: the index needs neither, and
+             * neither can grant anything (`03-config.md` §skills body rule 3), so an
+             * unread value cannot weaken a gate. */
         }
 
         at = next;
