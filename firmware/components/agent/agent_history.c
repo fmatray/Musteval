@@ -257,7 +257,11 @@ esp_err_t agent_history_append(char *history, size_t cap, size_t *used,
         if (agent_history_count(history) >= count) return ESP_ERR_INVALID_SIZE;
     }
 
-    bool empty = *used == 0;
+    /* A buffer holding `[]` is empty even though `*used` is 2: `trim`/`truncate`
+     * leave exactly that, and reading `*used == 0` as "empty" would overwrite the
+     * `]` with `,` and produce `[,{…}]`. `*used == 0` is still checked first because
+     * the buffer is uninitialized then and must not be scanned. */
+    bool empty = *used == 0 || agent_history_count(history) == 0;
     size_t have = *used;
 
     if (empty) {

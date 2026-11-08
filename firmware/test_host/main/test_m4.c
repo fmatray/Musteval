@@ -713,6 +713,48 @@ TEST_CASE("a rejected prompt names one of the documented codes", "[m4]")
     TEST_ASSERT_TRUE(r->retryable);
 }
 
+/* `03-config.md` §agent and §llm: the documented defaults are what an absent key
+ * yields. The board was sending 8192 and 6 instead, so a 4000-byte prompt was accepted
+ * above the documented 3072 bound and a run got six tool rounds where the table
+ * promises eight. Asserted through the resolver rather than against the constants:
+ * comparing a constant to itself would pass with either number in the table. */
+TEST_CASE("an absent config key yields the documented defaults", "[m4]")
+{
+    agent_raw_settings_t raw = {0};
+    agent_run_settings_t out;
+    agent_run_settings_resolve(&raw, &out);
+
+    TEST_ASSERT_EQUAL_INT32(3072, (int32_t)out.max_input_bytes);
+    TEST_ASSERT_EQUAL_INT32(8, out.max_tool_rounds);
+    TEST_ASSERT_EQUAL_INT32(8, out.max_history_messages);
+}
+
+/* The bound is the buffer, not the config: a value above it cannot be honoured, and
+ * `*used` would run past the allocation if the clamp were dropped. */
+TEST_CASE("a configured input bound is clamped to the buffer", "[m4]")
+{
+    agent_raw_settings_t raw = {0};
+    raw.has_max_input = true;
+    raw.max_input = 999999;
+    agent_run_settings_t out;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(AGENT_INPUT_BUFFER_MAX, (int32_t)out.max_input_bytes);
+
+    /* A configured value under the buffer is honoured, not replaced by the default. */
+    raw.max_input = 1024;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(1024, (int32_t)out.max_input_bytes);
+
+    /* A configured round count is honoured too, including the lower bound of 1. */
+    raw.has_max_tool_rounds = true;
+    raw.max_tool_rounds = 1;
+    raw.has_max_history = true;
+    raw.max_history = 0;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(1, out.max_tool_rounds);
+    TEST_ASSERT_EQUAL_INT32(0, out.max_history_messages);
+}
+
 /* --- declarative tool files ------------------------------------------------ */
 
 static bool secret_yes(const char *key, void *ctx)
@@ -860,6 +902,26 @@ TEST_CASE("history with a zero bound stays an empty array", "[m4]")
     used = 2;
     agent_history_trim(history, &used, 0);
     TEST_ASSERT_EQUAL_STRING("[]", history);
+}
+
+/* A buffer that was emptied to `[]` is empty, even though it holds two bytes. Miss
+ * this and the append overwrites the `]` with `,` and yields `[,{…}]`, which is not
+ * JSON and which the provider rejects as a malformed body. */
+TEST_CASE("an append into an emptied history stays a valid array", "[m4]")
+{
+    char history[512] = "[]";
+    size_t used = 2;
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"say pong\"}", 8));
+
+    TEST_ASSERT_EQUAL_STRING("[{\"role\":\"user\",\"content\":\"say pong\"}]", history);
+    TEST_ASSERT_EQUAL_size_t(strlen(history), used);
+
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse(history, strlen(history), &doc));
+    TEST_ASSERT_TRUE(json_is_array(json_root(doc)));
+    json_free(doc);
 }
 
 /* Escaped quotes and brackets inside a string do not confuse the element walk. */
@@ -1534,4 +1596,80 @@ TEST_CASE("tool descriptions match the surface the tools have", "[m4]")
     TEST_ASSERT_NOT_NULL(strstr(tools_find("fs.read")->description, "read-only image"));
     TEST_ASSERT_NULL(strstr(tools_find("fs.write")->description, "read-only image"));
     TEST_ASSERT_NOT_NULL(strstr(tools_find("fs.write")->description, "/workspace/"));
+}
+
+/* --- the tool array the model is offered ---------------------------------- */
+
+/* The array `agent` sends is assembled here on the host, so the body that a
+ * provider refused can be reproduced without spending a call. `tools_json` lived in
+ * board-only `tools.c`, which is why the board could answer every request
+ * `invalid character ','` while every host test stayed green. */
+TEST_CASE("the offered tool array is valid JSON", "[m4]")
+{
+    tools_context_t ctx = {0};
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+
+    json_doc_t *doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    json_node_t *array = json_new_array(json_root(doc), "tools");
+    TEST_ASSERT_NOT_NULL(array);
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, NULL, array));
+
+    static char out[TOOLS_MAX_TOTAL * 512];
+    size_t written = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, json_emit(doc, out, sizeof out, &written));
+    TEST_ASSERT_GREATER_THAN(0, written);
+
+    /* The wrapper, then the slice `agent` actually hands to `llm`. */
+    static char sliced[TOOLS_MAX_TOTAL * 512];
+    TEST_ASSERT_GREATER_THAN(0, llm_slice_member(out, sliced, sizeof sliced));
+    json_doc_t *check = NULL;
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse_at(sliced, strlen(sliced), &check, &offset));
+    TEST_ASSERT_NOT_NULL(check);
+    TEST_ASSERT_TRUE(json_is_array(json_root(check)));
+    json_free(check);
+    json_free(doc);
+}
+
+/* The whole body, with the array the device really builds. Every earlier body test
+ * spliced a two-entry literal, so a malformed array from the registry was invisible. */
+TEST_CASE("the body with the real tool array parses as one JSON object", "[m4]")
+{
+    tools_context_t ctx = {0};
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+
+    json_doc_t *doc = json_new_object();
+    json_node_t *array = json_new_array(json_root(doc), "tools");
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, NULL, array));
+    static char wrapped[TOOLS_MAX_TOTAL * 512];
+    size_t written = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, json_emit(doc, wrapped, sizeof wrapped, &written));
+    json_free(doc);
+
+    static char sliced2[TOOLS_MAX_TOTAL * 512];
+    TEST_ASSERT_GREATER_THAN(0, llm_slice_member(wrapped, sliced2, sizeof sliced2));
+
+    llm_request_t r = {
+        .model = "gemma4:cloud",
+        .system_prompt = "You are Musteval.",
+        .user_prompt = "What time is it on the device?",
+        .tools_json = sliced2,
+        .max_output_tokens = 1024,
+    };
+    static char body2[LLM_BODY_MAX];
+    size_t n = llm_assemble_prompt(&r, NULL, body2, sizeof body2);
+    TEST_ASSERT_GREATER_THAN(0, n);
+
+    json_doc_t *check = NULL;
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse_at(body2, n, &check, &offset));
+    TEST_ASSERT_NOT_NULL(check);
+    TEST_ASSERT_TRUE(json_is_object(json_root(check)));
+    /* One top-level value: a trailing member after the closing brace is a second
+     * value, which is what the provider refused with `invalid character ','`. */
+    TEST_ASSERT_EQUAL_CHAR('}', body2[n - 1]);
+    json_free(check);
 }
