@@ -87,6 +87,10 @@ class Answers:
     provider: str = ""
     token_param: str = ""
     extra_body: dict[str, object] = field(default_factory=dict)
+    #: The model list step 2 fetched, and the efforts each name publishes for itself.
+    #: The second is empty for every provider whose list says nothing about levels.
+    model_list: list[str] = field(default_factory=list)
+    model_efforts: dict[str, tuple[str, ...]] = field(default_factory=dict)
     timezone: str = ""
     ntp_server: str = ""
     #: True when the reader pressed "keep what is there" on a step. The step sends no
@@ -259,8 +263,6 @@ def thinking_writes(
     if member:
         updated["extra_body"] = member
     else:
-        # `thinking_budget` has no token form of "off", so `none` is the member's
-        # absence rather than a zero budget (`05` §7.2).
         updated.pop("extra_body", None)
     return [("config", {"llm.providers": [updated] + list(chain[1:])})], ""
 

@@ -8,6 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.suggester import SuggestFromList
 from textual.widgets import (
     Input,
     LoadingIndicator,
@@ -211,21 +212,27 @@ class ValuePrompt(PromptBox[str | None]):
 
 
 def _thinking_levels(
-    entries: list[Any], provider_id: str, stored: str = ""
+    entries: list[Any], provider_id: str, stored: str = "", model: str = "",
+    efforts: dict[str, tuple[str, ...]] | None = None,
 ) -> list[str]:
     """The levels to offer for `provider_id`, or none.
 
     `05` §7.1: a provider whose `extra_body` takes no level gets no picker, because a
-    level written where the member is rejected turns every call into a 400.
+    level written where the member is rejected turns every call into a 400. Where the
+    provider published per-model efforts for `model`, that set wins: it is the only
+    statement about the model actually chosen.
     """
     entry = next((p for p in entries if p.id == provider_id), None)
     if entry is None:
         return []
-    levels = list(entry.thinking_levels)
+    published = (efforts or {}).get(model) if model else None
+    levels = list(published) if published else list(entry.thinking_levels)
     # A level the row does not list but can express is still the reader's setting:
     # Ollama names its values per model, so `max` on a `glm` model is real and the
-    # re-run must show it, not silently show `low` (`05` §13.6).
-    if stored and entry.extra_body(stored) and stored not in levels:
+    # re-run must show it, not silently show `low` (`05` §13.6). `none` is not such a
+    # setting here — it is what `level_of` reports for an absent member, and it is in
+    # the list already wherever the row can express an off switch.
+    if stored and stored != "none" and stored not in levels and entry.extra_body(stored):
         levels.append(stored)
     return levels
 
@@ -607,6 +614,7 @@ class ModelStep(_StepBox):
         model: str = "",
         thinking: str = "none",
         entries: list[Any] | None = None,
+        efforts: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         super().__init__()
         self.models = models or []
@@ -617,9 +625,14 @@ class ModelStep(_StepBox):
         # are offered too: reading `BUILTIN` here made a host-file provider look like
         # one with no thinking member.
         self.entries = entries if entries is not None else [p for p in providers.BUILTIN]
+        #: Per-model efforts the provider published, keyed by model name. Empty for
+        #: every provider whose list says nothing, which is all but OpenRouter.
+        self.efforts = efforts or {}
 
     def fields(self) -> Any:
-        levels = _thinking_levels(self.entries, self.provider, self.thinking)
+        levels = _thinking_levels(
+            self.entries, self.provider, self.thinking, self.model, self.efforts
+        )
         yield_this = [
             Static(
                 f"{len(self.models)} models from {self.provider}"
@@ -633,7 +646,18 @@ class ModelStep(_StepBox):
                 "step-model-select",
                 allow_blank=True,
             ),
-            Input(self.model, placeholder="or type a model", id="step-model"),
+            # The list can run to hundreds of names (`05` §7.1), so the field
+            # completes from it instead of making the reader scroll a menu or retype
+            # a name it already holds. A completion, not a filter: a model published
+            # after the fetch is still submittable.
+            Input(
+                self.model,
+                placeholder="or type a model",
+                suggester=SuggestFromList(self.models, case_sensitive=False)
+                if self.models
+                else None,
+                id="step-model",
+            ),
         ]
         if levels:
             yield_this.append(
@@ -654,6 +678,41 @@ class ModelStep(_StepBox):
                 )
             )
         return yield_this
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Narrow the levels to the chosen model when the provider publishes them.
+
+        `05` §7.1: levels are a property of the model, not just the provider. A
+        reader who picks a model with no `xhigh` must not be offered one — the
+        provider would answer 400 on the first prompt.
+        """
+        if event.select.id != "step-model-select" or not isinstance(event.value, str):
+            return
+        self._narrow(event.value)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """The same narrowing for a name typed rather than picked.
+
+        A name in the list is a choice whichever field carried it, and `answer()`
+        prefers the typed one — so leaving the picker at the previous model's set
+        would offer a level the model being written may not take.
+        """
+        if event.input.id != "step-model" or event.value not in self.efforts:
+            return
+        self._narrow(event.value)
+
+    def _narrow(self, model: str) -> None:
+        if not self.query("#step-thinking"):
+            return
+        levels = _thinking_levels(
+            self.entries, self.provider, self.thinking, model, self.efforts
+        )
+        if not levels:
+            return
+        widget = self.query_one("#step-thinking", Select)
+        current = widget.value if isinstance(widget.value, str) else ""
+        widget.set_options((level, level) for level in levels)
+        widget.value = current if current in levels else levels[0]
 
     def answer(self) -> dict[str, Any]:
         typed = self.query_one("#step-model", Input).value.strip()

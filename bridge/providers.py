@@ -20,11 +20,11 @@ from typing import Callable
 #: `05-bridge.md` §7.1: `none` means the provider has no thinking member to write.
 THINKING_NONE = "none"
 THINKING_REASONING_EFFORT = "reasoning_effort"
-THINKING_BUDGET = "thinking_budget"
 
-#: The level names a picker offers, and the token budget each stands for.
-THINKING_LEVELS = ("none", "low", "medium", "high")
-_BUDGETS = {"low": 1024, "medium": 4096, "high": 16384}
+#: The level names a picker offers, lowest first (`05` §7.1). `xhigh` is the top of
+#: the ladder; `max` and `minimal` are real values on some surfaces but belong to no
+#: rung of it, so they are expressible and never offered.
+THINKING_LEVELS = ("none", "low", "medium", "high", "xhigh")
 
 #: The levels Ollama's request surface can express for any of its thinking models
 #: (`05` §7.2). `none` and `medium` are not among them: Ollama resolves an
@@ -74,9 +74,6 @@ class Provider:
         """The `extra_body` for `level`. An unusable level is no member at all, and
         `none` is an explicit "no thinking" only where the provider takes one.
 
-        `thinking_budget` has no token form of "off", so its `none` is the absence of
-        the member — which is what the caller gets, an empty dict.
-
         `reasoning_effort` is a free-form name, so *any* word the device already
         stores is expressible even when this row does not offer it: Ollama names its
         levels per model, so `max` on a `glm` model is a real setting that a
@@ -91,8 +88,6 @@ class Provider:
             if level == THINKING_NONE and THINKING_NONE not in self.thinking_levels:
                 return {}
             return {"reasoning_effort": level}
-        if self.thinking == THINKING_BUDGET:
-            return {"thinking_budget": _BUDGETS[level]} if level in _BUDGETS else {}
         return {}
 
     def level_of(self, extra_body: object) -> str:
@@ -111,11 +106,6 @@ class Provider:
             # setting this row cannot list but must not deny.
             found = extra_body.get("reasoning_effort")
             return found if isinstance(found, str) and found else THINKING_NONE
-        if self.thinking == THINKING_BUDGET:
-            budget = extra_body.get("thinking_budget")
-            for level, tokens in _BUDGETS.items():
-                if budget == tokens:
-                    return level
         return THINKING_NONE
 
     def without_level(self, extra_body: object) -> dict[str, object]:
@@ -124,8 +114,7 @@ class Provider:
         `/thinking` writes the whole array (`05` §7.2), so every other member the
         reader's entry carries has to survive the write."""
         keep = dict(extra_body) if isinstance(extra_body, dict) else {}
-        for member in ("reasoning_effort", "thinking_budget"):
-            keep.pop(member, None)
+        keep.pop("reasoning_effort", None)
         return keep
 
 
@@ -143,23 +132,37 @@ BUILTIN: tuple[Provider, ...] = (
         label="OpenAI",
         base_url="https://api.openai.com/v1",
         models_url="https://api.openai.com/v1/models",
-        # The table's own note: Chat Completions allows function calling only at
-        # `reasoning_effort: none`, so a tool call at another level would 400.
-        thinking=THINKING_NONE,
+        # `platform.openai.com/docs/guides/reasoning`: the accepted values are
+        # model-dependent, drawn from `none`/`low`/`medium`/`high`/`xhigh`/`max`, and
+        # the default is per model. The whole ladder is offered because `/v1/models`
+        # publishes ids only — there is no per-model effort document to narrow by, so
+        # guessing from a name is the only alternative. The two models that 400 on
+        # `none` (GPT-6 Astra, GPT-6.1 Sol) also cannot call tools over Chat
+        # Completions, so neither is usable by this agent at any level.
+        thinking=THINKING_REASONING_EFFORT,
+        levels=THINKING_LEVELS,
     ),
     Provider(
         id="openrouter",
         label="OpenRouter",
         base_url="https://openrouter.ai/api/v1",
         models_url="https://openrouter.ai/api/v1/models",
+        # Each model publishes its own `supported_efforts` in that list, so the picker
+        # follows the chosen name (`05` §7.1). The whole ladder is only the fallback
+        # for a model that publishes none.
         thinking=THINKING_REASONING_EFFORT,
+        levels=THINKING_LEVELS,
     ),
     Provider(
         id="groq",
         label="Groq",
         base_url="https://api.groq.com/openai/v1",
         models_url="https://api.groq.com/openai/v1/models",
+        # `console.groq.com/docs/reasoning`: `low`/`medium`/`high` are the set GPT-OSS
+        # and the Qwen3 family share; `none` and `xhigh` are per-model extras, so they
+        # are expressible and not offered.
         thinking=THINKING_REASONING_EFFORT,
+        levels=("low", "medium", "high"),
     ),
     Provider(
         id="ollama-cloud",
@@ -198,6 +201,12 @@ BUILTIN: tuple[Provider, ...] = (
         label="vLLM (self-hosted)",
         base_url="http://127.0.0.1:8000/v1",
         models_url="http://127.0.0.1:8000/v1/models",
+        # `docs.vllm.ai/en/stable/features/reasoning_outputs/`: `reasoning_effort` is
+        # injected as `enable_thinking` — `low`/`medium`/`high` mean `true`, `none`
+        # means `false`. `xhigh` is outside that mapping, and the docs warn a chat
+        # template silently falls back to another effort on a name it does not know.
+        thinking=THINKING_REASONING_EFFORT,
+        levels=("none", "low", "medium", "high"),
         needs_key=False,
     ),
     Provider(
@@ -205,14 +214,26 @@ BUILTIN: tuple[Provider, ...] = (
         label="Anthropic (compat)",
         base_url="https://api.anthropic.com/v1",
         models_url="https://api.anthropic.com/v1/models",
-        thinking=THINKING_BUDGET,
+        # Its compatibility layer **ignores** `reasoning_effort`
+        # (`platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk`), and
+        # thinking is the nested `{"type":"enabled","budget_tokens":N}` — which
+        # `03-config.md`'s flat-scalar rule cannot express. So there is no member to
+        # write, and a picker here would write nothing: the row offers no level, as
+        # the table's own note says.
+        thinking=THINKING_NONE,
     ),
     Provider(
         id="gemini",
         label="Google Gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         models_url="https://generativelanguage.googleapis.com/v1beta/openai/models",
+        # `ai.google.dev/gemini-api/docs/openai`: `reasoning_effort` maps to
+        # `thinking_level` (`minimal`/`low`/`medium`/`high`) and to a 2.5
+        # `thinking_budget`. The map stops at `high`, and `none` disables 2.5 models
+        # only — reasoning cannot be turned off for 2.5 Pro or the Gemini 3 family, so
+        # `none` would be a promise the newer models break.
         thinking=THINKING_REASONING_EFFORT,
+        levels=("low", "medium", "high"),
     ),
     Provider(
         id="mistral",
@@ -267,7 +288,7 @@ def _entry(raw: object) -> tuple[Provider | None, str]:
     if missing:
         return None, f"missing {', '.join(missing)}"
     thinking = raw.get("thinking", THINKING_NONE)
-    if thinking not in (THINKING_NONE, THINKING_REASONING_EFFORT, THINKING_BUDGET):
+    if thinking not in (THINKING_NONE, THINKING_REASONING_EFFORT):
         return None, f"unknown thinking {thinking!r}"
     return (
         Provider(
@@ -347,6 +368,21 @@ def parse_models(payload: bytes) -> list[str]:
     exception — a provider answering 200 with an unfamiliar document is not broken,
     it just has no list this bridge can read.
     """
+    return [name for name, _ in parse_catalog(payload)]
+
+
+def parse_catalog(payload: bytes) -> list[tuple[str, tuple[str, ...]]]:
+    """Each model's name, with the reasoning efforts it publishes for itself.
+
+    The second element is empty when the provider says nothing about a model's
+    levels, which is every provider but OpenRouter. Its list carries a `reasoning`
+    object per model — measured 2026-11-08: 340 of 460 rows carry one, and 216 of
+    those publish a non-empty `supported_efforts`; the sets disagree (`low`/`high` is
+    among the most common), so a provider-wide level list is a claim about a model
+    nobody chose.
+    `mandatory: true` means the model rejects `effort: "none"`, so `none` is dropped
+    from that model's set rather than offered and refused.
+    """
     try:
         doc = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -362,12 +398,36 @@ def parse_models(payload: bytes) -> list[str]:
     if not isinstance(rows, list):
         return []
 
-    names: list[str] = []
+    names: list[tuple[str, tuple[str, ...]]] = []
+    seen: set[str] = set()
     for row in rows:
-        name = row.get(key) if isinstance(row, dict) else None
-        if isinstance(name, str) and name and name not in names:
-            names.append(name)
+        if not isinstance(row, dict):
+            continue
+        name = row.get(key)
+        if not isinstance(name, str) or not name or name in seen:
+            continue
+        seen.add(name)
+        names.append((name, _efforts_of(row)))
     return names
+
+
+def _efforts_of(row: dict[str, object]) -> tuple[str, ...]:
+    """The levels one list row says its model takes, in ladder order.
+
+    Only names the ladder has are kept: `minimal` and `max` are real on some models
+    and belong to no rung, so they are left to the free-form member rather than
+    offered as a level the picker cannot order.
+    """
+    reasoning = row.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return ()
+    efforts = reasoning.get("supported_efforts")
+    if not isinstance(efforts, list):
+        return ()
+    offered = {name for name in efforts if isinstance(name, str)}
+    if reasoning.get("mandatory") is True:
+        offered.discard(THINKING_NONE)
+    return tuple(level for level in THINKING_LEVELS if level in offered)
 
 
 #: `05-bridge.md` §7.1: region → (POSIX TZ, ntppool zone). The TZ string is what the
@@ -442,5 +502,20 @@ def models(
         return []
     try:
         return parse_models(fetch(provider.models_url, api_key))
+    except Exception:  # noqa: BLE001 - a failed fetch is a chat line, not a crash
+        return []
+
+
+def models_with_efforts(
+    provider: Provider,
+    api_key: str,
+    fetch: Callable[[str, str], bytes] | None = None,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """`models` with each name's published efforts, for the picker that narrows by
+    model (`05` §7.1). Same fetch, same silence on failure."""
+    if fetch is None or not provider.models_url:
+        return []
+    try:
+        return parse_catalog(fetch(provider.models_url, api_key))
     except Exception:  # noqa: BLE001 - a failed fetch is a chat line, not a crash
         return []

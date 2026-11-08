@@ -753,7 +753,8 @@ optional model-list endpoint and the thinking levels the provider's models accep
 | `label` | What the dropdown shows (`OpenAI`, `Ollama (local)`) |
 | `base_url` | The request prefix, version path included, because the firmware appends `/chat/completions` verbatim |
 | `models_url` | Optional; the absolute URL returning the model list, because a custom provider's list may live on another host than its `base_url`. Absent means the provider has no list this bridge can read |
-| `thinking` | `none`, or the `extra_body` member names that express a level |
+| `thinking` | `none`, or the `extra_body` member name that expresses a level |
+| `levels` | The subset of the five-name ladder this row's surface can express; absent means none |
 | `needs_key` | `false` for a local server that ignores the header but still requires it |
 
 The built-in list covers the providers `03-config.md` §Provider compatibility
@@ -780,6 +781,15 @@ serves `/v1/models` in the OpenAI shape, which is the one the cloud entry names,
 that list needs no key. A name read from it is the API name (`gemma4:31b`), not the
 app's `:cloud` alias, and the two are not interchangeable.
 
+**The manual model field completes from the list it was given.** A provider's list
+can run to hundreds of names — OpenRouter publishes 460 — so a dropdown alone makes
+the reader scroll a menu to find a name they already know, and a free-text field
+alone makes them type it from memory. The field is therefore both: the `Select`
+holds every name, and the `Input` beside it suggests the first list entry the typed
+prefix matches, so `anth` completes to `anthropic/claude-sonnet-4-6`. The suggestion
+is a completion, not a filter: the reader can still submit a name the list lacks,
+which is the route for a model published after the fetch.
+
 **Thinking levels are only offered where the provider takes them.** A level is
 written into `llm.providers[].extra_body`, which `03-config.md` merges into the
 request verbatim and caps at four flat members. So:
@@ -787,15 +797,42 @@ request verbatim and caps at four flat members. So:
 | Catalog `thinking` | Levels offered | `extra_body` written |
 |---|---|---|
 | `none` | none; the field is absent | nothing |
-| `reasoning_effort` | `none`, `low`, `medium`, `high` | `{"reasoning_effort":"<level>"}` |
-| `thinking_budget` | the same names, mapped to token budgets | `{"thinking_budget":<n>}` |
+| `reasoning_effort` | the row's `levels`, narrowed further per model where the list publishes it | `{"reasoning_effort":"<level>"}` |
 
-A row may narrow the offered set with `levels`. That is not a preference: it is the
-set of names the provider's request surface can express. **Offered and expressible
-are different questions.** `reasoning_effort` is a free-form name, so a value the
-device already stores is written back even when the row does not list it — otherwise
-a re-run of the wizard would replace a setting it was never asked about. The picker
-shows such a value as its own row.
+`none` is off and `xhigh` is the top of the ladder; the five names are the whole
+vocabulary a picker can offer. A row narrows the set with `levels`. That is not a
+preference: it is the set of names the provider's request surface can express.
+**Offered and expressible are different questions.** `reasoning_effort` is a
+free-form name, so a value the device already stores is written back even when the
+row does not list it — otherwise a re-run of the wizard would replace a setting it
+was never asked about. The picker shows such a value as its own row.
+
+The per-row sets, and why each is what it is:
+
+|Provider|Offered|Why the ladder is trimmed|
+|---|---|---|
+|OpenAI|all five|Its levels are model-dependent and `/v1/models` publishes ids only, so no per-model set exists to narrow by; the two models that 400 on `none` also cannot call tools over Chat Completions, so they are unusable at any level|
+|OpenRouter|per model|Its model list publishes each model's own `supported_efforts`; the whole five-name ladder is the fallback where a model publishes none|
+|Groq|`low`, `medium`, `high`|`console.groq.com/docs/reasoning` scopes `none`/`default` to Qwen 3.8 27B and `xhigh` to Muse Spark Open, so neither is a name every model takes|
+|Ollama Cloud, Ollama|`low`, `high`|Names are per model and an unsupported one resolves to the model default, often the highest|
+|vLLM|`none`, `low`, `medium`, `high`|`low`/`medium`/`high` inject `enable_thinking=true` and `none` injects `false`; `xhigh` is not in that mapping, and the docs warn a template silently falls back to *maximum* on a name it does not know|
+|Anthropic|none|Its compatibility layer **ignores** `reasoning_effort`; thinking needs the nested `{"type":"enabled","budget_tokens":N}`, which the flat-scalar rule forbids|
+|Gemini|`low`, `medium`, `high`|Its mapping stops at `high`, and `none` is documented to disable 2.5 models only — reasoning cannot be turned off on 2.5 Pro or the Gemini 3 family|
+|Mistral|`low`, `high`|The intersection of its three model families' accepted names|
+
+**A provider that publishes per-model efforts narrows the picker to the chosen
+model.** OpenRouter's list carries a `reasoning` object per model with
+`supported_efforts`, `default_effort` and `mandatory`; 340 of its 460 rows carry the
+object and 216 publish a non-empty effort list. The step reads it from the list it
+already fetched, so a model that takes only `low`/`high` does not invite `xhigh`. When the list carries no such object — every
+other provider — the picker falls back to the row's set, because the alternative is
+guessing per model from a name.
+
+`thinking_budget` is not a catalog strategy. It wrote a flat `{"thinking_budget":N}`
+member, which Anthropic's compatibility layer does not read, so the level was inert
+on the wire. A nested native member cannot replace it while `03-config.md` holds
+`extra_body` to flat scalars, so the strategy is removed rather than left emitting a
+field no provider consumes.
 
 A provider with `thinking: none` shows no level picker rather than a disabled one:
 the device passes `extra_body` straight through, so a level written for a provider
@@ -807,9 +844,10 @@ provider because that is all the device is told, but the values a request accept
 belong to the model: Ollama publishes them per model in `/api/show` as
 `{"values": [...], "default": ...}`, and they differ — `gemma4:31b` takes
 `[false, true]`, `gpt-oss:120b` takes `["low","medium","high"]`, `glm-5.3` takes
-`["low","high","max"]`. Refinement per model is not offered: the bridge does not
-fetch `/api/show`, and a picker whose rows changed with the model would make a stored
-level's meaning depend on a name typed later.
+`["low","high","max"]`. Narrowing by model happens **only where the list the step
+already fetched publishes it — OpenRouter's list does, above — and never by
+fetching a second endpoint: the wizard makes one GET per provider, and `/api/show`
+is a POST per model.
 
 **Ollama's rows therefore offer `low` and `high` only.** Ollama applies a supported
 name exactly and *resolves an unsupported one to the model's default*, which is often
@@ -844,8 +882,6 @@ network and the key as well — a form of a full reconfiguration to change one n
 - **`none` is a level, where the provider takes one.** It writes
   `{"reasoning_effort":"none"}` rather than deleting the member, because a stale
   explicit level in `extra_body` must not survive a reader turning thinking off.
-  A provider with `thinking_budget` has no token form of `none`: for those the
-  `extra_body` member is removed, which is how that provider says it.
 - **Where the provider cannot say "off", `/thinking none` is refused, not
   approximated.** Ollama's rows offer `low` and `high` only (§7.1): its surface
   resolves an unsupported name to the model's default, and several models default to
@@ -1170,9 +1206,8 @@ refuses the document.
 
 **Step 3 seeds its thinking level from the stored entry**, not from `none`. The
 dropdown opens on the level `llm.providers[0].extra_body` already names, read back
-through the catalog's mapping (`reasoning_effort: high` → `high`, `thinking_budget:
-4096` → `medium`), so re-running the wizard is not a silent downgrade for a reader who
-set a level once.
+through the catalog's mapping (`reasoning_effort: high` → `high`), so re-running the
+wizard is not a silent downgrade for a reader who set a level once.
 
 **A stored value the row does not offer is shown as itself.** Ollama names its levels
 per model, so `reasoning_effort: max` is a real setting that the `ollama-cloud` row

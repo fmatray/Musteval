@@ -66,32 +66,34 @@ def test_a_provider_without_a_thinking_member_offers_no_levels():
 
 
 def test_reasoning_effort_levels_map_to_the_member():
+    """Corrected when `xhigh` was added to the ladder: the assertion pinned the four
+    names of the old ladder, and the ladder is `05` §7.1's, not this test's."""
     entry = providers.Provider(
         id="x", label="X", base_url="u", thinking=providers.THINKING_REASONING_EFFORT
     )
-    assert entry.thinking_levels == ("none", "low", "medium", "high")
+    assert entry.thinking_levels == ("none", "low", "medium", "high", "xhigh")
     assert entry.extra_body("none") == {"reasoning_effort": "none"}
     assert entry.extra_body("low") == {"reasoning_effort": "low"}
     assert entry.extra_body("high") == {"reasoning_effort": "high"}
-
-
-def test_thinking_budget_levels_map_to_token_counts():
-    entry = providers.Provider(
-        id="x", label="X", base_url="u", thinking=providers.THINKING_BUDGET
-    )
-    assert entry.extra_body("low") == {"thinking_budget": 1024}
-    assert entry.extra_body("medium") == {"thinking_budget": 4096}
-    assert entry.extra_body("high") == {"thinking_budget": 16384}
-    # A budget provider takes a count, not the word; `none` is the absence of a
-    # member rather than a zero budget, which some servers read as "no thinking".
-    assert entry.extra_body("none") == {}
+    assert entry.extra_body("xhigh") == {"reasoning_effort": "xhigh"}
 
 
 def test_a_level_the_provider_does_not_know_writes_nothing():
+    """`extra_body` writes a level only where the row has a member for it.
+
+    Corrected when the `thinking_budget` strategy was removed: it wrote a flat
+    `{"thinking_budget": N}` that Anthropic's compatibility layer does not read, so
+    the level was inert on the wire. The row that used it now takes no level at all,
+    and the free-form path stays a free-form path.
+    """
     entry = providers.Provider(
-        id="x", label="X", base_url="u", thinking=providers.THINKING_BUDGET
+        id="x", label="X", base_url="u", thinking=providers.THINKING_REASONING_EFFORT
     )
-    assert entry.extra_body("turbo") == {}
+    # `xhigh` is not in this row's offer set, but `reasoning_effort` is a free-form
+    # name, so it is still written back rather than dropped (`05` §7.1).
+    assert entry.extra_body("xhigh") == {"reasoning_effort": "xhigh"}
+    off = providers.Provider(id="y", label="Y", base_url="u", thinking=providers.THINKING_NONE)
+    assert off.extra_body("high") == {}
 
 
 def test_extra_body_never_exceeds_the_schema_member_cap():
@@ -311,7 +313,10 @@ def test_an_unrecognised_level_member_is_reported_as_stored_not_as_none():
     assert providers.find("ollama-cloud").level_of({"reasoning_effort": "max"}) == "max"
     assert groq.level_of({"unrelated": 1}) == "none"
     assert groq.level_of(None) == "none"
-    # A budget between the mapped steps names no level either.
+    # A member this row has no mapping for names no level. Corrected when the
+    # `thinking_budget` strategy was removed: `anthropic` now writes no level at all,
+    # so a leftover `thinking_budget` in a stored entry is not a level it can read
+    # back — and the wizard must not report one it would then rewrite.
     assert providers.find("anthropic").level_of({"thinking_budget": 2000}) == "none"
 
 
@@ -403,3 +408,124 @@ def test_mistral_lists_models_and_offers_only_the_names_every_model_takes():
 
     # Mistral's spec defines `max_tokens` only, so it must keep the firmware default.
     assert "mistral" not in providers.TOKEN_PARAM
+
+
+# --- the level ladder ------------------------------------------------------
+
+
+def test_xhigh_is_the_top_rung():
+    """`05` §7.1: the ladder is `none` → `low` → `medium` → `high` → `xhigh`."""
+    assert providers.THINKING_LEVELS == ("none", "low", "medium", "high", "xhigh")
+
+
+@pytest.mark.parametrize(
+    "provider_id, expected",
+    [
+        # Its `/v1/models` publishes ids only, so there is no per-model set to narrow
+        # by; the two models that refuse `none` also cannot call tools here.
+        ("openai", ("none", "low", "medium", "high", "xhigh")),
+        ("openrouter", ("none", "low", "medium", "high", "xhigh")),
+        # `none`/`xhigh` are per-model extras on Groq, not names every model takes.
+        ("groq", ("low", "medium", "high")),
+        ("ollama-cloud", ("low", "high")),
+        ("ollama", ("low", "high")),
+        ("vllm", ("none", "low", "medium", "high")),
+        # The compatibility layer ignores `reasoning_effort` entirely.
+        ("anthropic", ()),
+        # The map stops at `high`, and `none` cannot disable 2.5 Pro or Gemini 3.
+        ("gemini", ("low", "medium", "high")),
+        ("mistral", ("low", "high")),
+    ],
+)
+def test_each_row_offers_only_the_levels_its_surface_expresses(provider_id, expected):
+    """A level offered where the provider rejects the member is a 400 on the next
+    prompt, so the offer set is a fact about the surface, not a preference."""
+    assert providers.find(provider_id).thinking_levels == expected
+
+
+def test_anthropic_writes_no_level_member():
+    """It ignores `reasoning_effort` and its thinking member is nested, which the
+    flat-scalar rule forbids — so the row must emit nothing rather than a field no
+    provider reads."""
+    entry = providers.find("anthropic")
+    assert entry.extra_body("high") == {}
+    assert entry.level_of({"reasoning_effort": "high"}) == "none"
+
+
+def test_vllm_writes_the_effort_name_its_template_reads():
+    """vLLM turns `reasoning_effort` into `enable_thinking` on its own side, so what
+    the firmware writes is the effort name — and `none` is the one word that means
+    disabled, which is why it is offered there and not on Ollama."""
+    entry = providers.find("vllm")
+    assert entry.extra_body("none") == {"reasoning_effort": "none"}
+    assert entry.extra_body("high") == {"reasoning_effort": "high"}
+
+
+def test_without_level_keeps_every_other_member():
+    """`/thinking` writes the whole array (`05` §7.2), so a `temperature` in the
+    reader's entry must survive the level write."""
+    entry = providers.find("groq")
+    assert entry.without_level(
+        {"reasoning_effort": "high", "temperature": 0.2}
+    ) == {"temperature": 0.2}
+
+
+# --- per-model efforts -----------------------------------------------------
+
+
+def test_a_published_effort_set_is_read_per_model():
+    """OpenRouter publishes `reasoning.supported_efforts` per model, and the sets
+    differ — which is the whole answer to "not all models support all levels"."""
+    payload = json.dumps(
+        {
+            "data": [
+                {
+                    "id": "a/thinker",
+                    "reasoning": {
+                        "supported_efforts": ["high", "medium", "low"],
+                        "default_effort": "medium",
+                    },
+                },
+                {"id": "b/plain"},
+            ]
+        }
+    ).encode()
+    catalog = providers.parse_catalog(payload)
+    assert catalog == [("a/thinker", ("low", "medium", "high")), ("b/plain", ())]
+    # The name-only view keeps its shape for every existing caller.
+    assert providers.parse_models(payload) == ["a/thinker", "b/plain"]
+
+
+def test_a_mandatory_effort_model_does_not_offer_none():
+    """`mandatory: true` means the model refuses `effort: none`, so offering it would
+    be offering a 400."""
+    payload = json.dumps(
+        {
+            "data": [
+                {
+                    "id": "always/thinks",
+                    "reasoning": {
+                        "supported_efforts": ["none", "low", "high"],
+                        "mandatory": True,
+                    },
+                }
+            ]
+        }
+    ).encode()
+    assert providers.parse_catalog(payload) == [("always/thinks", ("low", "high"))]
+
+
+def test_names_off_the_ladder_are_not_offered_as_levels():
+    """`minimal` and `max` are real on some surfaces and belong to no rung, so the
+    picker cannot order them; they stay expressible through the free-form member."""
+    payload = json.dumps(
+        {
+            "data": [
+                {
+                    "id": "m",
+                    "reasoning": {"supported_efforts": ["minimal", "max", "high"]},
+                }
+            ]
+        }
+    ).encode()
+    assert providers.parse_catalog(payload) == [("m", ("high",))]
