@@ -28,8 +28,6 @@
 #include "store.h"
 #include "sys.h"
 
-static const char *TAG = "tools";
-
 /* `03-config.md` §tools: `/tools/` `.json` bodies and `tools_json` share this bound. */
 #define TOOLS_TEXT_MAX 2048
 #define TOOLS_HEADER_COUNT 4

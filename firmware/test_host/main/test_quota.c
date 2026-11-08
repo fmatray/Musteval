@@ -77,6 +77,49 @@ TEST_CASE("the import cap is the target directory's per-file limit", "[quota]")
     TEST_ASSERT_EQUAL_size_t(0, store_import_cap(NULL));
 }
 
+/* 04 §4.16: an import lands on exactly one of five targets, and the directory
+ * fixes the extension, because each one carries exactly one file type. A name
+ * without the suffix would be listed as a template or tool and never parsed. */
+TEST_CASE("an import path is one of the five legal targets", "[quota]")
+{
+    TEST_ASSERT_TRUE(store_import_path_ok("/config.json"));
+    TEST_ASSERT_TRUE(store_import_path_ok("/tasks.json"));
+    TEST_ASSERT_TRUE(store_import_path_ok("/skills/led-control.md"));
+    TEST_ASSERT_TRUE(store_import_path_ok("/prompts/brief.md"));
+    TEST_ASSERT_TRUE(store_import_path_ok("/tools/gpio.json"));
+
+    TEST_ASSERT_FALSE(store_import_path_ok(NULL));
+    TEST_ASSERT_FALSE(store_import_path_ok(""));
+    TEST_ASSERT_FALSE(store_import_path_ok("/workspace/notes.md"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/config.json.bak"));
+
+    /* The extension is the directory's, not any: a `.md` tool never parses. */
+    TEST_ASSERT_FALSE(store_import_path_ok("/skills/led.txt"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/tools/gpio.md"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/prompts/brief.json"));
+
+    /* A bare extension is a dotfile, not a name, and would list as something no
+     * one can ask for. */
+    TEST_ASSERT_FALSE(store_import_path_ok("/prompts/.md"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/skills/"));
+
+    /* A nested path is accepted: 04 §4.16 says "under /skills/", which is a
+     * prefix, and the listing simply does not descend. */
+    TEST_ASSERT_TRUE(store_import_path_ok("/skills/sub/led.md"));
+
+    /* The rule is on the canonical path, because that is the path written. A raw
+     * prefix match would admit `/skills/../workspace/x.md`: it canonicalises into
+     * the sandbox, where the quota bounds it, yet `store_import_cap` would read the
+     * raw `/skills/` prefix and grant the larger image cap — a quota bypass. */
+    TEST_ASSERT_FALSE(store_import_path_ok("/skills/../workspace/x.md"));
+    TEST_ASSERT_EQUAL_size_t(0, store_import_cap("/skills/../workspace/x.md"));
+
+    /* The same rule must not over-refuse: a path that canonicalises back into a
+     * legal directory is still that directory's file. */
+    TEST_ASSERT_TRUE(store_import_path_ok("/prompts/./../prompts/x.md"));
+    TEST_ASSERT_EQUAL_size_t(4u * 1024u, store_import_cap("/prompts/./../prompts/x.md"));
+}
+
 TEST_CASE("a chunk must continue where the last one stopped", "[quota]")
 {
     /* 04 §4.16: two interleaved transfers fail the offset check rather than

@@ -428,68 +428,6 @@ static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
 
 /* --- fs.put (`04` §4.16) -------------------------------------------------- */
 
-/* Base64 decode into `out`. Returns the byte count, or -1 on a malformed input, a
- * pad in the wrong place, or output that does not fit. Pure, so a host test can
- * prove every rejection. */
-static int b64_decode(const char *in, size_t in_len, uint8_t *out, size_t cap)
-{
-    if (in == NULL || out == NULL) return -1;
-    if (in_len % 4 != 0) return -1;
-    size_t n = 0;
-    for (size_t i = 0; i < in_len; i += 4) {
-        int v[4];
-        int pad = 0;
-        for (size_t k = 0; k < 4; k++) {
-            char c = in[i + k];
-            if (c == '=' && k >= 2) {
-                /* Padding is only legal in the last group. */
-                if (i + 4 != in_len) return -1;
-                pad++;
-                v[k] = 0;
-                continue;
-            }
-            if (pad != 0) return -1; /* data after a pad */
-            if (c >= 'A' && c <= 'Z') v[k] = c - 'A';
-            else if (c >= 'a' && c <= 'z') v[k] = c - 'a' + 26;
-            else if (c >= '0' && c <= '9') v[k] = c - '0' + 52;
-            else if (c == '+') v[k] = 62;
-            else if (c == '/') v[k] = 63;
-            else return -1;
-        }
-        uint32_t triple = ((uint32_t)v[0] << 18) | ((uint32_t)v[1] << 12) |
-                          ((uint32_t)v[2] << 6) | (uint32_t)v[3];
-        size_t emit = 3 - (size_t)pad;
-        if (n + emit > cap) return -1;
-        out[n++] = (uint8_t)(triple >> 16);
-        if (emit > 1) out[n++] = (uint8_t)(triple >> 8);
-        if (emit > 2) out[n++] = (uint8_t)triple;
-    }
-    return (int)n;
-}
-
-static bool fs_path_allowed(const char *path)
-{
-    if (path == NULL) return false;
-    if (strcmp(path, "/config.json") == 0 || strcmp(path, "/tasks.json") == 0) return true;
-    /* `04` §4.16's "disallowed extension": the directory fixes it, since each one
-     * carries exactly one file type (`03-config.md` §Storage limits). A name
-     * without the suffix would be listed as a template or tool and never parsed. */
-    static const struct { const char *dir; const char *ext; } k_dirs[] = {
-        { "/skills/",  ".md"   },
-        { "/prompts/", ".md"   },
-        { "/tools/",   ".json" },
-    };
-    for (size_t i = 0; i < sizeof k_dirs / sizeof k_dirs[0]; i++) {
-        size_t n = strlen(k_dirs[i].dir);
-        if (strncmp(path, k_dirs[i].dir, n) != 0 || path[n] == '\0') continue;
-        size_t len = strlen(path), ext = strlen(k_dirs[i].ext);
-        /* The stem must exist: `/prompts/.md` is a dotfile, not a name, and would
-         * list as a template no one can ask for. */
-        return len > n + ext && strcmp(path + len - ext, k_dirs[i].ext) == 0;
-    }
-    return false;
-}
-
 static esp_err_t handle_fs_put(const json_node_t *args, json_node_t *root,
                                json_node_t *result, const char **code,
                                const char **message)
@@ -497,7 +435,7 @@ static esp_err_t handle_fs_put(const json_node_t *args, json_node_t *root,
     const char *path = json_string(json_get(args, "path"));
     const char *data = json_string(json_get(args, "data"));
     if (path == NULL || data == NULL) return ESP_ERR_INVALID_ARG;
-    if (!fs_path_allowed(path)) {
+    if (!store_import_path_ok(path)) {
         *code = "E_CONFIG";
         *message = "path is outside /config.json, /tasks.json, /skills/, /prompts/, /tools/";
         return ESP_ERR_INVALID_ARG;
@@ -526,13 +464,13 @@ static esp_err_t handle_fs_put(const json_node_t *args, json_node_t *root,
     static uint8_t s_chunk[2049];
     size_t len;
     if (base64) {
-        int n = b64_decode(data, strlen(data), s_chunk, sizeof s_chunk);
-        if (n < 0) {
+        esp_err_t derr = store_decode_chunk(data, "base64", s_chunk, sizeof s_chunk,
+                                            &len);
+        if (derr != ESP_OK) {
             *code = "E_PROTOCOL";
             *message = "data is not valid base64, or decodes past 2048 bytes";
             return ESP_ERR_INVALID_ARG;
         }
-        len = (size_t)n;
     } else {
         len = strlen(data);
     }

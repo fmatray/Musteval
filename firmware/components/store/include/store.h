@@ -219,6 +219,11 @@ bool store_quota_exceeded(const store_quota_t *q, size_t new_size);
  * then bounded by the workspace quota alone. */
 size_t store_import_cap(const char *agent_path);
 
+/* True when `path` is a legal `fs.put` target: exactly `/config.json`,
+ * `/tasks.json`, or a non-empty stem under `/skills/`, `/prompts/`, `/tools/` with
+ * that directory's extension (`04` §4.16). Pure. */
+bool store_import_path_ok(const char *path);
+
 /* Staging sequence: chunk `offset` continues a transfer only when it equals the
  * bytes already staged, so two interleaved uploads fail the check instead of
  * splicing (`04` §4.16). `offset == 0` always starts a new transfer. */

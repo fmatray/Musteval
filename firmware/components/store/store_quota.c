@@ -33,8 +33,15 @@ bool store_quota_exceeded(const store_quota_t *q, size_t new_size)
     return new_size > STORE_WS_TOTAL_BYTES - bytes;
 }
 
+/* Canonicalise before either rule looks at the path: `/skills/../workspace/x.md`
+ * names the sandbox, and a raw prefix match would both admit it as an import and
+ * grant it the larger skill cap. Returns NULL when the path does not canonicalise. */
+static const char *canonical(const char *agent_path, char *out, size_t out_cap);
+
 size_t store_import_cap(const char *agent_path)
 {
+    char canon[STORE_PATH_MAX];
+    agent_path = canonical(agent_path, canon, sizeof canon);
     if (agent_path == NULL) return 0;
 
     /* `03-config.md` §Storage limits: the per-file cap of the directory, one
@@ -56,4 +63,36 @@ bool store_chunk_fits(size_t offset, size_t chunk_raw, size_t staged)
     if (chunk_raw > STORE_CHUNK_BYTES) return false;
     if (offset == 0) return true;
     return offset == staged;
+}
+
+bool store_import_path_ok(const char *path)
+{
+    char canon[STORE_PATH_MAX];
+    path = canonical(path, canon, sizeof canon);
+    if (path == NULL) return false;
+    if (strcmp(path, "/config.json") == 0 || strcmp(path, "/tasks.json") == 0) return true;
+
+    /* `04` §4.16's "disallowed extension": the directory fixes it, since each one
+     * carries exactly one file type (`03-config.md` §Storage limits). A name
+     * without the suffix would be listed as a template or tool and never parsed. */
+    static const struct { const char *dir; const char *ext; } dirs[] = {
+        { "/skills/",  ".md"   },
+        { "/prompts/", ".md"   },
+        { "/tools/",   ".json" },
+    };
+    for (size_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++) {
+        size_t n = strlen(dirs[i].dir);
+        if (strncmp(path, dirs[i].dir, n) != 0 || path[n] == '\0') continue;
+        size_t len = strlen(path), ext = strlen(dirs[i].ext);
+        /* The stem must exist: `/prompts/.md` is a dotfile, not a name, and would
+         * list as a template no one can ask for. */
+        return len > n + ext && strcmp(path + len - ext, dirs[i].ext) == 0;
+    }
+    return false;
+}
+
+static const char *canonical(const char *agent_path, char *out, size_t out_cap)
+{
+    if (store_resolve_image_path(agent_path, out, out_cap) != ESP_OK) return NULL;
+    return out;
 }
