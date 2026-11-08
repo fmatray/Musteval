@@ -19,16 +19,17 @@ those two mounts is reachable, and NVS has no mount point.
 
 ## `fs.list`
 
-Lists one directory on either mount. `path` defaults to the root of the agent
-namespace (`/`), which is `userfs`. Listing `/workspace` or any directory beneath it
-returns the `wsfs` tree. Entries are one level deep; the call does not recurse.
-`dir` is `true` for a subdirectory and `false` for a file.
+Lists one directory on either mount. Listing `/workspace` or any directory beneath
+it returns the `wsfs` tree. Entries are one level deep; the call does not recurse.
+`dir` is `true` for a subdirectory and `false` for a file. `path` is required: the
+gate refuses a call without one rather than guessing, so a listing always names what
+it listed.
 
 **Arguments**
 
 | name | type | required | bounds |
 |---|---|---|---|
-| `path` | string | no | agent-visible absolute path inside `/fs` or `/workspace` |
+| `path` | string | yes | agent-visible absolute path inside `/fs` or `/workspace`; `/` lists `userfs` |
 
 **Result**
 
@@ -44,41 +45,47 @@ returns the `wsfs` tree. Entries are one level deep; the call does not recurse.
 **Schema sent to the model**
 
 ```json
-{"type":"object","properties":{"path":{"type":"string"}}}
+{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
 ```
 
 ## `fs.read`
 
 Reads a file from either mount. Reading is not gated by workspace confinement: the
 agent may read its own prompts, skills and `/tools/*.json` under `/fs`, which is
-intentional (`../06-security.md` §6.1). `/config.json` holds only `nvs:<key>` secret
-references, so reading it cannot disclose a secret (`../06-security.md` §7).
+intentional (`../06-security.md` §6.1).
 
-`offset` and `limit` are optional window selectors. `[ASSUMPTION]` `offset` is a byte
-offset from the start of the file and `limit` is a maximum byte count, defaulting to
-the whole remainder of the file. `[ASSUMPTION]` A result larger than the shared
-tool-result cap is truncated before it reaches the model.
+`/config.json` is not readable: `fs.read` refuses it with `E_TOOL` (OQ-6,
+`../06-security.md` §6.1), because the file names the provider's base URL and the
+shape of every secret reference.
+
+The whole file is returned up to the shared tool-result cap. A longer file is
+truncated and the result says so: `truncated` is `true` and `bytes` is the file's
+real size, so the model knows it is reading a prefix rather than the file.
 
 **Arguments**
 
 | name | type | required | bounds |
 |---|---|---|---|
 | `path` | string | yes | agent-visible absolute path inside `/fs` or `/workspace` |
-| `offset` | integer | no | byte offset, 0 or greater |
-| `limit` | integer | no | maximum bytes to return, 1 or greater |
 
 **Result**
 
 ```json
 {
-  "data": "line one\nline two\n"
+  "path": "/prompts/system.md",
+  "content": "You are the agent.\n",
+  "bytes": 20,
+  "truncated": false
 }
 ```
+
+`bytes` is the file's size, not the returned length; `content` is at most the
+tool-result cap.
 
 **Schema sent to the model**
 
 ```json
-{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}
+{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
 ```
 
 ## `fs.write`
@@ -101,50 +108,58 @@ and leaves the existing file untouched (`../06-security.md` §6.2).
 | name | type | required | bounds |
 |---|---|---|---|
 | `path` | string | yes | resolved under `/workspace/` with at least one further segment |
-| `data` | string | yes | file contents; final size within the per-file cap |
+| `content` | string | yes | file contents; final size within the per-file cap |
 
 **Result**
 
 ```json
 {
-  "bytes_written": 21
+  "path": "/workspace/notes.md",
+  "bytes": 21,
+  "created": true
 }
 ```
 
-`bytes_written` is the byte count of the file contents written.
+`bytes` is the number of bytes written and `created` is `true` when the write brought
+the file into existence rather than replacing one.
 
 **Schema sent to the model**
 
 ```json
-{"type":"object","properties":{"path":{"type":"string"},"data":{"type":"string"}},"required":["path","data"]}
+{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}
 ```
 
 ## `fs.delete`
 
-Removes one file under `/workspace/`. Same double gate as `fs.write`. Deleting is not
-recursive and a directory target is refused with `E_STORAGE` rather than unlinking
-its contents. Quota bookkeeping is recomputed from the directory state after a
-successful unlink, so a delete frees exactly what was on disk and a failed unlink
-changes nothing (`../06-security.md` §6.2).
+Removes one file or directory under `/workspace/`. Same double gate as `fs.write`.
+Without `recursive` a non-empty directory is refused with `E_TOOL`; an empty
+directory is removed. With `recursive: true` the whole tree goes, and `entries` is
+how many dirents were removed. Quota bookkeeping is recomputed from the directory
+state after a successful unlink, so a delete frees exactly what was on disk and a
+failed unlink changes nothing (`../06-security.md` §6.2).
 
 **Arguments**
 
 | name | type | required | bounds |
 |---|---|---|---|
-| `path` | string | yes | resolved under `/workspace/`; must name a file, not a directory |
+| `path` | string | yes | resolved under `/workspace/` |
+| `recursive` | boolean | no | `true` removes a populated directory tree; default `false` |
 
 **Result**
 
 ```json
 {
-  "ok": true
+  "path": "/workspace/scratch",
+  "entries": 3
 }
 ```
+
+`entries` is the number of dirents removed: `0` for a file or an empty directory.
 
 **Schema sent to the model**
 
 ```json
-{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+{"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"}},"required":["path"]}
 ```
 
 ## Write path resolution

@@ -352,3 +352,64 @@ def test_the_binding_tables_match_the_screens_they_describe():
         cls = getattr(ui, SCREEN_CLASSES[screen])
         actual = {b.key[5:] for b in cls.BINDINGS if b.key.startswith("ctrl+")}
         assert actual == letters, f"{screen}: code {sorted(actual)}, doc {sorted(letters)}"
+
+
+# -- `02-firmware.md` §7.1 vs `docs/tools/*.md` vs the registry -------------
+
+
+FIRMWARE = Path(__file__).resolve().parents[2] / "firmware"
+SPEC = FIRMWARE / "components" / "tools" / "tools_spec.c"
+
+#: `02` §7.1: these two are declarative `/tools/*.json` files, not built-ins, so
+#: their schema lives in the image and never in the compiled registry.
+DECLARATIVE = {"weather_now", "web_search"}
+
+
+def _registry_schemas() -> dict[str, str]:
+    """The `S_*` macro each built-in tool names, expanded to its JSON text."""
+    source = SPEC.read_text(encoding="utf-8")
+    # Line-continued macros are joined first, so a multi-line schema is one literal.
+    source = re.sub(r"\\\n", "", source)
+    macros = {
+        name: "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', body)).encode().decode("unicode_escape")
+        for name, body in re.findall(r"^#define\s+(S_[A-Z0-9_]+)\s+(.*)$", source, re.M)
+    }
+    return {
+        tool: macros[schema]
+        for tool, schema in re.findall(
+            r'\{"([a-z0-9._]+)",\s*"[^"]*",\s*TOOLS_GATE_\w+,\s*(S_[A-Z0-9_]+)\}', source
+        )
+    }
+
+
+def _documented_schemas() -> dict[str, str]:
+    """Every `**Schema sent to the model**` fence, keyed by its own section heading."""
+    found: dict[str, str] = {}
+    for path in sorted((DOCS / "tools").glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"^## `([a-z0-9._]+)`\s*\n(.*?)(?=^## |\Z)", text, re.S | re.M):
+            fence = re.search(
+                r"\*\*Schema sent to the model\*\*\s*\n\s*```json\n(.*?)```",
+                match.group(2),
+                re.S,
+            )
+            if fence:
+                found[match.group(1)] = fence.group(1).strip()
+    return found
+
+
+def test_every_builtin_tool_schema_matches_its_documented_block():
+    """`02` §7.1 names each domain file as the schema's owner, so the registry and
+    the fence are one fact said twice. Six schemas had drifted before this test
+    existed — a model following the doc would have sent arguments the gate refused."""
+    registry, documented = _registry_schemas(), _documented_schemas()
+    assert documented.keys() - registry.keys() == DECLARATIVE
+    assert not registry.keys() - documented.keys(), "a built-in ships with no doc section"
+    mismatched = {
+        tool: (registry[tool], documented[tool])
+        for tool in registry.keys() & documented.keys()
+        if json.loads(registry[tool]) != json.loads(documented[tool])
+    }
+    assert not mismatched, "\n".join(
+        f"{tool}\n  code: {code}\n  doc : {doc}" for tool, (code, doc) in mismatched.items()
+    )

@@ -69,11 +69,15 @@ a temp file then renaming; this is held under a mutex and refused during `reload
 **Schema sent to the model**
 
 ```json
-{"type":"object","properties":{"task":{"type":"object"}},"required":["task"]}
+{"type":"object","properties":{"task":{"type":"object","properties":{"id":{"type":"string"},"enabled":{"type":"boolean"},"description":{"type":"string"},"trigger":{"type":"object"},"action":{"type":"object"},"repeat":{"type":"object"},"missed":{"type":"string"}},"required":["id","trigger","action"]}},"required":["task"]}
 ```
 
 Note: `task.set` and `todo` are the two nested built-in schemas; the `task` object
-mirrors `/tasks.json` verbatim (`../02-firmware.md` §7.1).
+mirrors `/tasks.json` verbatim (`../02-firmware.md` §7.1), so the model sees the
+key set the closed schema will enforce rather than an empty `object`. The nested
+`trigger` and `action` members are left as bare objects: their rules are enums and
+conditionals (`../03-config.md` §Trigger schema, §Action schema) that no JSON Schema
+subset here can express, and `task.set` enforces them against the frozen tables.
 
 ## Trigger values
 

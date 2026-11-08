@@ -93,6 +93,38 @@ read-modify-write sequence rather than an atomic transaction.
 {"type": "object", "properties": {"addr": {"type": "integer"}, "len": {"type": "integer"}}, "required": ["addr", "len"]}
 ```
 
+## `i2c.write`
+
+Writes the bytes encoded in `hex` to the 7-bit device at `addr` in one transaction.
+The string is even-length lowercase hex, two characters per byte, no separators and
+no `0x` prefix, up to 64 characters (32 bytes). There is no sub-address parameter,
+so writing a register means putting the register byte first in `hex`:
+`{"addr": 60, "hex": "0a1f"}` writes `0x0a` then `0x1f`.
+
+The tool mutates a bus, so it is `DANGEROUS` and refused unless
+`tools.allow_dangerous` is `true` (`../06-security.md` §6).
+
+**Arguments**
+
+| Name | Type | Required | Bounds |
+|---|---|---|---|
+| `addr` | integer | yes | 7-bit, 0x08–0x77 (decimal 8–119) |
+| `hex` | string | yes | even length, 2–64 characters, lowercase hex |
+
+**Result**
+
+```json
+{"addr": 60, "written": 2}
+```
+
+`written` is the number of bytes sent and equals `len(hex) / 2` on success.
+
+**Schema sent to the model**
+
+```json
+{"type": "object", "properties": {"addr": {"type": "integer"}, "hex": {"type": "string"}}, "required": ["addr", "hex"]}
+```
+
 ## Errors
 
 - `E_TOOL` — `addr` outside 0x08–0x77, including the reserved 0x00–0x07 and
