@@ -53,12 +53,17 @@ static void quota_scan(const char *dir, store_quota_t *q, int depth, const char 
     closedir(d);
 }
 
+static esp_err_t image_vfs(const char *agent_path, char *out, size_t out_cap);
+
 static esp_err_t resolve_dir(const char *in, char *out, size_t out_cap)
 {
     if (strcmp(in, "/workspace") == 0 || strcmp(in, "/workspace/") == 0) {
         return store_map_path(STORE_ROOT_WORKSPACE, out, out_cap);
     }
-    return store_resolve_write_path(in, out, out_cap);
+    /* Both mounts are listable (`06` §6.1): `fs.list` may list `/fs`, and the skill
+     * scan lists `/skills/`. Confinement belongs to the host-only `sandbox.*`
+     * commands, which admit their own paths. */
+    return image_vfs(in, out, out_cap);
 }
 
 static int entry_qsort_cmp(const void *a, const void *b)
@@ -74,6 +79,11 @@ static esp_err_t image_vfs(const char *agent_path, char *out, size_t out_cap)
     char canon[STORE_PATH_MAX];
     esp_err_t err = store_resolve_image_path(agent_path, canon, sizeof canon);
     if (err != ESP_OK) return err;
+    /* `/` canonicalises to the empty path, which `store_map_path` refuses; it is the
+     * `userfs` root and `fs.list`'s default (`tools/filesystem.md`). */
+    if (canon[0] == '\0') {
+        memcpy(canon, "/", 2);
+    }
     return store_map_path(canon, out, out_cap);
 }
 
@@ -140,7 +150,11 @@ esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap, size_t 
 {
     if (agent_path == NULL || buf == NULL || len == NULL || total == NULL || truncated == NULL) return ESP_ERR_INVALID_ARG;
     char vfs[STORE_PATH_MAX];
-    esp_err_t err = store_resolve_write_path(agent_path, vfs, sizeof vfs);
+    /* Reading is not a write, so the workspace confinement does not apply: the agent
+     * may read its own skills, prompts and the declarative tool files (`06` §6.1).
+     * The model's `/config.json` carve-out is the `fs.read` tool's, not this
+     * reader's. */
+    esp_err_t err = image_vfs(agent_path, vfs, sizeof vfs);
     if (err != ESP_OK) return err;
     
     struct stat st;

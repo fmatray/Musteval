@@ -16,6 +16,7 @@
 
 #include "esp_log.h"
 #include "nvs.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -237,11 +238,26 @@ static esp_err_t call_fs(const char *tool, const json_node_t *args, json_doc_t *
     }
 
     if (strcmp(tool, "fs.list") == 0) {
-        store_entry_t entries[64];
+        /* Not a local: 64 entries is ~4.6 KiB, more than half the agent task's 8 KiB
+         * stack, and listing `/workspace` overflowed it and panicked the board.
+         * Allocated once into PSRAM rather than made static, because a static array
+         * would move that cost into the 34 KiB DIRAM margin. Dispatch is
+         * single-threaded (`02-firmware.md` §3.3). */
+        static store_entry_t *entries;
+        if (entries == NULL) {
+            entries = heap_caps_malloc(TOOLS_LIST_MAX * sizeof *entries,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (entries == NULL) entries = heap_caps_malloc(
+                TOOLS_LIST_MAX * sizeof *entries, MALLOC_CAP_8BIT);
+            if (entries == NULL) return ESP_ERR_NO_MEM;
+        }
         size_t count = 0;
-        esp_err_t err = store_list_dir(path, entries, 64, &count);
+        esp_err_t err = store_list_dir(path, entries, TOOLS_LIST_MAX, &count);
         if (err != ESP_OK) {
-            set_why(why, why_cap, "fs.list: no such directory under /workspace/");
+            /* The listing reaches the read-only image mounts too (`/skills/`,
+             * `/prompts/`, `/tools/`) as well as `/workspace/`, so the message names
+             * the path rather than claiming a sandbox it is not confined to. */
+            set_why(why, why_cap, "fs.list: no such directory");
             return err;
         }
         *out = json_new_object();
@@ -261,6 +277,15 @@ static esp_err_t call_fs(const char *tool, const json_node_t *args, json_doc_t *
     }
 
     if (strcmp(tool, "fs.read") == 0) {
+        /* OQ-6 (`06` §6.1): the model may not read the host config, which holds
+         * provider base URLs and the shape of every secret reference. Both spellings
+         * are named because `/fs/config.json` is the same file through the other
+         * mount. */
+        if (strcmp(path, "/config.json") == 0 || strcmp(path, "/fs/config.json") == 0 ||
+            strcmp(path, "/fs/config.json/") == 0) {
+            set_why(why, why_cap, "fs.read: config.json is not readable by a tool");
+            return ESP_ERR_INVALID_STATE;
+        }
         /* Over the cap is a reported truncation (`tools/filesystem.md`), which is why
          * `store_read_text` exists rather than `store_read_file`. */
         size_t len = 0, total = 0;
@@ -396,21 +421,8 @@ static esp_err_t call_skill_read(const json_node_t *args, json_doc_t **out,
 
 #define MEMORY_NAMESPACE "memory"
 
-static bool memory_key_ok(const char *key)
-{
-    /* `tools/memory.md`: `[a-z0-9_.-]{1,64}`. The charset matters because the key
-     * becomes an NVS entry name. */
-    if (key == NULL) return false;
-    size_t n = strlen(key);
-    if (n == 0 || n > 64) return false;
-    for (size_t i = 0; i < n; i++) {
-        char c = key[i];
-        bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' ||
-                  c == '.' || c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
+/* `tools/memory.md` §Limits: at most 32 keys in the namespace. */
+#define MEMORY_MAX_KEYS 32
 
 static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
                              const json_node_t *args, json_doc_t **out,
@@ -434,8 +446,20 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
     }
 
     const char *key = json_string(json_get(args, "key"));
-    if (!memory_key_ok(key)) {
-        set_why(why, why_cap, "memory: key must match [a-z0-9_.-]{1,64}");
+    /* `memory.list` takes no key, so it is answered above. Deletes are checked too:
+     * a reserved key is not this tool's to create, so it is not its to destroy. */
+    if (!tools_memory_key_ok(key)) {
+        set_why(why, why_cap, "memory: key must be 1-15 bytes of [A-Za-z0-9_]");
+        json_free(*out);
+        *out = NULL;
+        return ESP_ERR_INVALID_ARG;
+    }
+    const char *reserved = tools_memory_reserved_prefix(key);
+    if (reserved != NULL) {
+        if (why != NULL && why_cap > 0) {
+            snprintf(why, why_cap,
+                     "memory: the %s prefix is reserved for firmware state", reserved);
+        }
         json_free(*out);
         *out = NULL;
         return ESP_ERR_INVALID_ARG;
@@ -473,6 +497,26 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
             *out = NULL;
             return ESP_ERR_INVALID_SIZE;
         }
+        /* `tools/memory.md` §Limits: at most 32 keys. Counted only for a key that is
+         * not already there, because overwriting never adds one. */
+        char probe[16];
+        bool exists = store_nvs_get_str(MEMORY_NAMESPACE, key, probe, sizeof probe,
+                                        NULL) != ESP_ERR_NVS_NOT_FOUND;
+        if (!exists) {
+            size_t count = 0;
+            char name[16];
+            while (store_nvs_key_at(MEMORY_NAMESPACE, count, name, sizeof name) ==
+                   ESP_OK) {
+                count++;
+            }
+            if (count >= MEMORY_MAX_KEYS) {
+                set_why(why, why_cap,
+                        "memory.set: the namespace already holds 32 keys; delete one");
+                json_free(*out);
+                *out = NULL;
+                return ESP_ERR_INVALID_SIZE;
+            }
+        }
         esp_err_t err = store_nvs_set_str(MEMORY_NAMESPACE, key, value, &len);
         if (err != ESP_OK) {
             set_why(why, why_cap, "memory.set: the write failed");
@@ -482,6 +526,9 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
         }
         json_add_string(root, "key", key);
         add_int(root, "bytes", (int64_t)len);
+        /* `tools/memory.md` §`memory.set`: `stored` is always true on success, so the
+         * model can confirm the write without inspecting `ok`. */
+        json_add_bool(root, "stored", true);
         return ESP_OK;
     }
 
@@ -586,11 +633,19 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         }
         err = ctx->todo.apply(args, out, why, why_cap, ctx->todo.ctx);
     } else {
-        /* `task.*`, `event.emit`, `todo`, `geo.locate` and `mqtt.*` need the
-         * scheduler, which lands at M5. They are registered and offered now, so the
-         * model sees the surface the doc describes, and refused with the honest
-         * reason rather than a wrong answer. */
-        set_why(why, why_cap, "the scheduler is not implemented before M5");
+        /* The tools registered for later milestones are refused rather than
+         * answered wrongly, and each says which milestone owes it: `task.*` and
+         * `event.emit` wait on the scheduler (M5), `geo.locate` on the `geo` module
+         * and `mqtt.*` on the `mqtt` module (`07-roadmap.md` §M6). One shared
+         * message named the scheduler for all of them, which was true for two of
+         * the three families and misdirected a reader for the rest. */
+        if (strcmp(name, "geo.locate") == 0) {
+            set_why(why, why_cap, "geo.locate is not implemented before M6");
+        } else if (strncmp(name, "mqtt.", 5) == 0) {
+            set_why(why, why_cap, "mqtt is not implemented before M6");
+        } else {
+            set_why(why, why_cap, "the scheduler is not implemented before M5");
+        }
         if (wire_code != NULL) *wire_code = "E_TOOL";
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -605,20 +660,10 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         *out = NULL;
     }
     if (wire_code != NULL) {
-        /* `04` §5 mapping for the cases a tool can raise itself. */
-        switch (err) {
-        case ESP_ERR_NOT_SUPPORTED: *wire_code = "E_TOOL"; break;
-        case ESP_ERR_INVALID_STATE: *wire_code = "E_TOOL"; break;
-        case ESP_ERR_INVALID_SIZE:  *wire_code = "E_TOOL"; break;
-        case ESP_ERR_INVALID_ARG:   *wire_code = "E_TOOL"; break;
-        case ESP_ERR_TIMEOUT:       *wire_code = "E_TIMEOUT"; break;
-        case ESP_ERR_NO_MEM:        *wire_code = "E_INTERNAL"; break;
-        default:                    *wire_code = "E_STORAGE"; break;
-        }
-        /* A network tool's failure is the link's, not storage's. */
-        if (strcmp(name, "http.get") == 0) {
-            *wire_code = err == ESP_ERR_TIMEOUT ? "E_TIMEOUT" : "E_WIFI";
-        }
+        /* The table lives in `tools_spec.c` so it is host-tested; see
+         * `tools_wire_code`. */
+        const char *code = tools_wire_code(name, err);
+        if (code != NULL) *wire_code = code;
     }
     return err;
 }

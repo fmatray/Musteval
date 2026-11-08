@@ -66,6 +66,7 @@ bool         json_is_string(const json_node_t *node);
 bool         json_is_int(const json_node_t *node);
 bool         json_is_bool(const json_node_t *node);
 bool         json_is_null(const json_node_t *node);
+bool         json_is_number(const json_node_t *node);
 
 /* Borrowed pointer into the document, valid until `json_free`. NULL when the node
  * is not a string. Copy it before freeing the doc. */

@@ -32,6 +32,10 @@
 /* `03-config.md` §tools binding step 4 / `tools/web.md`: a result reaching the
  * model is capped here and the excess is reported, never silently dropped. */
 #define TOOLS_RESULT_MAX 4096
+
+/* `fs.list`'s entry cap: the same workspace file count `03-config.md` §Storage limits
+ * bounds, so a listing can never be refused for a directory the quota allows. */
+#define TOOLS_LIST_MAX 64
 #define TOOLS_ERR_MAX 160
 
 typedef enum {
@@ -142,6 +146,19 @@ void tools_counters(tool_counters_t *out);
 /* True when the tool should be offered at all. The only absent-when-unconfigured
  * family is i2c (`tools/i2c.md`): all three appear together or not at all. */
 bool tools_offered(const char *name, const tools_context_t *ctx);
+
+/* `tools/memory.md` §Limits: a key is 1-15 bytes of `[A-Za-z0-9_]` and must not
+ * start with a reserved prefix (`sys_`, `cfg_`, `secret_`, `rt_`). Pure, so the
+ * bound is host-tested rather than only provable on a board. */
+bool tools_memory_key_ok(const char *key);
+
+/* The reserved prefix `key` starts with, or NULL. */
+const char *tools_memory_reserved_prefix(const char *key);
+
+/* The `04` §5 wire code for a tool failure, or NULL for ESP_OK. Pure, so the
+ * mapping is host-tested rather than only exercised on a board. `tools.c`'s
+ * `tools_call` is the only caller. */
+const char *tools_wire_code(const char *tool, esp_err_t err);
 
 /* Execute one call whose arguments already passed `tools_validate`. `out` receives
  * the result document, owned by the caller.

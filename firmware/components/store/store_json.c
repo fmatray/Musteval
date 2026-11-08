@@ -316,6 +316,10 @@ bool json_is_array(const json_node_t *node) { return cJSON_IsArray(node_of(node)
 bool json_is_string(const json_node_t *node) { return cJSON_IsString(node_of(node)); }
 bool json_is_bool(const json_node_t *node) { return cJSON_IsBool(node_of(node)); }
 bool json_is_null(const json_node_t *node) { return cJSON_IsNull(node_of(node)); }
+/* A JSON number, integral or not. `json_is_int` is narrower on purpose: a config
+ * integer field must not accept `1.5`, while `extra_body`'s flat scalar may be a
+ * temperature. */
+bool json_is_number(const json_node_t *node) { return cJSON_IsNumber(node_of(node)); }
 
 bool json_is_int(const json_node_t *node)
 {
