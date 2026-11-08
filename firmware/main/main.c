@@ -369,25 +369,6 @@ static char s_cfg_out[CFG_JSON_MAX + 1];
 
 /* --- Templates (`04` §4.11, §4.12) ---------------------------------------- */
 
-/* `04` §4.12: `[A-Za-z0-9._-]+\.md`, no `/`. A name is a filename, never a path,
- * so `..` cannot reach a parent even though `.` is allowed inside it. */
-static bool template_name_is_valid(const char *name)
-{
-    if (name == NULL) return false;
-    size_t n = strlen(name);
-    if (n < 4 || n > 64) return false;
-    if (strcmp(name + n - 3, ".md") != 0) return false;
-    for (size_t i = 0; i < n; i++) {
-        char c = name[i];
-        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                  (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-        if (!ok) return false;
-    }
-    /* `..` with no other character is the only escape the alphabet allows. */
-    if (strcmp(name, "..md") == 0) return false;
-    return true;
-}
-
 static esp_err_t handle_templates_list(const json_node_t *args, json_node_t *root,
                                        json_node_t *result)
 {
@@ -412,7 +393,7 @@ static esp_err_t handle_templates_list(const json_node_t *args, json_node_t *roo
         if (s_entries[i].dir) continue;
         /* `system.md` is the agent's own prompt, not a template (§4.11). */
         if (strcmp(s_entries[i].name, "system.md") == 0) continue;
-        if (!template_name_is_valid(s_entries[i].name)) continue;
+        if (!store_template_name_ok(s_entries[i].name)) continue;
         json_array_push_string(arr, s_entries[i].name);
     }
     return ESP_OK;
@@ -422,7 +403,7 @@ static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
                                      json_node_t *result)
 {
     const char *name = json_string(json_get(args, "name"));
-    if (!template_name_is_valid(name)) return ESP_ERR_INVALID_ARG;
+    if (!store_template_name_ok(name)) return ESP_ERR_INVALID_ARG;
 
     /* `/prompts/<name>`: the name is already proven a bare filename, so the
      * concatenation cannot escape `/prompts`. */

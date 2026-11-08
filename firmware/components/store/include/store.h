@@ -338,6 +338,11 @@ int  store_entry_cmp(const store_entry_t *a, const store_entry_t *b);
 /* True when `name` is one entry name: non-empty, no `/`, not `.`/`..`. Pure. */
 bool store_entry_name_ok(const char *name);
 
+/* True when `name` is a template filename: `[A-Za-z0-9._-]+\.md`, 4-64 bytes, no
+ * `/` (`04-protocol.md` §4.12). A name is a filename, never a path, so `..` cannot
+ * reach a parent even though `.` is legal inside one. Pure. */
+bool store_template_name_ok(const char *name);
+
 /* Decode one wire chunk. `encoding` NULL or "utf8" copies; "base64" decodes.
  * ESP_ERR_INVALID_ARG for an unknown encoding, malformed base64, or a chunk that
  * does not fit `cap` or `STORE_CHUNK_BYTES` (§4.16, §4.20). Pure. */

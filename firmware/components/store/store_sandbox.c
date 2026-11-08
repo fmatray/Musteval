@@ -15,6 +15,22 @@ bool store_entry_name_ok(const char *name)
     return strchr(name, '/') == NULL;
 }
 
+bool store_template_name_ok(const char *name)
+{
+    if (name == NULL) return false;
+    size_t n = strlen(name);
+    if (n < 4 || n > 64) return false;
+    if (strcmp(name + n - 3, ".md") != 0) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    /* `..` with no other character is the only escape the alphabet allows. */
+    return strcmp(name, "..md") != 0;
+}
+
 esp_err_t store_decode_chunk(const char *data, const char *encoding,
                              uint8_t *out, size_t cap, size_t *len)
 {

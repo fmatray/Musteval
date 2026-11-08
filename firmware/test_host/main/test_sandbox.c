@@ -48,6 +48,28 @@ TEST_CASE("an entry name is one path segment", "[sandbox]")
     TEST_ASSERT_FALSE(store_entry_name_ok("../escape"));
 }
 
+/* 04 §4.12: a template name is a bare filename of `[A-Za-z0-9._-]+\.md`. The rule is
+ * the whole of `template.get`'s confinement — the name is concatenated onto
+ * `/prompts/` after it passes — so a hole here reaches outside the directory. */
+TEST_CASE("a template name is a bare .md filename", "[sandbox]")
+{
+    TEST_ASSERT_TRUE(store_template_name_ok("brief.md"));
+    TEST_ASSERT_TRUE(store_template_name_ok("boot_summary.md"));
+    TEST_ASSERT_TRUE(store_template_name_ok("a-b_c.1.md"));
+    TEST_ASSERT_TRUE(store_template_name_ok("..md2.md"));
+
+    TEST_ASSERT_FALSE(store_template_name_ok(NULL));
+    TEST_ASSERT_FALSE(store_template_name_ok(""));
+    TEST_ASSERT_FALSE(store_template_name_ok(".md"));
+    TEST_ASSERT_FALSE(store_template_name_ok("..md"));
+    TEST_ASSERT_FALSE(store_template_name_ok("brief"));
+    TEST_ASSERT_FALSE(store_template_name_ok("brief.txt"));
+    TEST_ASSERT_FALSE(store_template_name_ok("../brief.md"));
+    TEST_ASSERT_FALSE(store_template_name_ok("sub/brief.md"));
+    TEST_ASSERT_FALSE(store_template_name_ok("brief md"));
+    TEST_ASSERT_FALSE(store_template_name_ok("brief\\md"));
+}
+
 TEST_CASE("a utf8 chunk is copied verbatim", "[sandbox]")
 {
     uint8_t out[STORE_CHUNK_BYTES];
