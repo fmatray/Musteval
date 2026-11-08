@@ -17,7 +17,7 @@ from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
 from bridge.ui.modals import HelpModal
 from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, ChatScreen
-from bridge.ui.render import clip
+from bridge.ui.render import LINK_WORDS, clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory
 from bridge.ui.testing import chat_lines
 from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
@@ -1143,7 +1143,17 @@ async def test_prompt_with_no_link_is_refused_at_once():
         assert any("you: hello board" in line for line in lines), lines
         # The refusal names the bar's word, not the internal state enum: a reader
         # comparing it with the prompt bar must never see two vocabularies.
-        assert any("✗ linking; the prompt was not sent" in line for line in lines), lines
+        #
+        # The word itself is whatever the bar said at that moment. Asserting
+        # `linking` pinned a transient: `ack_timeout=1` with no hello reply means
+        # the ack can lapse to `down` before the assertion runs, which it did
+        # under a loaded suite. The rule is that the refusal speaks the bar's
+        # vocabulary rather than the enum's, and it holds in either state.
+        assert any(
+            f"✗ {word}; the prompt was not sent" in line
+            for line in lines
+            for word in LINK_WORDS.values()
+        ), lines
     await session.close()
 
 
