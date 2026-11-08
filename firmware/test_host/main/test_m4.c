@@ -391,6 +391,12 @@ TEST_CASE("tools_validate enforces argument types", "[m4]")
 {
     TEST_ASSERT_FALSE(validates("gpio.write", "{\"pin\":\"4\",\"level\":1}"));
     TEST_ASSERT_FALSE(validates("gpio.write", "{\"pin\":4,\"level\":2}"));
+    /* `boolean`: `fs.delete`'s `recursive` is a JSON bool, not a `0`/`1`. */
+    TEST_ASSERT_TRUE(validates("fs.delete", "{\"path\":\"/workspace/a\",\"recursive\":true}"));
+    TEST_ASSERT_FALSE(validates("fs.delete", "{\"path\":\"/workspace/a\",\"recursive\":1}"));
+    /* `object`: `http.get`'s `headers` is a map, and a string is refused. */
+    TEST_ASSERT_TRUE(validates("http.get", "{\"url\":\"https://a.test/\",\"headers\":{}}"));
+    TEST_ASSERT_FALSE(validates("http.get", "{\"url\":\"https://a.test/\",\"headers\":\"x\"}"));
 }
 
 /* `todo` is validated against the same schema the model receives, so `op` must be one
@@ -482,6 +488,15 @@ TEST_CASE("a tool failure carries the documented wire code", "[m4]")
     TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("todo", ESP_ERR_INVALID_ARG));
     TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("gpio.write",
                                                        ESP_ERR_NOT_SUPPORTED));
+    /* `ESP_ERR_INVALID_STATE` is what the three "not usable right now" refusals
+     * return — an unpinned i2c bus, an unsynced clock, a read of `config.json` — and
+     * each is a call the model can make differently, so none is storage. */
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("i2c.read",
+                                                       ESP_ERR_INVALID_STATE));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("time.now",
+                                                       ESP_ERR_INVALID_STATE));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("fs.read",
+                                                       ESP_ERR_INVALID_STATE));
 
     /* The one code with two meanings: the workspace quota versus a call bound. */
     TEST_ASSERT_EQUAL_STRING("E_STORAGE", tools_wire_code("fs.write",
