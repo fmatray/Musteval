@@ -3,7 +3,7 @@
 # `agent.c` owns the task, the queue and the frame emitters, so it is board-only like
 # `tools.c`.
 set(srcs "agent_todo.c" "agent_closeout.c" "agent_history.c" "agent_reply.c"
-        "agent_prompt.c")
+        "agent_prompt.c" "agent_settings.c")
 
 if(NOT IDF_TARGET STREQUAL "linux")
     list(APPEND srcs "agent.c")

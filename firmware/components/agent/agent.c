@@ -40,11 +40,6 @@ static const char *TAG = "agent";
 #define AGENT_TASK_STACK 8192
 #define AGENT_TASK_PRIORITY 5
 
-/* `03-config.md` §agent defaults, used when a key is absent. */
-#define AGENT_DEFAULT_MAX_INPUT_BYTES 8192
-#define AGENT_DEFAULT_MAX_TOOL_ROUNDS 6
-#define AGENT_DEFAULT_MAX_HISTORY  8
-
 /* The history buffer's own cap. It stays below `LLM_BODY_MAX` because the body also
  * carries the tool array and the system prompt; a history that could fill the body
  * alone would make every later request fail. */
@@ -124,22 +119,33 @@ static esp_err_t todo_port_apply(const json_node_t *args, json_doc_t **out,
 
 /* --- Configuration ------------------------------------------------------- */
 
-static int32_t cfg_int_or(const char *path, int32_t fallback)
-{
-    int64_t value = 0;
-    json_node_t *node = cfg_get(path);
-    return (node != NULL && json_int(node, &value)) ? (int32_t)value : fallback;
-}
-
 static void load_run_settings(void)
 {
-    s_rounds_max = cfg_int_or("llm.max_tool_rounds", AGENT_DEFAULT_MAX_TOOL_ROUNDS);
-    s_history_max = cfg_int_or("llm.max_history_messages", AGENT_DEFAULT_MAX_HISTORY);
-    s_input_max = (size_t)cfg_int_or("agent.max_input_bytes",
-                                     AGENT_DEFAULT_MAX_INPUT_BYTES);
-    if (s_input_max > AGENT_DEFAULT_MAX_INPUT_BYTES) {
-        s_input_max = AGENT_DEFAULT_MAX_INPUT_BYTES;
-    }
+    /* Read what the config says, then let the pure resolver apply `03-config.md`'s
+     * defaults and the buffer clamp. Both halves are separated so the half that a
+     * test can fail is the half that carries the rule (`agent_settings.c`). */
+    int64_t value = 0;
+    json_node_t *node = cfg_get("llm.max_tool_rounds");
+    bool has_rounds = node != NULL && json_int(node, &value);
+    agent_raw_settings_t raw = {0};
+    raw.has_max_tool_rounds = has_rounds;
+    raw.max_tool_rounds = (int32_t)value;
+
+    value = 0;
+    node = cfg_get("llm.max_history_messages");
+    raw.has_max_history = node != NULL && json_int(node, &value);
+    raw.max_history = (int32_t)value;
+
+    value = 0;
+    node = cfg_get("agent.max_input_bytes");
+    raw.has_max_input = node != NULL && json_int(node, &value);
+    raw.max_input = (int32_t)value;
+
+    agent_run_settings_t resolved;
+    agent_run_settings_resolve(&raw, &resolved);
+    s_rounds_max = resolved.max_tool_rounds;
+    s_history_max = resolved.max_history_messages;
+    s_input_max = resolved.max_input_bytes;
 }
 
 /* The system prompt with the skill index appended. A skill that does not fit is
@@ -164,7 +170,7 @@ static void build_system_prompt(void)
     if (path != NULL && path[0] == '/') {
         size_t len = 0;
         esp_err_t err = store_read_file(path, s_system_prompt,
-                                        AGENT_DEFAULT_MAX_INPUT_BYTES + 1, &len);
+                                        AGENT_INPUT_BUFFER_MAX + 1, &len);
         if (err == ESP_OK) {
             s_system_prompt[len] = '\0';
         } else {
@@ -178,14 +184,14 @@ static void build_system_prompt(void)
     }
 
     size_t used = strlen(s_system_prompt);
-    if (used >= AGENT_DEFAULT_MAX_INPUT_BYTES - 1) return;
+    if (used >= AGENT_INPUT_BUFFER_MAX - 1) return;
 
     size_t count = 0;
     const skill_meta_t *skills = skills_current(&count);
     if (skills == NULL || count == 0) return;
 
     size_t budget = AGENT_SKILL_INDEX_MAX;
-    size_t cap = AGENT_DEFAULT_MAX_INPUT_BYTES + 1;
+    size_t cap = AGENT_INPUT_BUFFER_MAX + 1;
     if (budget > cap - used - 2) budget = cap - used - 2;
     size_t written = 0;
     size_t dropped = 0;
@@ -772,7 +778,7 @@ esp_err_t agent_start(void)
     if (s_task != NULL) return ESP_OK;  /* idempotent: boot calls it once */
 
     s_history = agent_alloc(AGENT_HISTORY_MAX);
-    s_system_prompt = agent_alloc(AGENT_DEFAULT_MAX_INPUT_BYTES + 1);
+    s_system_prompt = agent_alloc(AGENT_INPUT_BUFFER_MAX + 1);
     s_tools_json = agent_alloc(TOOLS_MAX_TOTAL * 512);
     s_response = agent_alloc(LLM_BODY_MAX + 1);
     s_final_text = agent_alloc(AGENT_TEXT_MAX + 1);
@@ -813,7 +819,7 @@ esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
     if (s_queue == NULL) return ESP_ERR_NOT_FOUND;
 
     load_run_settings();
-    if (len > s_input_max || len > AGENT_DEFAULT_MAX_INPUT_BYTES) {
+    if (len > s_input_max || len > AGENT_INPUT_BUFFER_MAX) {
         return ESP_ERR_INVALID_SIZE;
     }
 

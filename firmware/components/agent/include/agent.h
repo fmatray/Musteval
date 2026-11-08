@@ -189,6 +189,39 @@ typedef struct {
 
 const agent_rejection_t *agent_prompt_rejection(esp_err_t err);
 
+/* `03-config.md` §agent: the documented defaults, and the input buffer's hard
+ * ceiling. These are the numbers the document promises; a default that disagrees with
+ * it is a defect in the code, not in the document. */
+#define AGENT_DEFAULT_MAX_INPUT_BYTES 3072
+#define AGENT_DEFAULT_MAX_TOOL_ROUNDS 8
+#define AGENT_DEFAULT_MAX_HISTORY     8
+
+/* The input buffer's own cap, above the documented default so a raised
+ * `agent.max_input_bytes` still has room to grow and the whole line fits. */
+#define AGENT_INPUT_BUFFER_MAX 8192
+
+/* What the config said, before the defaults are applied. `has_*` distinguishes an
+ * absent key from a configured zero. */
+typedef struct {
+    bool has_max_tool_rounds;
+    int32_t max_tool_rounds;
+    bool has_max_history;
+    int32_t max_history;
+    bool has_max_input;
+    int32_t max_input;
+} agent_raw_settings_t;
+
+typedef struct {
+    int32_t max_tool_rounds;
+    int32_t max_history_messages;
+    size_t max_input_bytes;
+} agent_run_settings_t;
+
+/* Apply `03-config.md`'s defaults and clamp the input bound to the buffer. Pure, so a
+ * documented default the code does not apply fails a host test (`agent_settings.c`). */
+void agent_run_settings_resolve(const agent_raw_settings_t *raw,
+                                agent_run_settings_t *out);
+
 /* Hand a prompt to the loop. Returns ESP_OK when accepted, ESP_ERR_INVALID_STATE
  * when the queue is full (`E_BUSY`), ESP_ERR_INVALID_SIZE when the prompt exceeds
  * `agent.max_input_bytes`, ESP_ERR_NOT_FOUND when no loop is running, and
