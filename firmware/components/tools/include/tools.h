@@ -160,6 +160,12 @@ const char *tools_memory_reserved_prefix(const char *key);
  * `tools_call` is the only caller. */
 const char *tools_wire_code(const char *tool, esp_err_t err);
 
+/* The refusal for a tool whose milestone has not shipped — `geo.locate` and
+ * `mqtt.*` are M6, `task.*` and `event.emit` are M5 — or NULL for a tool that is
+ * built. Pure, so each family's message is host-tested. `tools.c` is the only
+ * caller. */
+const char *tools_unbuilt_reason(const char *name);
+
 /* Execute one call whose arguments already passed `tools_validate`. `out` receives
  * the result document, owned by the caller.
  *

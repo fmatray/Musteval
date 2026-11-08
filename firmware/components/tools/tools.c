@@ -632,18 +632,10 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         err = ctx->todo.apply(args, out, why, why_cap, ctx->todo.ctx);
     } else {
         /* The tools registered for later milestones are refused rather than
-         * answered wrongly, and each says which milestone owes it: `task.*` and
-         * `event.emit` wait on the scheduler (M5), `geo.locate` on the `geo` module
-         * and `mqtt.*` on the `mqtt` module (`07-roadmap.md` §M6). One shared
-         * message named the scheduler for all of them, which was true for two of
-         * the three families and misdirected a reader for the rest. */
-        if (strcmp(name, "geo.locate") == 0) {
-            set_why(why, why_cap, "geo.locate is not implemented before M6");
-        } else if (strncmp(name, "mqtt.", 5) == 0) {
-            set_why(why, why_cap, "mqtt is not implemented before M6");
-        } else {
-            set_why(why, why_cap, "the scheduler is not implemented before M5");
-        }
+         * answered wrongly. The wording lives in `tools_spec.c` so each family's
+         * message is host-tested (`07-roadmap.md`: M5 scheduler, M6 geo/mqtt). */
+        const char *reason = tools_unbuilt_reason(name);
+        set_why(why, why_cap, reason != NULL ? reason : "unknown tool");
         if (wire_code != NULL) *wire_code = "E_TOOL";
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -702,17 +694,6 @@ void tools_counters(tool_counters_t *out)
 }
 
 /* --- `tools_json` and the offered set ------------------------------------- */
-
-bool tools_offered(const char *name, const tools_context_t *ctx)
-{
-    if (name == NULL) return false;
-    /* `tools/i2c.md`: the three appear together or not at all, and only when the bus
-     * pins are configured. Everything else is always offered. */
-    if (strncmp(name, "i2c.", 4) == 0) {
-        return ctx != NULL && ctx->i2c_sda >= 0 && ctx->i2c_scl >= 0;
-    }
-    return true;
-}
 
 /* One `{"type":"function","function":{"name","description","parameters"}}`. The
  * `parameters` text is embedded verbatim rather than rebuilt, because the document

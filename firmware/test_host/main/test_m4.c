@@ -604,6 +604,60 @@ TEST_CASE("tools_host_allowed matches exactly", "[m4]")
     json_free(config);
 }
 
+/* `07-roadmap.md`: a tool whose milestone has not shipped is refused rather than
+ * answered, and the message names the milestone that owes it. One shared message
+ * named the scheduler for `geo` and `mqtt` too, which sent a reader to the wrong
+ * milestone; the wording now lives in the host-tested `tools_spec.c`. */
+TEST_CASE("an unbuilt tool names the milestone that owes it", "[m4]")
+{
+    TEST_ASSERT_EQUAL_STRING("geo.locate is not implemented before M6",
+                             tools_unbuilt_reason("geo.locate"));
+    TEST_ASSERT_EQUAL_STRING("mqtt is not implemented before M6",
+                             tools_unbuilt_reason("mqtt.list"));
+    TEST_ASSERT_EQUAL_STRING("mqtt is not implemented before M6",
+                             tools_unbuilt_reason("mqtt.publish"));
+    TEST_ASSERT_EQUAL_STRING("the scheduler is not implemented before M5",
+                             tools_unbuilt_reason("task.list"));
+    TEST_ASSERT_EQUAL_STRING("the scheduler is not implemented before M5",
+                             tools_unbuilt_reason("task.set"));
+    TEST_ASSERT_EQUAL_STRING("the scheduler is not implemented before M5",
+                             tools_unbuilt_reason("event.emit"));
+    /* A built tool has no reason, and neither does an absent name: the caller's
+     * fallback is what answers those. */
+    TEST_ASSERT_NULL(tools_unbuilt_reason("time.now"));
+    TEST_ASSERT_NULL(tools_unbuilt_reason("fs.read"));
+    TEST_ASSERT_NULL(tools_unbuilt_reason("nope.nothing"));
+    TEST_ASSERT_NULL(tools_unbuilt_reason(NULL));
+}
+
+/* `tools/i2c.md`: the three i2c tools appear together or not at all, and only when
+ * the bus pins are configured. Everything else is always offered. */
+TEST_CASE("i2c tools are offered only when the bus is pinned", "[m4]")
+{
+    tools_context_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+
+    TEST_ASSERT_FALSE(tools_offered("i2c.read", &ctx));
+    TEST_ASSERT_FALSE(tools_offered("i2c.write", &ctx));
+    TEST_ASSERT_FALSE(tools_offered("i2c.scan", &ctx));
+    TEST_ASSERT_TRUE(tools_offered("gpio.read", &ctx));
+    TEST_ASSERT_TRUE(tools_offered("time.now", &ctx));
+    /* Half a bus is not a bus: one pin configured leaves all three absent. */
+    ctx.i2c_sda = 5;
+    TEST_ASSERT_FALSE(tools_offered("i2c.read", &ctx));
+    ctx.i2c_scl = 6;
+    TEST_ASSERT_TRUE(tools_offered("i2c.read", &ctx));
+    TEST_ASSERT_TRUE(tools_offered("i2c.write", &ctx));
+    TEST_ASSERT_TRUE(tools_offered("i2c.scan", &ctx));
+    TEST_ASSERT_FALSE(tools_offered(NULL, &ctx));
+    /* A NULL context has no pins, so the bus family stays absent and nothing else
+     * is affected. */
+    TEST_ASSERT_FALSE(tools_offered("i2c.read", NULL));
+    TEST_ASSERT_TRUE(tools_offered("gpio.read", NULL));
+}
+
 /* --- history -------------------------------------------------------------- */
 
 /* `03-config.md` §agent `max_history_messages`: the bound holds after every append,

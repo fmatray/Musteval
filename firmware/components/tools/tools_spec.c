@@ -306,6 +306,38 @@ const char *tools_memory_reserved_prefix(const char *key)
     return NULL;
 }
 
+/* --- The offered set ----------------------------------------------------- */
+
+/* `tools/i2c.md`: the three appear together or not at all, and only when the bus
+ * pins are configured. Everything else is always offered. Pure, so the rule is
+ * host-tested rather than only observable by reading a request body on a board. */
+bool tools_offered(const char *name, const tools_context_t *ctx)
+{
+    if (name == NULL) return false;
+    if (strncmp(name, "i2c.", 4) == 0) {
+        return ctx != NULL && ctx->i2c_sda >= 0 && ctx->i2c_scl >= 0;
+    }
+    return true;
+}
+
+/* --- Unbuilt tools -------------------------------------------------------- */
+
+/* The refusal for a registered tool whose milestone has not shipped, or NULL when
+ * the tool is not one of them: `geo.locate` and `mqtt.*` are M6, the scheduler's
+ * `task.*`/`event.emit` are M5. Pure, so each family's message is host-tested; one
+ * shared message named the scheduler for all of them, which was true for two of the
+ * three families and misdirected a reader for the rest. */
+const char *tools_unbuilt_reason(const char *name)
+{
+    if (name == NULL) return NULL;
+    if (strcmp(name, "geo.locate") == 0) return "geo.locate is not implemented before M6";
+    if (strncmp(name, "mqtt.", 5) == 0) return "mqtt is not implemented before M6";
+    if (strncmp(name, "task.", 5) == 0 || strcmp(name, "event.emit") == 0) {
+        return "the scheduler is not implemented before M5";
+    }
+    return NULL;
+}
+
 /* --- Wire error code (`04-protocol.md` §5) -------------------------------- */
 
 /* Pure so the mapping is host-tested: `tools.c` is board-only, and this table
