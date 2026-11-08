@@ -862,6 +862,15 @@ static void answer_command(const json_node_t *frame)
          * tell the bridge "no tasks" about a device that has never read one. The
          * honest answer is the one the catalog gives a missing dependency: the
          * command is named, the reason is stated. */
+        /* `02-firmware.md` §safe mode: `tasks.run` needs the scheduler and is
+         * refused with `E_SAFE_MODE` there. Answered before the unwired message so
+         * the reason names the real blocker; a run that cannot exist yet is still
+         * a different answer than "this device is in safe mode". */
+        if (s_safe_mode && strcmp(name, "tasks.run") == 0) {
+            emit_failure(name, reply_to, "E_SAFE_MODE",
+                         "safe mode: repair config, then reload");
+            json_free(body); return;
+        }
         emit_failure(name, reply_to, "E_INTERNAL",
                      "tasks are not wired yet: the scheduler lands in M5");
         json_free(body); return;
