@@ -254,6 +254,7 @@ provider below authenticates with `Authorization: Bearer <api_key_ref>`, which i
 | vLLM | `http://<host>:8000/v1` | depends on the served model | any placeholder | Self-hosted, same OpenAI surface. |
 | Anthropic (compat) | `https://api.anthropic.com/v1` | `claude-sonnet-4-6` | `anthropic_key` | Compatibility layer, documented by Anthropic as for testing rather than production. Ignores `strict` on tool schemas, so tool arguments are not schema-guaranteed; the agent validates them anyway. |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-3.8-flash` | `gemini_key` | Note the prefix ends in `/openai`, not `/v1`. |
+| Mistral | `https://api.mistral.ai/v1` | `mistral-medium-3-5` | `mistral_key` | Natively OpenAI-shaped, and the spec defines `max_tokens` only — no `max_completion_tokens` — so keep the default `token_param`. `reasoning_effort` is supported, and each model accepts its own subset: `mistral-large-4-0` takes `low`/`medium`/`high` and rejects `none`/`minimal`/`xhigh`/`max`, `mistral-small-2603` and `mistral-medium-3-5` take `high` and `none`, and the `zai-glm-5-3` models take `low`/`high`/`max` and **reject `none`**. Only `low` and `high` are safe on every row, so those are the offered levels. |
 
 The `id` field is local and arbitrary; the table's `nvs` keys are suggestions, not
 reserved names. A provider that is OpenAI-compatible in name but rejects `tools` is

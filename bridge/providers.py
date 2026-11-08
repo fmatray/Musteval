@@ -32,6 +32,13 @@ _BUDGETS = {"low": 1024, "medium": 4096, "high": 16384}
 #: highest effort, so `none` would make thinking more intense rather than off.
 OLLAMA_LEVELS = ("low", "high")
 
+#: The levels Mistral's documented reasoning models have in common
+#: (`docs.mistral.ai/inference/conversations/reasoning`). `mistral-large-4-0` takes
+#: `low`/`medium`/`high`, the small and medium models take `high` and `none`, and
+#: `zai-glm-5-3` takes `low`/`high`/`max` and rejects `none`. A name outside the
+#: intersection is a 400 on some model the reader may have picked.
+MISTRAL_LEVELS = ("low", "high")
+
 #: `03-config.md` §Full schema: `llm.providers[].extra_body` is at most four flat
 #: members, so a provider's own extra members must leave room for a level.
 EXTRA_BODY_MAX = 4
@@ -206,6 +213,23 @@ BUILTIN: tuple[Provider, ...] = (
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         models_url="https://generativelanguage.googleapis.com/v1beta/openai/models",
         thinking=THINKING_REASONING_EFFORT,
+    ),
+    Provider(
+        id="mistral",
+        label="Mistral",
+        base_url="https://api.mistral.ai/v1",
+        models_url="https://api.mistral.ai/v1/models",
+        # `docs.mistral.ai/inference/conversations/reasoning` publishes the accepted
+        # `reasoning_effort` names per model, and they differ:
+        # `mistral-large-4-0` takes `low`/`medium`/`high` and rejects
+        # `none`/`minimal`/`xhigh`/`max` outright ("not aliases"); the small and
+        # medium models take `high` and `none`; the `zai-glm-5-3` models take
+        # `low`/`high`/`max` and *reject* `none`. `low` and `high` are the only two
+        # accepted across all three families, so they are the offer set — the same
+        # rule as Ollama's row. `medium` is a real setting on Large 4 only, and a
+        # stored member still round-trips (`level_of` reports it as stored).
+        thinking=THINKING_REASONING_EFFORT,
+        levels=MISTRAL_LEVELS,
     ),
     Provider(
         id="custom",

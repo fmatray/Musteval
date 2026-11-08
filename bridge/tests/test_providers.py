@@ -31,6 +31,7 @@ def test_builtin_covers_the_compatibility_table():
         "vllm",
         "anthropic",
         "gemini",
+        "mistral",
         "custom",
     ]
 
@@ -357,3 +358,48 @@ def test_ollama_cloud_lists_its_models_and_takes_a_level():
     assert entry.level_of({"reasoning_effort": "high"}) == "high"
     # Local Ollama is the same compatibility layer, so it gets the same member.
     assert providers.find("ollama").extra_body("low") == {"reasoning_effort": "low"}
+
+
+#: The `GET https://api.mistral.ai/v1/models` document shape, taken from
+#: `docs.mistral.ai/openapi.yaml` `BaseModelCard` — the field names Mistral defines,
+#: not ones invented here. Not a recorded 200: the host answers 401 without a key,
+#: which proves the path exists but not the body.
+_MISTRAL_MODELS = b"""{"object":"list","data":[
+ {"id":"mistral-large-4-0","object":"model","created":1785164400,"owned_by":"mistralai"},
+ {"id":"mistral-medium-3-5","object":"model","created":1785164300,"owned_by":"mistralai"},
+ {"id":"zai-glm-5-3-flash","object":"model","created":1785164200,"owned_by":"mistralai"}]}"""
+
+
+def test_mistral_lists_models_and_offers_only_the_names_every_model_takes():
+    """Mistral's `reasoning_effort` names differ per model, so the offer set is the
+    intersection rather than the API-wide enum.
+
+    `docs.mistral.ai/inference/conversations/reasoning` publishes three families:
+    `mistral-large-4-0` takes `low`/`medium`/`high` and states that `none`, `minimal`,
+    `xhigh` and `max` are "not aliases" for its levels; the small and medium models
+    take `high` and `none`; `zai-glm-5-3` takes `low`/`high`/`max` and **rejects
+    `none`**. Offering the enum would therefore guarantee a 400 on one of them, so
+    `low` and `high` are the only two a picker may show.
+    """
+    entry = providers.find("mistral")
+    assert entry is not None
+    assert entry.base_url == "https://api.mistral.ai/v1"
+    assert providers.models(entry, "k", lambda url, key: _MISTRAL_MODELS) == [
+        "mistral-large-4-0",
+        "mistral-medium-3-5",
+        "zai-glm-5-3-flash",
+    ]
+
+    assert entry.thinking_levels == providers.MISTRAL_LEVELS == ("low", "high")
+    assert entry.extra_body("high") == {"reasoning_effort": "high"}
+    assert entry.level_of({"reasoning_effort": "high"}) == "high"
+    # No off switch in the offer set, so `none` is no member — writing it would be a
+    # rejected or silently-defaulted setting, not "off".
+    assert entry.extra_body("none") == {}
+    # `medium` is a real Large 4 setting the row does not list. A stored member
+    # round-trips so a wizard re-run does not overwrite it (`05` §7.2).
+    assert entry.level_of({"reasoning_effort": "medium"}) == "medium"
+    assert entry.extra_body("medium") == {"reasoning_effort": "medium"}
+
+    # Mistral's spec defines `max_tokens` only, so it must keep the firmware default.
+    assert "mistral" not in providers.TOKEN_PARAM
