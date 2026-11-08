@@ -807,7 +807,10 @@ esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
                        const char *reply_to)
 {
     if (prompt == NULL || reply_to == NULL) return ESP_ERR_INVALID_ARG;
-    if (s_queue == NULL) return ESP_ERR_INVALID_STATE;
+    /* Its own code: sharing `ESP_ERR_INVALID_STATE` with the full queue told the
+     * bridge to retry a boot-time allocation failure (`04` §3.3 E_BUSY is
+     * `retryable:true`; a missing loop is not). */
+    if (s_queue == NULL) return ESP_ERR_NOT_FOUND;
 
     load_run_settings();
     if (len > s_input_max || len > AGENT_DEFAULT_MAX_INPUT_BYTES) {

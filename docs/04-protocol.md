@@ -189,9 +189,11 @@ A prompt has no template field: templates are a scheduled-task action
 the run is submitted, so the loop only ever receives finished text.
 
 Reply: `agent.start` with `reply_to` equal to this `id`. Rejection: `agent.error`
-with `reply_to` equal to this `id` and code `E_BUSY`, `E_CONFIG` or `E_PROTOCOL`.
-`E_PROTOCOL` covers a `text` longer than `agent.max_input_bytes`: it is a malformed
-frame, refused before the run starts, and not a tool failure.
+with `reply_to` equal to this `id` and one of `E_BUSY`, `E_CONFIG`, `E_PROTOCOL`
+and `E_SAFE_MODE` (§4.11; the loop needs the network, which safe mode does not
+start). `E_PROTOCOL` covers a frame with no `text` — §4 makes a missing required
+argument malformed — and a `text` longer than `agent.max_input_bytes`; both are
+refused before the run starts and neither is a tool failure.
 
 Queueing is device-side, depth 2 (overview §1.2). A third concurrent `prompt` is
 rejected with `E_BUSY`; it is never silently dropped.

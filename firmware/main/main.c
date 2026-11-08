@@ -1120,30 +1120,22 @@ static void on_link_frame(const json_node_t *frame)
                                      AGENT_SOURCE_PROMPT, reply_to);
         if (err == ESP_OK) return;   /* the run answers with its own frames */
 
+        /* The codes and wording are `agent_prompt_rejection`'s, so a rejected prompt
+         * is host-tested rather than only observable over the link. */
+        const agent_rejection_t *rejection = agent_prompt_rejection(err);
         json_doc_t *body = json_new_object();
         if (body == NULL) return;
         json_node_t *root = json_root(body);
-        if (err == ESP_ERR_INVALID_STATE) {
+        json_add_string(root, "code", rejection->code);
+        json_add_string(root, "message", rejection->message);
+        json_add_bool(root, "retryable", rejection->retryable);
+        if (rejection->queue_detail) {
             /* `04` §3.15's E_BUSY example, including the detail object. */
-            json_add_string(root, "code", "E_BUSY");
-            json_add_string(root, "message",
-                            "agent run in flight; queue full (2), prompt rejected");
-            json_add_bool(root, "retryable", true);
             json_node_t *detail = json_add_object(root, "detail");
             if (detail != NULL) {
                 json_add_int(detail, "queue_depth", AGENT_MAX_QUEUE);
                 json_add_int(detail, "max_queue", AGENT_MAX_QUEUE);
             }
-        } else if (err == ESP_ERR_INVALID_SIZE) {
-            /* `04` §3.3 allows only E_BUSY, E_CONFIG and E_PROTOCOL for a rejected
-             * prompt; an oversized `text` is a malformed frame, not a tool failure. */
-            json_add_string(root, "code", "E_PROTOCOL");
-            json_add_string(root, "message", "prompt exceeds agent.max_input_bytes");
-            json_add_bool(root, "retryable", false);
-        } else {
-            json_add_string(root, "code", "E_INTERNAL");
-            json_add_string(root, "message", "the agent loop is not started");
-            json_add_bool(root, "retryable", true);
         }
         json_add_string(root, "reply_to", reply_to);
         link_emit_body("agent.error", frame_id(), 0, reply_to, body);

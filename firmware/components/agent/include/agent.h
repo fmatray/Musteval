@@ -176,9 +176,26 @@ typedef enum {
 
 const char *agent_source_name(agent_source_t source);
 
+/* The rejection a `prompt` frame carries, per `04-protocol.md` §3.3: the code, the
+ * message, `retryable`, and whether the `detail` object names the queue depth. Pure,
+ * so the frame handler's answers are host-tested (`agent_prompt.c`). */
+typedef struct {
+    esp_err_t err;
+    const char *code;
+    const char *message;
+    bool retryable;
+    bool queue_detail;
+} agent_rejection_t;
+
+const agent_rejection_t *agent_prompt_rejection(esp_err_t err);
+
 /* Hand a prompt to the loop. Returns ESP_OK when accepted, ESP_ERR_INVALID_STATE
  * when the queue is full (`E_BUSY`), ESP_ERR_INVALID_SIZE when the prompt exceeds
- * `agent.max_input_bytes`. `reply_to` is the frame id the run answers.
+ * `agent.max_input_bytes`, ESP_ERR_NOT_FOUND when no loop is running, and
+ * ESP_ERR_INVALID_ARG when the frame has no text. Each maps to its own
+ * `04` §3.3 code through `agent_prompt_rejection`; "queue full" and "no loop" shared
+ * `ESP_ERR_INVALID_STATE`, so a boot-time allocation failure was reported as a
+ * retryable busy queue. `reply_to` is the frame id the run answers.
  *
  * Asynchronous by construction: the caller is the link reader task, which must not
  * block for a whole run (`02-firmware.md` §3.3). */

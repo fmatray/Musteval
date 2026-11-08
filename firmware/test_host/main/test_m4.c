@@ -673,6 +673,46 @@ TEST_CASE("i2c tools are offered only when the bus is pinned", "[m4]")
     TEST_ASSERT_TRUE(tools_offered("gpio.read", NULL));
 }
 
+/* `04-protocol.md` §3.3 allows exactly `E_BUSY`, `E_CONFIG` and `E_PROTOCOL` for a
+ * rejected prompt, and §4 makes a missing required argument `E_PROTOCOL`. Before
+ * this table existed, `main.c` mapped every unrecognised `esp_err_t` to `E_INTERNAL`
+ * with `retryable:true`, so a `prompt` with no `text` told the bridge the loop was
+ * not started and asked it to retry a frame that can never succeed. */
+TEST_CASE("a rejected prompt names one of the documented codes", "[m4]")
+{
+    const agent_rejection_t *r = agent_prompt_rejection(ESP_ERR_INVALID_ARG);
+    TEST_ASSERT_EQUAL_STRING("E_PROTOCOL", r->code);
+    TEST_ASSERT_FALSE(r->retryable);
+    TEST_ASSERT_FALSE(r->queue_detail);
+
+    r = agent_prompt_rejection(ESP_ERR_INVALID_STATE);
+    TEST_ASSERT_EQUAL_STRING("E_BUSY", r->code);
+    TEST_ASSERT_TRUE(r->retryable);
+    /* `04` §3.15's example carries the depth, so the bridge can show why. */
+    TEST_ASSERT_TRUE(r->queue_detail);
+
+    r = agent_prompt_rejection(ESP_ERR_INVALID_SIZE);
+    TEST_ASSERT_EQUAL_STRING("E_PROTOCOL", r->code);
+    TEST_ASSERT_FALSE(r->retryable);
+
+    /* `retryable` is the code's property, not the situation's: `04` §5 fixes it per
+     * code, and `E_INTERNAL` is `yes` for both of these. */
+    r = agent_prompt_rejection(ESP_ERR_NOT_FOUND);
+    TEST_ASSERT_EQUAL_STRING("E_INTERNAL", r->code);
+    TEST_ASSERT_TRUE(r->retryable);
+    TEST_ASSERT_FALSE(r->queue_detail);
+
+    r = agent_prompt_rejection(ESP_ERR_NO_MEM);
+    TEST_ASSERT_EQUAL_STRING("E_INTERNAL", r->code);
+    TEST_ASSERT_TRUE(r->retryable);
+
+    /* An unnamed fault still answers rather than dropping the frame (§5). */
+    r = agent_prompt_rejection(ESP_ERR_INVALID_RESPONSE);
+    TEST_ASSERT_EQUAL_STRING("E_INTERNAL", r->code);
+    TEST_ASSERT_NOT_NULL(r->message);
+    TEST_ASSERT_TRUE(r->retryable);
+}
+
 /* --- history -------------------------------------------------------------- */
 
 /* `03-config.md` §agent `max_history_messages`: the bound holds after every append,
