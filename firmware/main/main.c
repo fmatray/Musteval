@@ -334,6 +334,18 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
         bool recursive = false;
         const json_node_t *rec = json_get(args, "recursive");
         if (rec && !json_bool(rec, &recursive)) { emit_failure("sandbox.delete", reply_to, "E_CONFIG", "Invalid recursive"); return ESP_ERR_INVALID_ARG; }
+        /* §4.19's table lists `E_BUSY`: a recursive delete while a run is live would
+         * pull the workspace out from under the tool calls reading it, so the
+         * destructive form waits for idle. A single-file delete is allowed. */
+        if (recursive) {
+            agent_status_t agent;
+            agent_status(&agent);
+            if (agent.busy) {
+                emit_failure("sandbox.delete", reply_to, "E_BUSY",
+                             "recursive delete refused while a run is in flight");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
         size_t entries = 0;
         esp_err_t err = store_delete_file(path, recursive, &entries);
         if (err != ESP_OK) {
