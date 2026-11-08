@@ -381,10 +381,14 @@ async def test_thinking_refuses_a_provider_that_takes_no_level_without_a_frame()
     """The device would accept any flat member and 400 on the next prompt, so the
     refusal has to be `$error` here, with no `config.set` on the wire.
 
-    The subject is `openai`, whose catalog row is `THINKING_NONE` because Chat
-    Completions allows function calling only at `reasoning_effort: none`. It used to
-    be `ollama-cloud`, which was recorded as levelless until Ollama's compatibility
-    page and `/api/show` showed `reasoning_effort` is supported (`05` §7.1).
+    The subject is `anthropic`, whose catalog row is `THINKING_NONE`: its OpenAI
+    compatibility layer documents `reasoning_effort` as *Ignored*, and its real
+    thinking field is the nested `{"type":"enabled","budget_tokens":N}` that
+    `03-config.md`'s flat-scalar rule forbids. Corrected when the OpenAI row gained
+    its levels — that surface does take `reasoning_effort`, so `openai` is no longer
+    an example of a row with no member. It used to be `ollama-cloud`, which was
+    recorded as levelless until Ollama's compatibility page and `/api/show` showed
+    `reasoning_effort` is supported (`05` §7.1).
     """
     sent: list[str] = []
 
@@ -395,7 +399,7 @@ async def test_thinking_refuses_a_provider_that_takes_no_level_without_a_frame()
         return _scripted()(line)
 
     async def body(app, pilot):
-        app._config = {"llm.providers": [{"id": "openai", "model": "m"}]}
+        app._config = {"llm.providers": [{"id": "anthropic", "model": "m"}]}
         app._config_fetched = True
         await app._run_command("/thinking high")
         await pilot.pause(0.1)

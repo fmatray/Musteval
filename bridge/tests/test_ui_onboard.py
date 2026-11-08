@@ -331,10 +331,15 @@ async def test_the_model_step_offers_the_fetched_list_and_selects_the_first():
 
 
 async def test_the_model_step_hides_thinking_where_the_provider_takes_none():
-    """`05` §7.1: a level the provider rejects turns every call into a 400."""
+    """`05` §7.1: a level the provider rejects turns every call into a 400.
+
+    Corrected when the OpenAI row gained its levels: that surface does take
+    `reasoning_effort`, so `openai` is no longer an example of a row with no member.
+    Anthropic's compatibility layer ignores the member, which is.
+    """
     app = _app(Device())
     async with app.run_test() as pilot:
-        app.push_screen(ModelStep(models=["gpt-4o"], provider="openai"))
+        app.push_screen(ModelStep(models=["claude-sonnet-4-6"], provider="anthropic"))
         assert await _mounted(pilot, "#step-model-select")
         assert not app.screen.query("#step-thinking")
         answered = app.screen.answer()
@@ -756,20 +761,49 @@ def test_a_level_write_is_the_whole_array_and_keeps_other_members():
     assert written[1] == chain[1]
 
 
-def test_a_budget_provider_turning_thinking_off_drops_the_member():
-    """`thinking_budget` has no token form of "off"; writing 0 would be a budget."""
+def test_a_provider_with_no_off_switch_refuses_none_rather_than_approximating():
+    """Corrected when the `thinking_budget` strategy was removed. The old test drove
+    `anthropic` as a budget provider; that surface ignores `reasoning_effort` and its
+    thinking member is nested, which `03-config.md`'s flat-scalar rule forbids, so the
+    row now takes no level at all.
+
+    The rule the test existed for is `05` §7.2's: where a provider cannot say "off",
+    `none` is refused rather than approximated, because Ollama resolves an unsupported
+    name to the model's *default*, and several models default to their highest effort.
+    """
     plan, why = onboard.thinking_writes(
         "none",
-        [{"id": "anthropic", "extra_body": {"thinking_budget": 4096}, "model": "m"}],
+        [{"id": "ollama-cloud", "extra_body": {"seed": 7}, "model": "m"}],
+    )
+    assert plan is None
+    assert "not offered" in why and "low" in why and "high" in why
+
+    # The row with neither an off switch nor an on switch refuses too, rather than
+    # writing a member its provider ignores.
+    plan, why = onboard.thinking_writes("none", [{"id": "anthropic", "model": "m"}])
+    assert plan is None
+    assert "takes no thinking level" in why
+
+    # And where the surface does take "off", the member is written rather than the
+    # entry's `extra_body` being dropped: a stale level must not survive. `openai`
+    # offers all five; `groq` is the row that does not offer `none`.
+    plan, why = onboard.thinking_writes(
+        "none", [{"id": "openai", "model": "m"}]
     )
     assert why == ""
-    assert "extra_body" not in plan[0][1]["llm.providers"][0]
+    assert plan[0][1]["llm.providers"][0]["extra_body"] == {
+        "reasoning_effort": "none"
+    }
 
 
 def test_a_level_the_provider_does_not_take_is_refused_on_the_host():
     """The device accepts any flat member and turns every call into a 400, so the
     refusal has to happen where it can name the provider (`05` §7.2)."""
-    plan, why = onboard.thinking_writes("high", [{"id": "openai", "model": "m"}])
+    # `anthropic`, not `openai`: corrected when the OpenAI row gained its levels —
+    # that surface takes `reasoning_effort`, so it is no longer the example of a row
+    # with nothing to set. Anthropic's compatibility layer ignores the member, which
+    # is a row that genuinely takes no level.
+    plan, why = onboard.thinking_writes("high", [{"id": "anthropic", "model": "m"}])
     assert plan is None
     assert "takes no thinking level" in why
     plan, why = onboard.thinking_writes("maximal", [{"id": "groq", "model": "m"}])
@@ -874,10 +908,14 @@ _OLLAMA_LIST = (
 
 async def test_the_wizard_fetches_ollama_cloud_models_without_a_key(monkeypatch):
     """`05` §7.1: the cloud list is public, so step 2 offers names before the key is
-    proved. The fetch is asserted on the URL step 2 asks for, not on a fake's answer."""
+    proved. The fetch is asserted on the URL step 2 asks for, not on a fake's answer.
+
+    Spied on `models_with_efforts`, which is the fetch the step now makes: it reads the
+    same list and keeps each model's published efforts for the level picker.
+    """
     asked: list[tuple[str, str]] = []
     app = _app(Device())
-    original = providers.models
+    original = providers.models_with_efforts
 
     def spy(entry, key, fetch=None):
         def recording(url, k):
@@ -887,11 +925,12 @@ async def test_the_wizard_fetches_ollama_cloud_models_without_a_key(monkeypatch)
         return original(entry, key, recording)
 
     async with app.run_test():
-        monkeypatch.setattr(providers, "models", spy)
+        monkeypatch.setattr(providers, "models_with_efforts", spy)
         answers = _answer(provider="ollama-cloud", api_key="", base_url="https://ollama.com/v1")
         names = await app._fetch_models(answers)
         assert names == ["gemma4:31b", "gpt-oss:120b"]
         assert asked == [("https://ollama.com/v1/models", "")]
+        assert answers.model_efforts == {"gemma4:31b": (), "gpt-oss:120b": ()}
 
 
 async def test_a_stored_level_the_row_does_not_offer_survives_a_re_run():
@@ -933,3 +972,96 @@ def test_an_absent_member_on_an_ollama_entry_reads_as_the_default_not_none():
     assert onboard.thinking_line("none", [{"id": "ollama-cloud",
                                            "extra_body": {"reasoning_effort": "max"}}]
                                  ).startswith("thinking: max")
+
+
+async def test_the_levels_narrow_to_the_model_that_publishes_them():
+    """`05` §7.1: levels are a property of the model. OpenRouter publishes each
+    model's own `supported_efforts`, so a model that takes only `low`/`high` must not
+    be offered `xhigh` — the provider would answer 400 on the first prompt."""
+    app = _app(Device())
+    efforts = {"openai/gpt-narrow": ("low", "high"),
+               "openai/gpt-wide": ("low", "medium", "high", "xhigh")}
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(
+                models=["openai/gpt-narrow", "openai/gpt-wide"],
+                provider="openrouter",
+                model="openai/gpt-narrow",
+                entries=list(providers.BUILTIN),
+                efforts=efforts,
+            )
+        )
+        assert await _mounted(pilot, "#step-thinking")
+        picker = app.screen.query_one("#step-thinking")
+        assert [value for _, value in picker._options] == ["low", "high"]
+
+        # Choosing the wider model re-narrows to its own set.
+        app.screen.query_one("#step-model-select").value = "openai/gpt-wide"
+        await pilot.pause(0.1)
+        picker = app.screen.query_one("#step-thinking")
+        assert [value for _, value in picker._options] == [
+            "low", "medium", "high", "xhigh"
+        ]
+
+
+async def test_a_model_step_without_published_efforts_offers_the_row_set():
+    """Every provider but OpenRouter says nothing about a model's levels, so the
+    row's set is the answer rather than an empty picker."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(
+                models=["gemma4:31b"],
+                provider="ollama-cloud",
+                model="gemma4:31b",
+                entries=list(providers.BUILTIN),
+            )
+        )
+        assert await _mounted(pilot, "#step-thinking")
+        picker = app.screen.query_one("#step-thinking")
+        assert [value for _, value in picker._options] == ["low", "high"]
+
+
+async def test_the_manual_model_field_completes_from_the_fetched_list():
+    """`05` §7.1: the list can hold hundreds of names, so the field completes from it
+    instead of making the reader scroll a menu. A completion, not a filter: a name the
+    list lacks stays submittable."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(
+                models=["anthropic/claude-sonnet-4-6", "openai/gpt-wide"],
+                provider="openrouter",
+                model="",
+                entries=list(providers.BUILTIN),
+            )
+        )
+        await pilot.pause(0.1)
+        field = app.screen.query_one("#step-model")
+        assert await field.suggester.get_suggestion("anth") == "anthropic/claude-sonnet-4-6"
+        # A name the list does not hold is not invented into one.
+        assert await field.suggester.get_suggestion("zzz") is None
+
+
+async def test_a_typed_model_name_also_narrows_the_picker():
+    """The typed field wins in `answer()`, so a name typed instead of picked must
+    narrow the same way — otherwise the picker offers a level from the previous
+    model while the new name is the one written to the device."""
+    app = _app(Device())
+    efforts = {"a/narrow": ("low", "high"), "b/wide": ("low", "high", "xhigh")}
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(
+                models=["a/narrow", "b/wide"],
+                provider="openrouter",
+                model="a/narrow",
+                entries=list(providers.BUILTIN),
+                efforts=efforts,
+            )
+        )
+        assert await _mounted(pilot, "#step-thinking")
+        app.screen.query_one("#step-model").value = "b/wide"
+        await pilot.pause(0.1)
+        picker = app.screen.query_one("#step-thinking")
+        assert [value for _, value in picker._options] == ["low", "high", "xhigh"]
+        assert app.screen.answer()["model"] == "b/wide"

@@ -1967,6 +1967,7 @@ class BridgeApp(App):
             model=(answers.model or stored_model or (models[0] if models else "")),
             thinking=entry.level_of(stored_extra) if entry is not None else "none",
             entries=entries,
+            efforts=answers.model_efforts,
         )
         picked = await self.push_screen_wait(step)
         if picked is None:
@@ -2130,7 +2131,8 @@ class BridgeApp(App):
         never a broken write. `providers.models` holds the parsing and the exception
         handling; this supplies the socket the L2 module may not open. Takes the
         step's answers so a provider with no `models_url` is a stated fact rather than
-        a fetch that silently returns nothing.
+        a fetch that silently returns nothing. Also records the efforts each name
+        publishes, which is what keeps the next step's picker honest per model.
         """
         entry = providers_mod.find(answers.provider) if answers.provider else None
         if entry is None or not entry.models_url:
@@ -2140,12 +2142,14 @@ class BridgeApp(App):
                 "asking the provider for its models",
                 f"{entry.label}: one GET with the key you typed",
             ):
-                return await asyncio.to_thread(
-                    providers_mod.models, entry, answers.api_key, _http_fetch
+                catalog = await asyncio.to_thread(
+                    providers_mod.models_with_efforts, entry, answers.api_key, _http_fetch
                 )
         except Exception as err:  # noqa: BLE001 - a failed fetch is a chat line
             self._chat().write(f"model list: {err}", kind="error")
             return []
+        answers.model_efforts = dict(catalog)
+        return [name for name, _ in catalog]
 
     async def _onboard_scan(self) -> tuple[list[dict], list[str]]:
         """The `wifi.scan` result and the lines worth showing about it."""
