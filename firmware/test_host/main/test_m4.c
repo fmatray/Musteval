@@ -777,6 +777,29 @@ TEST_CASE("agent_parse_reply refuses more than four tool calls", "[m4]")
     free(reply);
 }
 
+/* A call with no `arguments` member, and a call with no `function.name`, are the two
+ * shapes a provider emits that the loop must still handle deliberately: the first is
+ * a no-argument tool and gets `{}`, the second names nothing the dispatcher could
+ * call and is refused rather than dispatched empty (`02-firmware.md` §4.1 step 5). */
+TEST_CASE("agent_parse_reply fills arguments and refuses a nameless call", "[m4]")
+{
+    static const char *no_args =
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"time.now\"}}]}}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(no_args, strlen(no_args), reply));
+    TEST_ASSERT_EQUAL_size_t(1, reply->call_count);
+    TEST_ASSERT_EQUAL_STRING("{}", reply->calls[0].args);
+
+    static const char *no_name =
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c2\",\"function\":{\"arguments\":\"{}\"}}]}}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+        agent_parse_reply(no_name, strlen(no_name), reply));
+    free(reply);
+}
+
 /* --- skills --------------------------------------------------------------- */
 
 static const char *SKILL_TEXT =
