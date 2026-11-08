@@ -849,6 +849,10 @@ models that rarely reach for it, and the loop can only nudge, not teach.
 ### Template schema
 
 Templates take optional frontmatter `[ASSUMPTION]` and use `{{var}}` placeholders.
+Nothing renders them yet: templates are reached only through a task's
+`action.kind = "template"`, and tasks are M5 (`07-roadmap.md`). Until then
+`templates.list` and `template.get` read the files and this section is the contract
+the renderer is written against.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
