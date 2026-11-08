@@ -713,6 +713,116 @@ TEST_CASE("a rejected prompt names one of the documented codes", "[m4]")
     TEST_ASSERT_TRUE(r->retryable);
 }
 
+/* --- declarative tool files ------------------------------------------------ */
+
+static bool secret_yes(const char *key, void *ctx)
+{
+    (void)ctx;
+    return key != NULL && strcmp(key, "brave_key") == 0;
+}
+
+/* `03-config.md` §tools and `tools/web.md` put every HTTP member under `http`. The
+ * loader read them from the root, so the documented example below had no `url` and
+ * was dropped as "description and url are required strings" — every declarative tool
+ * would have failed to load. */
+TEST_CASE("a declarative tool is read from its documented shape", "[m4]")
+{
+    static const char *file =
+        "{\"description\":\"Search the web.\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}},"
+        "\"http\":{\"method\":\"POST\","
+        "\"url\":\"https://api.search.brave.com/res/v1/web/search\","
+        "\"response_path\":\"web.results\","
+        "\"headers\":{\"Accept\":\"application/json\","
+        "\"X-Subscription-Token\":\"nvs:brave_key\"},"
+        "\"timeout_ms\":15000}}";
+
+    tools_declared_t tool;
+    char why[128] = "";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, tools_declared_compile(
+        "web_search", file, strlen(file), secret_yes, NULL, &tool, why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("web_search", tool.name);
+    TEST_ASSERT_EQUAL_STRING("POST", tool.method);
+    TEST_ASSERT_EQUAL_STRING("https://api.search.brave.com/res/v1/web/search",
+                             tool.url);
+    TEST_ASSERT_EQUAL_STRING("web.results", tool.response_path);
+    TEST_ASSERT_EQUAL_INT(15000, tool.timeout_ms);
+    /* `compile_headers` emitted an empty wrapper and then wrote over the buffer, so
+     * a conforming headers object arrived as `{}`. Both members must be present. */
+    TEST_ASSERT_NOT_NULL(strstr(tool.headers, "\"Accept\":\"application/json\""));
+    TEST_ASSERT_NOT_NULL(strstr(tool.headers, "nvs:brave_key"));
+}
+
+/* `03-config.md` §tools: the bound is 1..60000, and a value outside it takes the
+ * default rather than refusing a file that is otherwise valid. */
+TEST_CASE("a declarative timeout outside its bound takes the default", "[m4]")
+{
+    static const char *file =
+        "{\"description\":\"d\",\"url\":\"https://a.test/\",\"http\":{"
+        "\"url\":\"https://a.test/\",\"timeout_ms\":%d}}";
+    char buf[256];
+    tools_declared_t tool;
+    char why[128];
+    int bad[] = {0, -1, 60001};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        snprintf(buf, sizeof buf, file, bad[i]);
+        TEST_ASSERT_EQUAL_INT(ESP_OK, tools_declared_compile(
+            "t", buf, strlen(buf), NULL, NULL, &tool, why, sizeof why));
+        TEST_ASSERT_EQUAL_INT(TOOLS_HTTP_TIMEOUT_MS, tool.timeout_ms);
+    }
+    snprintf(buf, sizeof buf, file, 60000);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, tools_declared_compile(
+        "t", buf, strlen(buf), NULL, NULL, &tool, why, sizeof why));
+    TEST_ASSERT_EQUAL_INT(60000, tool.timeout_ms);
+}
+
+/* `tools/web.md`: a file with a built-in's stem is dropped; a non-https url, a
+ * method outside GET/POST, and a `response_path` `json_path_get` cannot walk are
+ * dropped too, each before the run rather than at the first call. */
+TEST_CASE("a declarative file that breaks a rule is dropped", "[m4]")
+{
+    tools_declared_t tool;
+    char why[128];
+    const struct {
+        const char *stem;
+        const char *body;
+    } bad[] = {
+        /* built-in stem */
+        {"time.now", "{\"description\":\"d\",\"http\":{\"url\":\"https://a.test/\"}}"},
+        /* no http object at all */
+        {"t", "{\"description\":\"d\",\"url\":\"https://a.test/\"}"},
+        /* plain http */
+        {"t", "{\"description\":\"d\",\"http\":{\"url\":\"http://a.test/\"}}"},
+        /* method outside the contract */
+        {"t", "{\"description\":\"d\",\"http\":{\"url\":\"https://a.test/\","
+              "\"method\":\"PUT\"}}"},
+        /* a response_path with a space or a bracket */
+        {"t", "{\"description\":\"d\",\"http\":{\"url\":\"https://a.test/\","
+              "\"response_path\":\"a[0]\"}}"},
+        /* not JSON */
+        {"t", "{"},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        why[0] = '\0';
+        TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, tools_declared_compile(
+            bad[i].stem, bad[i].body, strlen(bad[i].body), secret_yes, NULL, &tool,
+            why, sizeof why));
+        /* Every drop names its reason: a silent drop is indistinguishable from a
+         * file that was never read. */
+        TEST_ASSERT_TRUE(why[0] != '\0');
+    }
+
+    /* An `nvs:` ref that does not resolve is its own answer, so the caller can log
+     * it as the `E_CONFIG` drop `03-config.md` check 10 names (`tools.h`). */
+    static const char *missing =
+        "{\"description\":\"d\",\"http\":{\"url\":\"https://a.test/\","
+        "\"headers\":\"nvs:missing\"}}";
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_NOT_FOUND, tools_declared_compile(
+        "t", missing, strlen(missing), secret_yes, NULL, &tool, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "does not resolve"));
+}
+
 /* --- history -------------------------------------------------------------- */
 
 /* `03-config.md` §agent `max_history_messages`: the bound holds after every append,

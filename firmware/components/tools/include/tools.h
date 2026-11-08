@@ -37,6 +37,9 @@
  * bounds, so a listing can never be refused for a directory the quota allows. */
 #define TOOLS_LIST_MAX 64
 #define TOOLS_ERR_MAX 160
+/* `03-config.md` §tools: `http.timeout_ms` defaults to this and is bounded to
+ * 1..60000. `tools/web.md` states the same default. */
+#define TOOLS_HTTP_TIMEOUT_MS 10000
 
 typedef enum {
     TOOLS_GATE_NONE = 0,      /* always available */
