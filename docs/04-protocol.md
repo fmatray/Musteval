@@ -187,6 +187,8 @@ never mid-run, so a run's tool array stays stable across rounds.
 
 Reply: `agent.start` with `reply_to` equal to this `id`. Rejection: `agent.error`
 with `reply_to` equal to this `id` and code `E_BUSY`, `E_CONFIG` or `E_PROTOCOL`.
+`E_PROTOCOL` covers a `text` longer than `agent.max_input_bytes`: it is a malformed
+frame, refused before the run starts, and not a tool failure.
 
 Queueing is device-side, depth 2 (overview §1.2). A third concurrent `prompt` is
 rejected with `E_BUSY`; it is never silently dropped.

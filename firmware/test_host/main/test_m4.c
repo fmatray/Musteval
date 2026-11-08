@@ -9,10 +9,18 @@
 #include "unity.h"
 
 #include "agent.h"
+#include "llm.h"
+#include "net.h"
 #include "skills.h"
 #include "store.h"
 #include "sys.h"
 #include "tools.h"
+
+/* The shipped tool array for the frozen 25-tool registry, measured from
+ * `tools_spec.c`: every entry's name, description and schema serialised compactly.
+ * Pinned here so the capacity assertion below fails if a schema grows past the
+ * budget the request body was sized for. */
+#define TOOL_ARRAY_BUDGET 5120
 
 /* --- helpers -------------------------------------------------------------- */
 
@@ -395,6 +403,103 @@ TEST_CASE("tools_validate constrains todo op to the nine names", "[m4]")
     TEST_ASSERT_FALSE(validates("todo", "{}"));
 }
 
+/* A name the registry does not hold and an argument that is not an object are refused
+ * with their own words, so the run's error says which one went wrong
+ * (`02-firmware.md` §7.1: validation runs before dispatch). */
+TEST_CASE("tools_validate refuses an unknown tool and a non-object argument", "[m4]")
+{
+    json_doc_t *doc = NULL;
+    char why[TOOLS_ERR_MAX] = "";
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse("{}", 2, &doc));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+                          tools_validate("nope.nothing", json_root(doc), why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "unknown tool"));
+    json_free(doc);
+
+    /* `{}` is valid for `time.now`, so an array and a bare string are what remains. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse("[]", 2, &doc));
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+                          tools_validate("time.now", json_root(doc), why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "arguments must be an object"));
+    json_free(doc);
+
+    /* No arguments at all is the same refusal, not a crash. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+                          tools_validate("time.now", NULL, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "arguments must be an object"));
+}
+
+/* `tools/memory.md` §Limits states the key alphabet, the 15-byte bound and the four
+ * reserved prefixes. The board's `memory_*` handlers enforced a different alphabet
+ * (`[a-z0-9_.-]{1,64}`) and did not refuse reserved prefixes at all, so those three
+ * rules were documented and unenforced. */
+TEST_CASE("a memory key obeys the documented alphabet and length", "[m4]")
+{
+    TEST_ASSERT_TRUE(tools_memory_key_ok("user_timezone"));
+    TEST_ASSERT_TRUE(tools_memory_key_ok("User2"));
+    TEST_ASSERT_TRUE(tools_memory_key_ok("a_"));
+
+    /* 15 is the bound, 16 is over it: the same limit `secrets` uses. */
+    TEST_ASSERT_TRUE(tools_memory_key_ok("abcdefghijklmno"));
+    TEST_ASSERT_FALSE(tools_memory_key_ok("abcdefghijklmnop"));
+
+    /* Empty, NULL and every character outside `[A-Za-z0-9_]`. */
+    TEST_ASSERT_FALSE(tools_memory_key_ok(""));
+    TEST_ASSERT_FALSE(tools_memory_key_ok(NULL));
+    TEST_ASSERT_FALSE(tools_memory_key_ok("has space"));
+    TEST_ASSERT_FALSE(tools_memory_key_ok("has.dot"));
+    TEST_ASSERT_FALSE(tools_memory_key_ok("has-dash"));
+    TEST_ASSERT_FALSE(tools_memory_key_ok("has/slash"));
+}
+
+TEST_CASE("a reserved memory prefix is refused and named", "[m4]")
+{
+    TEST_ASSERT_EQUAL_STRING("sys_", tools_memory_reserved_prefix("sys_uptime"));
+    TEST_ASSERT_EQUAL_STRING("cfg_", tools_memory_reserved_prefix("cfg_x"));
+    TEST_ASSERT_EQUAL_STRING("secret_", tools_memory_reserved_prefix("secret_a"));
+    TEST_ASSERT_EQUAL_STRING("rt_", tools_memory_reserved_prefix("rt_counter"));
+
+    /* A prefix must be a prefix: these are ordinary keys. */
+    TEST_ASSERT_NULL(tools_memory_reserved_prefix("system"));
+    TEST_ASSERT_NULL(tools_memory_reserved_prefix("user_timezone"));
+    TEST_ASSERT_NULL(tools_memory_reserved_prefix(""));
+    TEST_ASSERT_NULL(tools_memory_reserved_prefix(NULL));
+}
+
+/* `04-protocol.md` §5 and every tool doc's §Errors agree: a tool's own
+ * refusal is `E_TOOL`, a workspace quota is `E_STORAGE`. The board answered
+ * `E_STORAGE` for an absent path because `ESP_ERR_NOT_FOUND` fell through to the
+ * storage arm, which tells the bridge the flash failed rather than the call. */
+TEST_CASE("a tool failure carries the documented wire code", "[m4]")
+{
+    /* Refusals the model can fix, whatever the tool. */
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("fs.read", ESP_ERR_NOT_FOUND));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("skill.read", ESP_ERR_NOT_FOUND));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("memory.get", ESP_ERR_NOT_FOUND));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("todo", ESP_ERR_INVALID_ARG));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("gpio.write",
+                                                       ESP_ERR_NOT_SUPPORTED));
+
+    /* The one code with two meanings: the workspace quota versus a call bound. */
+    TEST_ASSERT_EQUAL_STRING("E_STORAGE", tools_wire_code("fs.write",
+                                                          ESP_ERR_INVALID_SIZE));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("memory.set",
+                                                       ESP_ERR_INVALID_SIZE));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("skill.read",
+                                                       ESP_ERR_INVALID_SIZE));
+
+    /* A network tool reports the link, never storage. */
+    TEST_ASSERT_EQUAL_STRING("E_WIFI", tools_wire_code("http.get", ESP_ERR_NOT_FOUND));
+    TEST_ASSERT_EQUAL_STRING("E_TIMEOUT", tools_wire_code("http.get", ESP_ERR_TIMEOUT));
+
+    TEST_ASSERT_EQUAL_STRING("E_INTERNAL", tools_wire_code("fs.write", ESP_ERR_NO_MEM));
+    TEST_ASSERT_EQUAL_STRING("E_TIMEOUT", tools_wire_code("time.now", ESP_ERR_TIMEOUT));
+    TEST_ASSERT_NULL(tools_wire_code("time.now", ESP_OK));
+}
+
 /* --- gating (`06-security.md` §6) ----------------------------------------- */
 
 static tools_policy_t policy_with(bool dangerous)
@@ -550,6 +655,56 @@ TEST_CASE("history counts through escaped and bracketed strings", "[m4]")
     agent_history_append(history, sizeof history, &used,
                          "{\"role\":\"assistant\",\"content\":\"ok\"}", 8);
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
+}
+
+/* `02-firmware.md` §4.2 "Buffer Full": the response is "Truncate oldest history
+ * entry in PSRAM", not "drop the new one". An append that cannot fit must make room,
+ * because the message it is being handed is the round just completed — losing it
+ * leaves the provider with a tool call and no answer, or a question with no reply. */
+TEST_CASE("history_append truncates the oldest entry when the buffer is full", "[m4]")
+{
+    /* Each message is 48 bytes, so two plus the brackets are 99 of the 128 available;
+     * a third needs 150 and has to displace one. */
+    char history[128];
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"aaaaaaaaaaaaaaaaaaaa\"}", 32));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"assistant\",\"content\":\"bbbbbbbbbbbbbbbbbbbb\"}", 32));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
+
+    /* This message does not fit beside both, so the oldest goes rather than it. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"cccccccccccccccccccc\"}", 32));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
+    TEST_ASSERT_NULL(strstr(history, "aaaa"));
+    TEST_ASSERT_NOT_NULL(strstr(history, "bbbb"));
+    TEST_ASSERT_NOT_NULL(strstr(history, "cccc"));
+    TEST_ASSERT_EQUAL_size_t(strlen(history), used);
+
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse(history, strlen(history), &doc));
+    TEST_ASSERT_TRUE(json_is_array(json_root(doc)));
+    json_free(doc);
+}
+
+/* A message larger than the whole buffer cannot be made room for. That one case is
+ * still an error — but a named one, not a silent loss. */
+TEST_CASE("history_append reports a message that cannot fit at all", "[m4]")
+{
+    char history[64];
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"a\"}", 32));
+    char big[300];
+    memset(big, 'x', sizeof big - 1);
+    big[0] = '{'; big[1] = '"'; big[2] = 'r'; big[3] = '"'; big[4] = ':';
+    big[sizeof big - 1] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE,
+        agent_history_append(history, sizeof history, &used, big, 32));
+    /* The history it could not extend is untouched, not corrupted. */
+    TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
+    TEST_ASSERT_NOT_NULL(strstr(history, "user"));
 }
 
 /* --- provider reply ------------------------------------------------------- */
@@ -729,4 +884,404 @@ TEST_CASE("the pin allowlist admits header pins and nothing else", "[m4]")
     TEST_ASSERT_FALSE(sys_pin_adc(3));
     TEST_ASSERT_FALSE(sys_pin_adc(5));
     TEST_ASSERT_FALSE(sys_pin_adc(0));
+}
+
+/* --- the audit's fixed defects -------------------------------------------- */
+
+/* `02-firmware.md` §4.1 step 4: the assistant/tool pair is atomic, so a trim may not
+ * start the kept suffix at a `role:"tool"` message whose call was dropped.
+ *
+ * The trim drops from the *front*: with a bound of N on a history of C messages it
+ * drops C - N, keeping the newest N. So the orphan case is the bound landing exactly
+ * on a result message, which this two-message history makes reachable at N = 1:
+ * dropping one message would keep only the `tool` reply, so the trim drops through
+ * it and keeps nothing. An empty history is the safe answer — the provider would
+ * reject the orphan instead. */
+TEST_CASE("history_trim never leaves an orphan tool message", "[m4]")
+{
+    char buf[512];
+    strcpy(buf,
+           "[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+    size_t used = strlen(buf);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 1));
+    TEST_ASSERT_EQUAL_size_t(0, agent_history_count(buf));
+    TEST_ASSERT_EQUAL_STRING("[]", buf);
+    TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
+
+    /* Dropping the user turn leaves the pair whole; the bound is honoured here
+     * because dropping one message does not split a call from its result. */
+    strcpy(buf,
+           "[{\"role\":\"user\",\"content\":\"q\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+    used = strlen(buf);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
+    TEST_ASSERT_NULL(strstr(buf, "\"user\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"tool\""));
+    TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
+}
+
+/* The same rule for a conversation that is all pairs: dropping one pair keeps the
+ * next pair intact rather than keeping a bare result.
+ *
+ * Four messages, bound 3 would drop `A1` and keep `[T1, A2, T2]`, whose first member
+ * is an orphan; the trim therefore drops through `T1` as well and keeps `[A2, T2]`.
+ * Two messages is the largest suffix that starts on a call, so the bound is a ceiling
+ * that pairing may lower by one. */
+TEST_CASE("history_trim keeps a whole pair rather than half of one", "[m4]")
+{
+    char buf[512];
+    strcpy(buf,
+           "[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r1\",\"tool_call_id\":\"c1\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c2\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}]");
+    size_t used = strlen(buf);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 3));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
+    TEST_ASSERT_EQUAL_INT(0, strncmp(buf, "[{\"role\":\"assistant\"", 18));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "c2"));
+    TEST_ASSERT_NULL(strstr(buf, "r1"));
+    TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
+
+    /* A bound that already lands on a call is honoured exactly. */
+    strcpy(buf,
+           "[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r1\",\"tool_call_id\":\"c1\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c2\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}]");
+    used = strlen(buf);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
+    TEST_ASSERT_EQUAL_INT(0, strncmp(buf, "[{\"role\":\"assistant\"", 18));
+    TEST_ASSERT_NULL(strstr(buf, "r1"));
+}
+
+/* An aborted run must leave the conversation as it found it, so the next run does not
+ * replay a question that never got an answer. */
+TEST_CASE("history_truncate restores the depth a run started from", "[m4]")
+{
+    char buf[512];
+    strcpy(buf,
+           "[{\"role\":\"user\",\"content\":\"q1\"},"
+           "{\"role\":\"assistant\",\"content\":\"a1\"},"
+           "{\"role\":\"user\",\"content\":\"q2\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+    size_t used = strlen(buf);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 2));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "a1"));
+    TEST_ASSERT_NULL(strstr(buf, "q2"));
+    TEST_ASSERT_NULL(strstr(buf, "\"tool\""));
+    TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
+
+    /* Keeping more than exists is a no-op, not an error. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 99));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
+}
+
+/* The other end of the same rule: a truncate that stops just after a `tool_calls`
+ * turn leaves a call with no result, which a provider refuses. Cutting one message
+ * earlier drops the call and its result together. */
+TEST_CASE("history_truncate never leaves a call without its result", "[m4]")
+{
+    char buf[512];
+    strcpy(buf,
+           "[{\"role\":\"user\",\"content\":\"q\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"},"
+           "{\"role\":\"assistant\",\"content\":\"a\"}]");
+    size_t used = strlen(buf);
+
+    /* Four would keep the call and drop its result. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 4));
+    TEST_ASSERT_EQUAL_size_t(4, agent_history_count(buf));
+
+    strcpy(buf,
+           "[{\"role\":\"user\",\"content\":\"q\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"},"
+           "{\"role\":\"assistant\",\"content\":\"a\"}]");
+    used = strlen(buf);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 3));
+    TEST_ASSERT_EQUAL_size_t(3, agent_history_count(buf));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"tool\""));
+    TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
+
+    /* Keeping only the call's own turn is refused too: two drops the call, not the
+     * result alone. */
+    strcpy(buf,
+           "[{\"role\":\"user\",\"content\":\"q\"},"
+           "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+    used = strlen(buf);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 2));
+    TEST_ASSERT_EQUAL_size_t(1, agent_history_count(buf));
+    TEST_ASSERT_NULL(strstr(buf, "\"tool\""));
+    TEST_ASSERT_NULL(strstr(buf, "tool_calls"));
+}
+
+/* --- the loop's own contract, proven through the assembly it produces --------- */
+
+/* `02-firmware.md` §4.1 step 4: the run's prompt is the last message of the first
+ * request and is in the history from round 2 on. `agent.c` is board-only, so the
+ * rule is proven here by driving the two pure pieces it uses — `agent_history_append`
+ * and `llm_assemble_prompt` — in the order `run_once` does. Before the fix the prompt
+ * never entered the history, so round 1 of a tool loop sent history alone and the
+ * provider saw tool results with no question at all. */
+TEST_CASE("a tool round keeps the question in the request body", "[m4]")
+{
+    char history[1024];
+    size_t used = 0;
+    int32_t bound = 16;
+
+    /* Round 0: the prompt is pushed, then the request carries history only. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"what time is it\"}", bound));
+
+    llm_request_t first = {
+        .model = "m",
+        .history_json = history,
+        .user_prompt = NULL,
+    };
+    char body[1024];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&first, NULL, body, sizeof body));
+    TEST_ASSERT_NOT_NULL(strstr(body, "what time is it"));
+
+    /* Round 1: the assistant turn and its result join the same history, and the
+     * question is still there. This is the assertion the old code failed. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]}", bound));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"12:00\"}", bound));
+
+    llm_request_t later = {.model = "m", .history_json = history, .user_prompt = NULL};
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&later, NULL, body, sizeof body));
+    TEST_ASSERT_NOT_NULL(strstr(body, "what time is it"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "12:00"));
+    /* The question precedes the tool result, which is the order a provider requires. */
+    TEST_ASSERT_TRUE(strstr(body, "what time is it") < strstr(body, "12:00"));
+}
+
+/* §4.1 step 6: a finished run leaves its answer in the history, so the next run sees
+ * a conversation rather than a question with no reply. */
+TEST_CASE("a finished run leaves the question and its answer for the next turn", "[m4]")
+{
+    char history[1024];
+    size_t used = 0;
+    int32_t bound = 16;
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"first question\"}", bound));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"assistant\",\"content\":\"first answer\"}", bound));
+
+    /* Run two pushes its own prompt onto the same buffer, which is what `run_once`
+     * does before its first round. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"second question\"}", bound));
+
+    llm_request_t r = {.model = "m", .history_json = history, .user_prompt = NULL};
+    char body[1024];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&r, NULL, body, sizeof body));
+    TEST_ASSERT_NOT_NULL(strstr(body, "first question"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "first answer"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "second question"));
+    /* A multiturn request is a conversation in order, not the newest question alone. */
+    TEST_ASSERT_TRUE(strstr(body, "first answer") < strstr(body, "second question"));
+}
+
+/* The reason the push is required, stated as the failure it prevents: a round whose
+ * history has no user turn and whose `user_prompt` is NULL assembles a body with no
+ * `"role":"user"` message at all. That was the shape `run_once` sent from round 1 on
+ * before the fix, and a provider answers a tool-result-only conversation with a 400
+ * or with an answer to the wrong question. */
+TEST_CASE("a history without the prompt assembles no user message", "[m4]")
+{
+    llm_request_t r = {
+        .model = "m",
+        .user_prompt = NULL,
+        .history_json = "[{\"role\":\"assistant\",\"content\":\"\","
+                        "\"tool_calls\":[{\"id\":\"c1\"}]},"
+                        "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{}\"}]",
+    };
+    char body[512];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&r, NULL, body, sizeof body));
+    TEST_ASSERT_NULL(strstr(body, "\"role\":\"user\""));
+    /* And with the prompt pushed into that same history, the turn is restored. */
+    char history[512];
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"q\"}", 16));
+    llm_request_t fixed = {.model = "m", .history_json = history};
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&fixed, NULL, body, sizeof body));
+    TEST_ASSERT_NOT_NULL(strstr(body, "\"role\":\"user\""));
+}
+
+/* Capacity is a property of the shipped constants, so it is asserted rather than
+ * measured on a board: the body has to hold the tool array and an 8 KiB system prompt
+ * at once, or every request is refused before any provider is reached. The board
+ * showed the consequence — `request body too large` on every prompt, permanently,
+ * because history is never reset. */
+TEST_CASE("a request body can hold the tools and a full system prompt", "[m4]")
+{
+    TEST_ASSERT_EQUAL_INT(NET_BODY_MAX, LLM_BODY_MAX);
+    /* `agent.c`'s history cap and `03-config.md`'s input bound; both are pinned here
+     * because a body that cannot hold them is a permanently failing device. */
+    TEST_ASSERT_GREATER_THAN(8192 + TOOL_ARRAY_BUDGET, LLM_BODY_MAX);
+    /* The system prompt is the largest single part, and it is configurable up to the
+     * `03-config.md` input bound. */
+    llm_request_t r = {.model = "m"};
+    static char prompt[8193];
+    static char tools[TOOL_ARRAY_BUDGET + 1];
+    memset(prompt, 's', 8192);
+    prompt[8192] = '\0';
+    memset(tools, ' ', TOOL_ARRAY_BUDGET);
+    tools[0] = '[';
+    tools[TOOL_ARRAY_BUDGET - 1] = ']';
+    tools[TOOL_ARRAY_BUDGET] = '\0';
+
+    r.system_prompt = prompt;
+    r.tools_json = tools;
+    static char body[LLM_BODY_MAX];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&r, NULL, body, sizeof body));
+}
+
+/* `tools/todo.md` §Bounds: a refusal leaves `list unchanged`. The nested `init`
+ * validated phase count and total up front but then cleared the list before the
+ * per-task insert, so an entry failing `task_add` — a duplicate content string, or
+ * one over 120 characters — wiped a list the op was supposed to refuse whole. */
+TEST_CASE("todo init refuses a bad nested entry without touching the list", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+        todo_op(list, "{\"op\":\"init\",\"items\":[\"keep me\"]}"));
+    TEST_ASSERT_EQUAL_size_t(1, todo_task_total(list));
+
+    /* A duplicate content string: `task_add` refuses the second copy, after `init`
+     * has already cleared the list. */
+    TEST_ASSERT_NOT_EQUAL(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"P\",\"items\":[\"dup\",\"dup\"]}]}"));
+    TEST_ASSERT_EQUAL_size_t(1, todo_task_total(list));
+    TEST_ASSERT_EQUAL_STRING("keep me", list->tasks[0].content);
+    TEST_ASSERT_EQUAL_STRING("Tasks", list->phases[0]);
+}
+
+/* Defect G, stated as the rule it broke. When `llm.max_history_messages` is already
+ * reached, the append evicts the oldest entry and the count returns to the bound, so
+ * comparing counts before and after said "the prompt is not in history" and the
+ * request carried it a second time in `user_prompt`. The count-based predicate is
+ * wrong on every full history; the append's own result is the answer. */
+TEST_CASE("a full history does not send the prompt twice", "[m4]")
+{
+    char history[512];
+    size_t used = 0;
+    int32_t bound = 2;
+
+    /* Fill to the bound, then push the run's prompt: the oldest is evicted, the count
+     * stays 2, and the prompt is nonetheless the last message. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"older\"}", bound));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"assistant\",\"content\":\"older answer\"}", bound));
+    size_t floor = agent_history_count(history);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"newest\"}", bound));
+
+    /* The count is back at the bound, so a `count > floor` test says false here even
+     * though the prompt is the last message — the predicate the fix replaced. */
+    TEST_ASSERT_EQUAL_size_t(floor, agent_history_count(history));
+    TEST_ASSERT_NOT_NULL(strstr(history, "newest"));
+
+    /* And the request assembled from it carries the question once, from the history. */
+    llm_request_t r = {.model = "m", .history_json = history, .user_prompt = NULL};
+    char body[512];
+    TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&r, NULL, body, sizeof body));
+    const char *hit = strstr(body, "newest");
+    TEST_ASSERT_NOT_NULL(hit);
+    TEST_ASSERT_NULL(strstr(hit + 1, "\"role\":\"user\""));
+}
+
+/* Negative cases the parser has to get right, because each one would otherwise reach
+ * the model as a skill it cannot follow. */
+TEST_CASE("skills_parse refuses every shape that is not a skill", "[m4]")
+{
+    skill_meta_t meta;
+    size_t offset = 0;
+
+    /* No frontmatter at all: a plain Markdown file is not a skill. */
+    const char *plain = "# Just notes\n\nNothing declarative here.\n";
+    TEST_ASSERT_NOT_EQUAL(ESP_OK,
+        skills_parse("plain", plain, strlen(plain), &meta, &offset));
+
+    /* Frontmatter never closed: the parse runs to the end and fails rather than
+     * treating the whole file as the header. */
+    const char *unclosed = "---\nname: unclosed\ndescription: no close\n";
+    TEST_ASSERT_NOT_EQUAL(ESP_OK,
+        skills_parse("unclosed", unclosed, strlen(unclosed), &meta, &offset));
+
+    /* A description is required, and an empty one does not count. */
+    const char *no_desc = "---\nname: nodesc\n---\nbody\n";
+    TEST_ASSERT_NOT_EQUAL(ESP_OK,
+        skills_parse("nodesc", no_desc, strlen(no_desc), &meta, &offset));
+
+    /* The name charset is enforced on the parsed value too, not only on the stem. */
+    const char *bad_name = "---\nname: Bad Name\ndescription: d\n---\nbody\n";
+    TEST_ASSERT_NOT_EQUAL(ESP_OK,
+        skills_parse("Bad Name", bad_name, strlen(bad_name), &meta, &offset));
+
+    /* A zero or negative `max_body_bytes` is ignored, leaving the default, rather
+     * than making every body of a real skill unreadable. */
+    const char *zero = "---\nname: zero\ndescription: d\nmax_body_bytes: 0\n---\nbody\n";
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+        skills_parse("zero", zero, strlen(zero), &meta, &offset));
+    TEST_ASSERT_FALSE(meta.has_max_body);
+    TEST_ASSERT_EQUAL_size_t(SKILL_BODY_DEFAULT_MAX, meta.max_body_bytes);
+
+    const char *neg = "---\nname: neg\ndescription: d\nmax_body_bytes: -5\n---\nb\n";
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+        skills_parse("neg", neg, strlen(neg), &meta, &offset));
+    TEST_ASSERT_EQUAL_size_t(SKILL_BODY_DEFAULT_MAX, meta.max_body_bytes);
+}
+
+/* An invalid skill never reaches the index, so a dropped file cannot occupy a slot
+ * and cannot make the model believe a skill exists. */
+TEST_CASE("the index carries only valid skills", "[m4]")
+{
+    skill_meta_t skills[2];
+    memset(skills, 0, sizeof skills);
+    snprintf(skills[0].name, sizeof skills[0].name, "good");
+    snprintf(skills[0].description, sizeof skills[0].description, "a real one");
+    skills[0].valid = true;
+    snprintf(skills[1].name, sizeof skills[1].name, "bad");
+    snprintf(skills[1].description, sizeof skills[1].description, "dropped");
+    skills[1].valid = false;
+
+    char out[128];
+    size_t written = 0, dropped = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+        skills_index(skills, 2, out, sizeof out, sizeof out, &written, &dropped));
+    TEST_ASSERT_NOT_NULL(strstr(out, "good"));
+    TEST_ASSERT_NULL(strstr(out, "bad"));
+    /* The dropped count counts valid skills that did not fit, so a file the parser
+     * already rejected is not reported as a budget drop. */
+    TEST_ASSERT_EQUAL_size_t(0, dropped);
+}
+
+/* The registry's description is what the model reads, so it must not claim a
+ * confinement the tool does not have. `06` §6.1 makes both mounts listable and
+ * readable; only the write pair is confined to `/workspace/`. */
+TEST_CASE("tool descriptions match the surface the tools have", "[m4]")
+{
+    TEST_ASSERT_NOT_NULL(strstr(tools_find("fs.list")->description, "read-only image"));
+    TEST_ASSERT_NOT_NULL(strstr(tools_find("fs.read")->description, "read-only image"));
+    TEST_ASSERT_NULL(strstr(tools_find("fs.write")->description, "read-only image"));
+    TEST_ASSERT_NOT_NULL(strstr(tools_find("fs.write")->description, "/workspace/"));
 }

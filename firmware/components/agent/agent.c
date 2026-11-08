@@ -45,6 +45,14 @@ static const char *TAG = "agent";
 #define AGENT_DEFAULT_MAX_TOOL_ROUNDS 6
 #define AGENT_DEFAULT_MAX_HISTORY  8
 
+/* The history buffer's own cap. It stays below `LLM_BODY_MAX` because the body also
+ * carries the tool array and the system prompt; a history that could fill the body
+ * alone would make every later request fail. */
+#define AGENT_HISTORY_MAX 8192
+
+/* `03-config.md` §agent: the default value of `agent.system_prompt`. */
+#define AGENT_DEFAULT_SYSTEM_PROMPT "/prompts/system.md"
+
 /* `/skills/` index budget inside the system prompt (`02-firmware.md` §2). */
 #define AGENT_SKILL_INDEX_MAX 1024
 
@@ -139,11 +147,35 @@ static void load_run_settings(void)
  * silently. */
 static void build_system_prompt(void)
 {
-    const char *configured = NULL;
+    /* `03-config.md` §prompts: `agent.system_prompt` is a *path* (`CFG_PATH`,
+     * default `/prompts/system.md`), not the text. Reading it here is what makes the
+     * config key mean what the document says; using the string itself sent the
+     * literal `/prompts/system.md` as the persona. */
+    const char *path = NULL;
     json_node_t *node = cfg_get("agent.system_prompt");
-    if (node != NULL) configured = json_string(node);
-    snprintf(s_system_prompt, AGENT_DEFAULT_MAX_INPUT_BYTES + 1, "%s",
-             configured != NULL ? configured : "");
+    if (node != NULL) path = json_string(node);
+    /* `03-config.md` §agent: the default is `/prompts/system.md`. `cfg_get` returns
+     * NULL for a key that is absent rather than its default, so an unconfigured
+     * device had no system prompt at all and the model answered without a persona —
+     * every other setting here goes through a `*_or` helper that applies its default,
+     * and this one did not. */
+    if (path == NULL) path = AGENT_DEFAULT_SYSTEM_PROMPT;
+    s_system_prompt[0] = '\0';
+    if (path != NULL && path[0] == '/') {
+        size_t len = 0;
+        esp_err_t err = store_read_file(path, s_system_prompt,
+                                        AGENT_DEFAULT_MAX_INPUT_BYTES + 1, &len);
+        if (err == ESP_OK) {
+            s_system_prompt[len] = '\0';
+        } else {
+            /* A missing or oversized prompt is reported and the run continues with
+             * its skill index only: the model is still usable, and refusing the run
+             * would turn a bad path into a dead agent. */
+            ESP_LOGW(TAG, "system prompt %s unreadable (%s); running without it",
+                     path, esp_err_to_name(err));
+            s_system_prompt[0] = '\0';
+        }
+    }
 
     size_t used = strlen(s_system_prompt);
     if (used >= AGENT_DEFAULT_MAX_INPUT_BYTES - 1) return;
@@ -383,7 +415,7 @@ static void history_push_tool_result(const agent_tool_call_t *call, bool ok,
 
     size_t written = 0;
     if (json_emit(doc, s_message, sizeof s_message, &written) == ESP_OK) {
-        agent_history_append(s_history, LLM_BODY_MAX, &s_history_used, s_message,
+        agent_history_append(s_history, AGENT_HISTORY_MAX, &s_history_used, s_message,
                              s_history_max);
     }
     json_free(doc);
@@ -395,22 +427,24 @@ static void history_push_tool_result(const agent_tool_call_t *call, bool ok,
  * The rendered message goes into a static scratch, not a local: the agent task has
  * 8 KiB of stack and a message reaches `AGENT_TEXT_MAX`. Dispatch is single-threaded,
  * so the static needs no lock. */
-static void history_push(const char *role, const char *content,
+static bool history_push(const char *role, const char *content,
                          const char *tool_call_id)
 {
     json_doc_t *doc = json_new_object();
-    if (doc == NULL) return;
+    if (doc == NULL) return false;
     json_node_t *root = json_root(doc);
     json_add_string(root, "role", role);
     json_add_string(root, "content", content);
     if (tool_call_id != NULL) json_add_string(root, "tool_call_id", tool_call_id);
 
     size_t written = 0;
+    esp_err_t err = ESP_FAIL;
     if (json_emit(doc, s_message, sizeof s_message, &written) == ESP_OK) {
-        agent_history_append(s_history, LLM_BODY_MAX, &s_history_used, s_message,
-                             s_history_max);
+        err = agent_history_append(s_history, AGENT_HISTORY_MAX, &s_history_used, s_message,
+                                   s_history_max);
     }
     json_free(doc);
+    return err == ESP_OK;
 }
 
 /* The assistant turn that asked for tools, with its `tool_calls` array: the provider
@@ -438,7 +472,7 @@ static void history_push_assistant(const agent_reply_t *reply)
     }
     size_t written = 0;
     if (json_emit(doc, s_message, sizeof s_message, &written) == ESP_OK) {
-        agent_history_append(s_history, LLM_BODY_MAX, &s_history_used, s_message,
+        agent_history_append(s_history, AGENT_HISTORY_MAX, &s_history_used, s_message,
                              s_history_max);
     }
     json_free(doc);
@@ -569,7 +603,20 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
     emit_agent_start(s_run_id, job->reply_to, job->source, job->len, queue_depth);
 
     /* The prompt is pushed once and is the last message of the first request, so
-     * later rounds pass `user_prompt = NULL` rather than repeating it. */
+     * later rounds pass `user_prompt = NULL` rather than repeating it. It must be in
+     * the history rather than only in the first request, or a later run would see
+     * the answers to a question that is no longer there (`02-firmware.md` §4.1).
+     *
+     * `history_floor` is the depth before this run, so an aborted run can drop the
+     * turns it did not finish and leave the conversation exactly as it found it. */
+    uint32_t history_floor = (uint32_t)agent_history_count(s_history);
+    /* A successful append means the prompt is the last message, even when the bound
+     * evicted an older one and the count did not grow — comparing counts made a full
+     * history send the question twice, once from the history and once as
+     * `user_prompt`. `max_history_messages` of 0 is the deliberate no-op, so the
+     * prompt travels as `user_prompt` there and nowhere else. */
+    bool prompt_in_history = s_history_max > 0 && history_push("user", job->prompt, NULL);
+    bool finalized = false;
     int rounds = 0;
     bool ever_initialised = false;
     int32_t prompt_tokens = 0;
@@ -590,16 +637,42 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
             .max_output_tokens = 0,
             .system_prompt = s_system_prompt,
             .history_json = s_history_used > 0 ? s_history : NULL,
-            .user_prompt = rounds == 0 ? job->prompt : NULL,
+            .user_prompt = (rounds == 0 && !prompt_in_history) ? job->prompt : NULL,
             .tools_json = s_tools_json[0] != '\0' ? s_tools_json : NULL,
         };
 
         s_response[0] = '\0';
         last_err = llm_query(&request, s_response, LLM_BODY_MAX + 1, NULL);
+        /* `llm` refuses when system prompt + tool array + history exceed its buffer,
+         * and no provider can take a body the assembler never produced. Re-sending
+         * the same history fails forever, which is what made the device answer
+         * `request body too large` to every prompt until a reboot. Halve the history
+         * until it fits; an empty history that still fails is a system prompt or tool
+         * array problem, and the error names it instead of looping. */
+        while (last_err == ESP_ERR_INVALID_SIZE) {
+            size_t count = agent_history_count(s_history);
+            if (count == 0) break;
+            agent_history_truncate(s_history, &s_history_used, (uint32_t)(count / 2));
+            if (agent_history_count(s_history) >= count) break;
+            request.history_json = s_history_used > 0 ? s_history : NULL;
+            s_response[0] = '\0';
+            last_err = llm_query(&request, s_response, LLM_BODY_MAX + 1, NULL);
+        }
         if (last_err != ESP_OK) {
             const char *code = last_err == ESP_ERR_INVALID_STATE ? "E_LLM_RATE"
                                                                 : "E_LLM_UNAVAILABLE";
             emit_agent_error(s_run_id, job->reply_to, code, llm_last_error(), true);
+            goto done;
+        }
+
+        /* The check at the loop top runs before a call that blocks on the network for
+         * seconds, which is exactly when a user cancels. Without this second check a
+         * cancel arriving during `llm_query` was silently discarded and the run
+         * finished as if nothing had been asked (`04-protocol.md` §3.4: the terminal
+         * outcome of a cancelled run is `agent.error`/`E_CANCELLED`). */
+        if (s_cancel) {
+            emit_agent_error(s_run_id, job->reply_to, "E_CANCELLED",
+                             "run cancelled", false);
             goto done;
         }
 
@@ -659,12 +732,21 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
         }
     }
 
+    /* The answer belongs to the conversation: without it the next run replays the
+     * question with no reply to it (`02-firmware.md` §4.1 step 6). */
+    history_push("assistant", s_reply->content, NULL);
+
     emit_agent_final(s_run_id, job->reply_to, s_reply->content, s_reply->content_len,
                      prompt_tokens, completion_tokens, rounds, todo_open,
                      (esp_timer_get_time() - started_ms) / 1000,
                      s_reply->content_len);
+    finalized = true;
 
 done:
+    /* A cancelled or failed run leaves no half-finished turns behind: a replayed
+     * `tool` message whose matching call was dropped is refused by the provider, and
+     * a question with no answer would poison every later run. */
+    if (!finalized) agent_history_truncate(s_history, &s_history_used, history_floor);
     s_busy = false;
     s_cancel = false;
 }
@@ -689,7 +771,7 @@ esp_err_t agent_start(void)
 {
     if (s_task != NULL) return ESP_OK;  /* idempotent: boot calls it once */
 
-    s_history = agent_alloc(LLM_BODY_MAX);
+    s_history = agent_alloc(AGENT_HISTORY_MAX);
     s_system_prompt = agent_alloc(AGENT_DEFAULT_MAX_INPUT_BYTES + 1);
     s_tools_json = agent_alloc(TOOLS_MAX_TOTAL * 512);
     s_response = agent_alloc(LLM_BODY_MAX + 1);

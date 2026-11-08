@@ -131,6 +131,10 @@ esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages);
 /* How many messages the array holds. Pure. */
 size_t agent_history_count(const char *history);
 
+/* Keep only the first `keep` messages, in place. An aborted run calls this at the
+ * depth it started from so its unfinished turns never replay. Pure. */
+esp_err_t agent_history_truncate(char *history, size_t *used, uint32_t keep);
+
 /* --- Provider reply (`llm_assemble_prompt`'s inverse) ---------------------- */
 
 /* One tool call the model asked for, with its arguments left as the provider's own

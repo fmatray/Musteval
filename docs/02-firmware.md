@@ -237,6 +237,13 @@ time, and as a platform service it needs no port.
   history and the tool array into the request body described below. Returns the
   length written, or 0 when the body does not fit — a truncated body is a 400 the
   caller cannot tell from a config mistake, so it is refused instead.
+- `llm_flatten_members(extra, out, cap)`: Emits one `extra_body` object's members as
+  a single flat object into `out`, and returns the length written or 0 when it does
+  not fit. `llm_init` stores the result in `llm_provider_t.extra_body`, so the
+  assembler merges members that are already at the request root. Emitting
+  `{"extra_body":{...}}` and then storing that text was the defect: the assembler
+  strips one level of braces, so the wrapper's own key survived and every member
+  under it - the thinking level included - was inert on the wire.
 - `llm_endpoint(base_url, out, cap)`: `base_url` with `/chat/completions` appended
   verbatim. No normalisation: a base URL that legitimately ends in `/` keeps it.
 - `llm_next_provider(current, count)`: The next index to try, or -1 when the chain is
@@ -302,11 +309,10 @@ layer ignores `strict` and rejects `response_format: json_object`.
 Where a provider needs a field anyway, `llm.providers[].extra_body` supplies it
 verbatim. It is merged last, but it may not carry `model`, `messages`, `tools` or
 `stream` - those are rejected as `E_CONFIG` rather than silently overriding the
-request's structure. That is what keeps current OpenAI models usable:
-`gpt-6-luna` and its generation support function calling over `/chat/completions`
-**only** with `reasoning_effort: "none"`, so an OpenAI entry carries
-`{"reasoning_effort": "none"}` there. `extra_body` is per provider and per model,
-which is exactly the granularity the divergence has.
+request's structure - and it holds at most four members, each a flat scalar. Which
+member a provider wants, and which values it accepts, is `03-config.md` §Provider
+compatibility's fact and is not restated here. `extra_body` is per provider and per
+model, which is exactly the granularity that divergence has.
 
 Tool calls are read from `choices[0].message.tool_calls[]` and results returned as
 `role: "tool"` messages carrying `tool_call_id`. A provider that returns tool calls
@@ -314,6 +320,15 @@ in any other shape is out of scope.
 
 Tool definitions are assembled at run start; the assembly rules and the
 per-tool schemas are in §7.1 and `docs/tools/`.
+
+**Capacity.** The assembled body — system prompt, tool array and history — must fit
+one fixed buffer. The tool array alone is about 5 KiB for the frozen 25-tool
+registry and the system prompt may be up to 8 KiB, so the body buffer is 16 KiB
+(`NET_BODY_MAX`, the largest reply the transport holds). The history has its own
+smaller cap, because a history allowed to fill the body would leave no room for the
+tools and fail every later request. When the assembler still refuses, the run is
+`E_LLM_UNAVAILABLE` and the loop drops history until the body fits, rather than
+retrying a body that can never be built.
 
 ### `agent` — Core Loop
 - `agent_run_sync(user_input)`: The core serialized loop. Handles tool rounds
@@ -610,6 +625,13 @@ The agent process is **serialized**. Only one run is active at a time.
    the second round on it is already in the history, and `llm_request_t.user_prompt`
    is NULL. Sending it again would ask the question twice and place the user turn
    after the tool replies.
+
+   A run that ends without an answer — cancelled, or failed before a final round —
+   drops the turns it added and restores the depth it started from. The rule is the
+   same one: an unanswered question, or a `tool` result whose call was never sent,
+   must not reach the next run. A completed run keeps its question and its answer,
+   which is what makes the buffer a conversation rather than a transcript of one
+   request.
 5. **Close-out check**: Before finalizing, inspect the todo tree via
    `agent_todo_phases()` and the rounds used. The check fails in two cases:
 

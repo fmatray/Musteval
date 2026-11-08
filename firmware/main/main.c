@@ -169,9 +169,29 @@ static const char *wire_code(esp_err_t err)
 static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const char *reply_to, json_doc_t *body)
 {
     json_node_t *root = json_root(body);
+    /* `04` §4.17-§4.20 confine every `sandbox.*` path to `/workspace/`; `store` no
+     * longer does, because `fs.list`/`fs.read` may reach `/fs` (`06` §6.1). */
+    static char s_sandbox_path[STORE_PATH_MAX];
+    const char *given = json_string(json_get(args, "path"));
+    if (given == NULL && strcmp(name, "sandbox.list") == 0) given = STORE_ROOT_WORKSPACE;
+    if (given != NULL) {
+        esp_err_t perr = store_resolve_write_path(given, s_sandbox_path,
+                                                  sizeof s_sandbox_path);
+        if (perr != ESP_OK) {
+            emit_failure(name, reply_to, "E_CONFIG",
+                         "path does not resolve under /workspace/");
+            return perr;
+        }
+        if (s_sandbox_path[0] == '\0') {
+            /* `store_resolve_write_path` already refused `/workspace` bare, so an
+             * empty result can only come from a rejection. Unreachable, kept safe. */
+            emit_failure(name, reply_to, "E_CONFIG",
+                         "path does not resolve under /workspace/");
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
     if (strcmp(name, "sandbox.list") == 0) {
-        const char *path = json_string(json_get(args, "path"));
-        if (path == NULL) path = STORE_ROOT_WORKSPACE;
+        const char *path = s_sandbox_path;
         static store_entry_t s_entries[SANDBOX_LIST_MAX];
         size_t n = 0;
         esp_err_t err = store_list_dir(path, s_entries, SANDBOX_LIST_MAX, &n);
@@ -183,7 +203,8 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
         json_add_string(root, "name", "sandbox.list");
         json_add_bool(root, "ok", true);
         if (result) {
-            static char s_shown[STORE_PATH_MAX];
+            /* One byte of slack for the separator the path may need. */
+            static char s_shown[STORE_PATH_MAX + 1];
             snprintf(s_shown, sizeof s_shown, "%s%s", path, (path[0] && path[strlen(path)-1] == '/') ? "" : "/");
             json_add_string(result, "path", s_shown);
             json_node_t *arr = json_new_array(result, "entries");
@@ -206,7 +227,7 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
         static char s_text[SANDBOX_READ_CAP + 1];
         size_t len = 0, total = 0;
         bool truncated = false;
-        esp_err_t rerr = store_read_text(path, s_text, SANDBOX_READ_CAP,
+        esp_err_t rerr = store_read_text(s_sandbox_path, s_text, SANDBOX_READ_CAP,
                                          &len, &total, &truncated);
         if (rerr != ESP_OK) {
             emit_failure("sandbox.read", reply_to, wire_code(rerr), "Read failed");
@@ -1195,7 +1216,9 @@ static void on_link_frame(const json_node_t *frame)
                 json_add_int(detail, "max_queue", AGENT_MAX_QUEUE);
             }
         } else if (err == ESP_ERR_INVALID_SIZE) {
-            json_add_string(root, "code", "E_TOOL");
+            /* `04` §3.3 allows only E_BUSY, E_CONFIG and E_PROTOCOL for a rejected
+             * prompt; an oversized `text` is a malformed frame, not a tool failure. */
+            json_add_string(root, "code", "E_PROTOCOL");
             json_add_string(root, "message", "prompt exceeds agent.max_input_bytes");
             json_add_bool(root, "retryable", false);
         } else {
