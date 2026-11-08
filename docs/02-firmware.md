@@ -834,7 +834,9 @@ the one write carve-out that touches storage internals.
 ### 7.1 Tool definitions sent to the model
 
 `tools_json` is built at run start from three sources, in this order: built-ins,
-declarative `/tools/*.json`, and MCP tools discovered at `tools/list`. Each entry is
+declarative `/tools/*.json`, and MCP tools discovered at `tools/list`. At M4 only the
+first exists: `tools_json_build` is called with an empty declarative set, because the
+image that carries `/tools/*.json` is M5's `bridge/tools/build_userfs.py`. Each entry is
 one `{"type":"function","function":{...}}`. The value `llm` receives is the bare
 array — `[{"type":"function",...}]` — with no enclosing object, because `llm` splices
 it into a member of its own request. A slice that carries the wrapper's closing brace
