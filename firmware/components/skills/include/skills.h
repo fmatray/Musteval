@@ -49,8 +49,10 @@ esp_err_t skills_parse(const char *stem, const char *text, size_t len,
  * skill, in the order `out` supplies, stopping when `budget` bytes are spent.
  *
  * `written` receives the byte count and `dropped` the number of skills left out —
- * the omission is logged by the caller (`tools/skills.md`). Returns ESP_OK, or
- * ESP_ERR_INVALID_SIZE when not even the first line fits. Pure. */
+ * the omission is logged by the caller (`tools/skills.md`). Returns ESP_OK when even
+ * zero entries fit: a budget that fits nothing is a reported drop, not a failure, and
+ * an error here would make the omission silent because the caller only logs on
+ * ESP_OK. Pure. */
 esp_err_t skills_index(const skill_meta_t *skills, size_t count, char *out,
                        size_t cap, size_t budget, size_t *written, size_t *dropped);
 

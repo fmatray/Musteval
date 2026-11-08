@@ -853,6 +853,14 @@ TEST_CASE("skills_index drops to fit the budget", "[m4]")
     TEST_ASSERT_EQUAL_size_t(2, dropped);
     TEST_ASSERT_NOT_NULL(strstr(out, "skill0"));
     TEST_ASSERT_NULL(strstr(out, "skill2"));
+
+    /* A budget that fits no line is still a reported drop, not a failure: an error
+     * here would be silent, because the caller only logs the omission on ESP_OK. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+        skills_index(skills, 3, out, sizeof out, 0, &written, &dropped));
+    TEST_ASSERT_EQUAL_size_t(0, written);
+    TEST_ASSERT_EQUAL_STRING("", out);
+    TEST_ASSERT_EQUAL_size_t(3, dropped);
 }
 
 /* --- the pin allowlist (`01-hardware.md` §6, §6.1) ------------------------ */
