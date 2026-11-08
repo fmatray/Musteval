@@ -233,6 +233,13 @@ is refused and named`), failing before the fix.
 
 ### Not reachable on this board
 
+The board left the USB bus during this audit and did not re-enumerate, so the
+fixes above that landed after that point are **built, host-tested and unflashed**:
+the `E_TOOL`/`E_STORAGE` split, `memory`'s bounds and `stored:true`, and the
+`geo`/`mqtt` milestone messages. They are not claimed as observed. The two defects
+the sweep itself found — the `fs.list` stack overflow and the `E_STORAGE` code —
+were both seen on the board before the fix.
+
 - **HTTP allowlist and response projection.** A declarative tool outside
   `tools.http_allow_hosts` answering `E_TOOL`, and a `response_path` subtree. The
   gate half is host-tested; the projection half needs a declarative tool, and no
