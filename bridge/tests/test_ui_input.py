@@ -18,7 +18,7 @@ from bridge.ui import BridgeApp
 from bridge.ui.modals import HelpModal
 from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, ChatScreen
 from bridge.ui.render import LINK_WORDS, clip
-from bridge.ui.history import MAX_ENTRIES, PromptHistory
+from bridge.ui.history import MAX_ENTRIES, PromptHistory, history_path
 from bridge.ui.testing import chat_lines
 from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
 from bridge.ui.task_prompt import TaskPrompt
@@ -121,6 +121,96 @@ def test_history_collapses_only_adjacent_duplicates():
     history.add("a")
     assert len(history) == 3
     assert MAX_ENTRIES == 100
+
+
+def test_history_persistence_is_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    PromptHistory()
+    assert not (tmp_path / "musteval").exists()
+
+
+def test_history_persistence_survives_restart(tmp_path):
+    path = str(tmp_path / "h.ndjson")
+    h1 = PromptHistory(path=path)
+    h1.add("first")
+    h1.add("second")
+    h2 = PromptHistory(path=path)
+    assert h2.previous("") == "second"
+
+
+def test_history_persistence_missing_file_starts_empty(tmp_path):
+    path = str(tmp_path / "missing.ndjson")
+    h = PromptHistory(path=path)
+    assert len(h) == 0
+    assert not (tmp_path / "missing.ndjson").exists()
+
+
+def test_history_persistence_creates_nested_parent_directory(tmp_path):
+    path = str(tmp_path / "a" / "b" / "h.ndjson")
+    h = PromptHistory(path=path)
+    h.add("test")
+    assert (tmp_path / "a" / "b" / "h.ndjson").exists()
+
+
+def test_history_persistence_load_caps_to_newest_entries(tmp_path):
+    path = tmp_path / "h.ndjson"
+    path.write_text("\n".join(json.dumps(f"e{i}") for i in range(5)))
+    h = PromptHistory(max_entries=2, path=str(path))
+    assert len(h) == 2
+    assert h.previous("") == "e4"
+
+
+def test_history_persistence_skips_corrupt_lines(tmp_path):
+    path = tmp_path / "h.ndjson"
+    path.write_text(f'{json.dumps("good1")}\nNOT JSON\n{json.dumps("good2")}')
+    h = PromptHistory(path=str(path))
+    assert len(h) == 2
+    assert h.previous("") == "good2"
+
+
+def test_history_persistence_skips_non_string_values(tmp_path):
+    path = tmp_path / "h.ndjson"
+    path.write_text(f'{json.dumps("good")}\n{json.dumps(123)}\n{json.dumps(None)}')
+    h = PromptHistory(path=str(path))
+    assert len(h) == 1
+    assert h.previous("") == "good"
+
+
+def test_history_persistence_skips_blank_lines(tmp_path):
+    path = tmp_path / "h.ndjson"
+    path.write_text(f'{json.dumps("good")}\n\n  \n{json.dumps("next")}')
+    h = PromptHistory(path=str(path))
+    assert len(h) == 2
+    assert h.previous("") == "next"
+
+
+def test_history_persistence_round_trips_leading_slash(tmp_path):
+    path = str(tmp_path / "h.ndjson")
+    h = PromptHistory(path=path)
+    h.add("/status")
+    h2 = PromptHistory(path=path)
+    assert h2.previous("") == "/status"
+
+
+def test_history_persistence_swallows_unwritable_path(tmp_path):
+    # Path parent is a file
+    file_path = tmp_path / "h.ndjson"
+    file_path.write_text("content")
+    path = str(file_path / "x")
+    h = PromptHistory(path=path)
+    h.add("test")  # should not raise
+
+
+def test_history_path_honours_xdg_config_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert history_path() == str(tmp_path / "musteval" / "history.ndjson")
+
+
+def test_a_history_file_that_is_not_utf8_does_not_stop_the_bridge(tmp_path):
+    path = tmp_path / "h.ndjson"
+    path.write_bytes(b'"kept"\n\xff\xfe not utf8\n')
+    history = PromptHistory(path=str(path))
+    assert history.previous("") == "kept"
 
 
 # -- history and Tab: the composer --------------------------------------

@@ -29,7 +29,7 @@ from .. import providers as providers_mod
 from .. import transfer
 from ..protocol import Frame, new_id
 from .help import COMMANDS, CommandSuggester, help_tabs, options
-from .history import PromptHistory
+from .history import PromptHistory, history_path
 from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import (
     Working,
@@ -128,7 +128,7 @@ class ChatScreen(Vertical):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._history = PromptHistory()
+        self._history = PromptHistory(path=history_path())
         #: Candidates currently listed, and the index the arrows sit on.
         self._candidates: list[str] = []
         self._total = 0

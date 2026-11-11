@@ -7,10 +7,10 @@ Audience: bridge developers.
 
 The Bridge is a **dumb terminal**. It provides a user interface to the device but performs no agent logic, no prompt assembly, and no inference.
 
-- **No local history**: All conversation context is stored on the device (`llm.max_history_messages`).
+- **No local conversation history**: All conversation context is stored on the device (`llm.max_history_messages`). The one host-side file is the composer's recall list (§5.1), which holds only the lines the user typed.
 - **No local keys**: API keys are stored in the device's NVS; the bridge never sees them.
 - **No local inference**: The bridge does not call LLM APIs; it only routes frames.
-- **Stateless**: All state (e.g., scrollback) is in-memory. Reconnecting to the device resets the TUI scrollback.
+- **Stateless**: All state (e.g., scrollback) is in-memory. Reconnecting to the device resets the TUI scrollback. The composer recall list is the single exception, and it is not scrollback.
 
 ## 2. Stack
 
@@ -122,11 +122,18 @@ The primary interaction pane.
     a `linked` peer that never answers leaves one line saying so, never silence.
     Slash commands are not gated this way — `/help`, `/settings` and the other
     local screens work with no link.
-  - Every submitted line is kept in a bounded in-memory ring (100 entries,
-    adjacent duplicates collapsed, blank lines ignored). `Up` walks back through
-    it, `Down` walks forward and returns to the line being typed, so a draft is
-    never lost. The ring dies with the process: the bridge still stores no
-    conversation (`00-overview.md` §RQ-1).
+  - Every submitted line is kept in a bounded ring (100 entries, adjacent
+    duplicates collapsed, blank lines ignored). `Up` walks back through it,
+    `Down` walks forward and returns to the line being typed, so a draft is
+    never lost. The ring is persisted to
+    `$XDG_CONFIG_HOME/musteval/history.ndjson` (default
+    `~/.config/musteval/history.ndjson`), one NDJSON line per entry, the newest
+    100 kept, and loaded at startup, so recall survives a restart. This is
+    composer recall, not conversation: the file holds only the lines the user
+    typed in the composer — no frames, no replies, no device output — and the
+    conversation itself still lives only on the device (`06-security.md` §2
+    row A6). Composer recall is a separate, host-side asset (A8), so the bridge
+    still stores no conversation.
   - `Tab` accepts the completion instead of moving focus, because completing a
     half-typed command is what the composer's suggestion is for. `Shift+Tab`
     keeps its platform meaning.

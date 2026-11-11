@@ -1,20 +1,40 @@
 """Composer prompt history: bounded, cursor-browsing, with a preserved draft.
 
-Nothing here persists or prints; `05-bridge.md` §1 keeps the bridge a terminal
-with no local conversation storage, so this ring dies with the process.
+The ring is persisted as NDJSON at `history_path()` when a path is given; the
+file holds only the lines the user typed, no conversation content, so recall
+survives a restart without the bridge storing a transcript.
 """
 
 from __future__ import annotations
 
+import json
+import os
+
 MAX_ENTRIES = 100
+
+
+def history_path() -> str:
+    """`~/.config/musteval/history.ndjson`, honouring `XDG_CONFIG_HOME`.
+
+    Deliberately duplicates `providers.custom_path()`; sharing it would mean a
+    new module for two lines.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    return os.path.join(base, "musteval", "history.ndjson")
 
 
 class PromptHistory:
     """Recent composer lines the Up/Down keys walk, newest last."""
 
-    def __init__(self, max_entries: int = MAX_ENTRIES) -> None:
+    def __init__(
+        self, max_entries: int = MAX_ENTRIES, path: str | None = None
+    ) -> None:
         self.max_entries = max_entries
-        self._entries: list[str] = []
+        #: Where the ring lives on disk; `None` keeps it in memory only.
+        self.path = path
+        self._entries: list[str] = self._load() if path is not None else []
         self._cursor: int | None = None
         #: `None` means no draft captured yet; `""` is a real, empty draft.
         self._draft: str | None = None
@@ -31,6 +51,7 @@ class PromptHistory:
             return
         self._entries.append(text)
         del self._entries[: max(0, len(self._entries) - self.max_entries)]
+        self._save()
         self.reset()
 
     def previous(self, current: str) -> str:
@@ -59,3 +80,35 @@ class PromptHistory:
         """Forget cursor and draft; entries stay so a fresh submission starts at the end."""
         self._cursor = None
         self._draft = None
+
+    def _load(self) -> list[str]:
+        """Read the newest `max_entries` lines, skipping anything unreadable."""
+        try:
+            with open(self.path, "rb") as handle:
+                lines = handle.readlines()
+        except OSError:
+            return []
+        entries: list[str] = []
+        for line in lines:
+            try:
+                decoded = line.decode("utf-8")
+                entry = json.loads(decoded)
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if isinstance(entry, str) and entry.strip():
+                entries.append(entry)
+        return entries[max(0, len(entries) - self.max_entries) :]
+
+    def _save(self) -> None:
+        """Rewrite the file whole; losing it must never break a submit."""
+        if self.path is None:
+            return
+        try:
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as handle:
+                for entry in self._entries:
+                    handle.write(json.dumps(entry) + "\n")
+        except OSError:
+            return

@@ -57,7 +57,7 @@ flowchart LR
 |---|---|
 | Multi-role agents (planner/worker, personas switching) | Explicit user constraint. One `system_prompt`, one conversation. |
 | Subagents (agent spawning agent) | Explicit user constraint. One in-flight agent run, queue depth 2. |
-| Bridge-side inference or history | Bridge is a terminal. Reconnect shows device history only. |
+| Bridge-side inference or conversation history | Bridge is a terminal. Reconnect shows device history only. The composer's own recall list is persisted on the host (`05-bridge.md` §5.1) and is not conversation. |
 | Token streaming | Non-streaming v1 → `docs/07-roadmap.md`. |
 | Cron expressions | `at`/`every` + `repeat` covers the requested one-time / N-times / forever. Roadmap. |
 | OTA updates | Not planned. Flashing stays wired. |

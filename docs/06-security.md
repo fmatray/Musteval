@@ -30,10 +30,14 @@ as game over.
 | A5 | `/workspace/` (agent-written files) | LittleFS | Data loss, tampering |
 | A6 | Conversation history | Device RAM only | Disclosure (not persisted by design) |
 | A7 | Trigger/schedule state | NVS namespace `runtime` | Misfires, replay |
+| A8 | Composer history file (`$XDG_CONFIG_HOME/musteval/history.ndjson`) | Host filesystem, user config dir | Local disclosure of past prompts |
 
 Notes on scope: conversation history is RAM-only in v1 (no persistence is specified
-in the overview) so a reboot destroys it; `[ASSUMPTION]` history is not written to
-LittleFS.
+in the overview) so a reboot destroys it; A6 is conversation history and stays
+RAM-only on the device; A8 is the bridge's composer recall, which is written to
+the host config directory by design, contains only user-typed composer lines
+(no model output, no secrets from the link), and is not the conversation.
+`[ASSUMPTION]` history is not written to LittleFS.
 
 ## 3. Trust boundaries
 

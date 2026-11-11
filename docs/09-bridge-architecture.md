@@ -296,12 +296,12 @@ widgets those screens compose. The App installs itself as the frame sink at star
 and routes each decoded frame to exactly one screen, per `05-bridge.md` §10.
 
 Three of its modules hold state a screen should not: `history.py` keeps the
-composer's prompt ring (bounded, in memory, no I/O), `settings.py` holds the
-`03-config.md` schema as rows — one per scalar or simple-list key — with
-`coerce` and `render_value` as the only two ways across the text/value boundary,
-and `logs.py` keeps the bounded log buffer, the tag/level `LogFilter` and the
-level colouring. All three are pure, so the screens that use them need no
-terminal to be tested.
+composer's prompt ring (bounded; persisted as NDJSON under the user config dir,
+which is the only I/O in the module), `settings.py` holds the `03-config.md`
+schema as rows — one per scalar or simple-list key — with `coerce` and
+`render_value` as the only two ways across the text/value boundary, and
+`logs.py` keeps the bounded log buffer, the tag/level `LogFilter` and the
+level colouring. All three need no terminal to be tested.
 
 `modals.py` owns every prompt, because `ModalScreen` suppresses app bindings and
 an app-level `Esc` would never fire; `task_prompt.py` is the JSON editor for the
