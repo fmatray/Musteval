@@ -152,7 +152,23 @@ A step that cannot run yet is named in the commit body, not silently skipped.
 6. **Smoke.** Run the thing. A test that has never been observed failing is a
    hypothesis; a feature that has never been observed working is a claim. For UI
    work, that means the actual surface, not a screenshot review.
-7. **Clean tree.** No scratch scripts, no unused scaffold, no coverage output, no
+7. **Static analysis.** `semgrep scan --config p/security-audit --error bridge firmware`.
+   A finding is a red step; `--error` makes the exit code do the gating, so the step is
+   not a report to be read and shrugged at. `p/security-audit` is the one pack that
+   covers both of this repo's languages, C and Python, and the scan takes about ten
+   seconds. The roots are named rather than left to the default walk so the step
+   cannot start scanning a directory that appears at the root later. Untracked
+   tooling (`.agents/`, `.omp/`) is outside both roots and semgrep reads only what git
+   tracks.
+   A `PartialParsing` error is not a finding: semgrep's C parser cannot read a
+   `PRIu32`/`PRId64`/`PRIx32` string concatenation, which several sources here use, and
+   the exit code stays 0 with them present. A new error of any other type is a red step.
+   The pack is fetched from the registry on every run — semgrep keeps no local rule
+   cache — so the step needs the network, and a machine without one is the case `A
+   step that cannot run yet is named in the commit body` already covers. It is a
+   `pipx` install, not a project dependency, because it is a check on the sources,
+   not something they import.
+8. **Clean tree.** No scratch scripts, no unused scaffold, no coverage output, no
    `.env`. Delete what was only there to help.
 
 A commit that touches a frozen contract without moving the doc, or moves the doc
