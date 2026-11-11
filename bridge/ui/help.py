@@ -38,7 +38,7 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
         "status", "reload", "reboot", "tasks", "run", "config", "secret",
         "templates", "template", "mqtt", "geo", "fs", "sandbox", "sys",
     ),
-    "Chat": ("retry", "ping", "cancel", "diag", "thinking", "export"),
+    "Chat": ("retry", "ping", "cancel", "diag", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context", "todo"),
     "Screens": ("settings", "onboard", "files", "logs", "help", "quit"),
 }
@@ -104,6 +104,12 @@ COMMANDS: tuple[CommandHelp, ...] = (
         "thinking",
         "/thinking | /thinking <level>",
         "read or set the provider's thinking level",
+        False,
+    ),
+    CommandHelp(
+        "model",
+        "/model | /model <name>",
+        "pick the provider's model",
         False,
     ),
     CommandHelp("diag", "/diag", "render the diagnostic half of status", False),

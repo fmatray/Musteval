@@ -266,6 +266,48 @@ def thinking_writes(
     return [("config", {"llm.providers": [updated] + list(chain[1:])})], ""
 
 
+def provider_entry(providers_now: object) -> "tuple[dict[str, object] | None, str]":
+    """`llm.providers[0]` when it is an object, else why it is not.
+
+    The writer and the picker both need this entry before they can do anything —
+    one to modify it, the other to name it — so the two refusals are worded here
+    rather than restated at each call site.
+    """
+    chain = providers_now if isinstance(providers_now, list) else []
+    if not chain:
+        return None, "no provider is configured; run /onboard first"
+    entry = chain[0]
+    if not isinstance(entry, dict):
+        return None, "the stored provider entry is not an object; run /onboard first"
+    return entry, ""
+
+
+def model_writes(
+    model: str, providers_now: object
+) -> "tuple[list[tuple[str, dict[str, object]]] | None, str]":
+    """`/model`: the frames that name one entry's model, or why not.
+
+    A read-modify-write of `llm.providers[0].model`, so the path is the whole array:
+    `04` §4.9 will not create a missing index, and the array form preserves every
+    other member of the entry — `base_url`, `api_key_ref`, `token_param` and an
+    `extra_body` the catalog does not model. A model change is not a reconfiguration.
+
+    The name is not checked against the provider's list: that list needs the API key,
+    which stays in the device's NVS (`06` §A1), so the reader is the authority on a
+    name the unauthenticated fetch could not see.
+    """
+    model = model.strip()
+    if not model:
+        return None, "a model name is required, e.g. /model llama3"
+    entry_now, why = provider_entry(providers_now)
+    if entry_now is None:
+        return None, why
+    updated = dict(entry_now)
+    updated["model"] = model
+    rest = list(providers_now[1:]) if isinstance(providers_now, list) else []
+    return [("config", {"llm.providers": [updated] + rest})], ""
+
+
 def thinking_line(level: str, providers_now: object) -> str:
     """What `/thinking` says for a provider it can describe: the level, or why not.
 

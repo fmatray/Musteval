@@ -717,6 +717,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |
 | `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
 | `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
+| `/model [name]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `name` | Sets the model of `llm.providers[0]`. With no argument it opens a picker of the provider's published models, pre-filled with the stored one and accepting a typed name instead; with one it writes that name directly. The write is the whole `llm.providers` array, so the rest of the entry moves untouched (§7.3) |
 | `/cancel` | `cancel` | none | Cancels current run |
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
@@ -988,11 +989,47 @@ without a `/config get` round trip.
 
 Deliberately absent, because the device has no surface for them: `/compact` (the
 device keeps `llm.max_history_messages` messages and truncates oldest-first with
-no summarisation step to invoke), `/model` (`llm.providers[]` is the fallback
-chain, not a selectable list, and the fallback only advances on failure),
-`/clear` (history lives on the device in PSRAM and has no reset command), and
-`/mcp add|remove|test` (MCP servers are config-file entries; changing them means
-`config.set` and `reload`).
+no summarisation step to invoke), `/clear` (history lives on the device in PSRAM
+and has no reset command), and `/mcp add|remove|test` (MCP servers are config-file
+entries; changing them means `config.set` and `reload`).
+
+### 7.3 `/model`
+
+The model is a property of the provider entry, so `/model` is a read-modify-write
+of `llm.providers[0].model` and nothing else, the same shape as `/thinking` (§7.2):
+the whole `llm.providers` array is written, so `base_url`, `api_key_ref`,
+`token_param` and `extra_body` move untouched, and no new frame is added — the
+command sends the existing `config.get` and `config.set`.
+
+| Form | Sends | Answer |
+|---|---|---|
+| `/model` | `config.get` (only when the config is not already cached), then the picker | the picker, pre-filled with the stored model |
+| `/model <name>` | the same `config.get`, then `config.set llm.providers` | the name written, and whether the chain took it |
+
+- **The list is fetched from `<stored base_url>/models`, not from the catalog row.**
+  The entry the device stores is the one the next prompt will use: it can say
+  `https://ollama.com/v1` while the catalog id `ollama` points at
+  `http://127.0.0.1:11434/v1`, so a catalog URL would list another host's models.
+  The catalog's `models_url` is used only when the entry stores no `base_url`,
+  and a `custom` entry, which has no catalog row at all, needs the derived form.
+- **Free text is the normal route, not a fallback for the odd provider.**
+  Measured on the host with the keyless fetch: OpenRouter publishes 466 names and
+  Ollama Cloud 23, while OpenAI, Mistral and Anthropic answer 401 and Groq 403,
+  and a local Ollama has no server to answer. The provider list is
+  unauthenticated because the bridge holds no key at all (`06` A1: it lives in NVS
+  and no frame reads it back), so a provider that guards `/models` yields no list.
+  The picker still opens, one chat line says why the list is empty, and the field
+  takes whatever is typed; neither outcome is an error.
+- **The typed name wins over the highlighted one.** The picker is an `Input`
+  beside the list, not one or the other, so a model published after the fetch,
+  or never published, is one keystroke away.
+- **`/model <name>` skips the fetch entirely.** The name is written as given: that
+  is the route for a model the provider does not publish, and it is also what a
+  reader with a known name wants instead of waiting on a list.
+- **Refusals happen on the host, before any write.** No configured provider, or a
+  `llm.providers[0]` that is not an object, produces one chat line and no frame. A
+  provider id the catalog does not know is **not** a refusal: `custom` entries have
+  no catalog row, which is exactly why the list URL comes from the entry itself.
 
 ## 8. Secrets & Redaction
 

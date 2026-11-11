@@ -107,6 +107,20 @@ class SecretPrompt(PromptBox[str | None]):
             yield Input(password=True, id="secret-input")
             yield Static("Enter: store | Esc: cancel", classes="prompt-hint")
 
+    def _choices(self) -> list[tuple[str, str]]:
+        """The list, plus the stored name when the provider did not publish it.
+
+        The two controls must agree on what is current. A stored name the fetch did
+        not return — `gemma4:cloud` against the cloud list, which is the state of the
+        first device this ran on — would otherwise leave the field saying one model
+        and the highlight another, and clearing the field would silently move the
+        reader onto a model they never chose.
+        """
+        names = list(self.models)
+        if self.current and self.current not in names:
+            names.insert(0, self.current)
+        return [(name, name) for name in names]
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         self.action_submit()
@@ -736,6 +750,86 @@ class ModelStep(_StepBox):
         if self.can_pass():
             return f"{self.model} stored; Ctrl+G keeps it"
         return "no stored model; Ctrl+G leaves the provider unconfigured"
+
+
+class ModelPicker(PromptBox[str | None]):
+    """`05` §7.3 `/model`: the provider's published list, or a typed name.
+
+    The list is offered, not trusted. The fetch runs without the API key — `06` §A1
+    keeps it in the device's NVS — so a provider that requires auth on its model
+    endpoint answers nothing and the field is the whole picker. Typed text wins over
+    the selection, the same rule the wizard's step 3 uses.
+    """
+
+    BINDINGS = [Binding("enter", "submit", "Use", show=False)]
+    CSS = _CSS
+    AUTO_FOCUS = "#step-model"
+
+    def __init__(
+        self, provider: str, label: str, models: list[str], current: str
+    ) -> None:
+        super().__init__()
+        self.provider = provider
+        self.label = label or provider
+        self.models = models
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="prompt-box"):
+            yield Static(f"model — {self.label}", classes="prompt-title")
+            if self.models:
+                yield Static(
+                    f"{len(self.models)} models from {self.label}",
+                    classes="prompt-hint",
+                )
+                yield Select(
+                    self._choices(),
+                    value=self.current or self.models[0],
+                    allow_blank=False,
+                    id="step-model-select",
+                )
+            else:
+                # The reason is the caller's line, in chat: this names the state.
+                yield Static(
+                    "no list from this provider; type the model name",
+                    classes="prompt-hint",
+                )
+            yield Input(
+                self.current,
+                placeholder="or type a model",
+                suggester=SuggestFromList(self.models, case_sensitive=False)
+                if self.models
+                else None,
+                id="step-model",
+            )
+            yield Static("Enter: use | Esc: cancel", classes="prompt-hint")
+
+    def _choices(self) -> list[tuple[str, str]]:
+        """The list, plus the stored name when the provider did not publish it.
+
+        The two controls must agree on what is current. A stored name the fetch did
+        not return — `gemma4:cloud` against the cloud list, which is the state of the
+        first device this ran on — would otherwise leave the field saying one model
+        and the highlight another, and clearing the field would silently move the
+        reader onto a model they never chose.
+        """
+        names = list(self.models)
+        if self.current and self.current not in names:
+            names.insert(0, self.current)
+        return [(name, name) for name in names]
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_submit()
+
+    def action_submit(self) -> None:
+        typed = self.query_one("#step-model", Input).value.strip()
+        chosen = (
+            self.query_one("#step-model-select", Select).value
+            if self.query("#step-model-select")
+            else ""
+        )
+        self.dismiss(typed or (chosen if isinstance(chosen, str) else "") or None)
 
 
 class FilePrompt(PromptBox[str | None]):

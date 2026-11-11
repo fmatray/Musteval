@@ -10,6 +10,7 @@ any `config.set` naming its `nvs:` key — is asserted on the wire.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -20,7 +21,8 @@ from bridge import providers
 from bridge.protocol import reset_ids
 from bridge.ui import BridgeApp
 from bridge.ui import onboard
-from bridge.ui.modals import ModelStep, NetworkStep, ProviderStep
+from bridge.ui.modals import ModelPicker, ModelStep, NetworkStep, ProviderStep
+from bridge.ui.testing import ModalHost, chat_lines
 
 from .test_ui import _reply
 
@@ -1159,3 +1161,259 @@ async def test_a_typed_model_name_also_narrows_the_picker():
         picker = app.screen.query_one("#step-thinking")
         assert [value for _, value in picker._options] == ["low", "high", "xhigh"]
         assert app.screen.answer()["model"] == "b/wide"
+
+
+# -- `/model` (`05` §7.3) --------------------------------------------------
+
+
+def test_provider_entry_names_both_refusals_from_one_place():
+    """`/model`'s picker and its writer refuse for the same two reasons, so the
+    wording lives in one function: a reader must never see two vocabularies."""
+    assert onboard.provider_entry(None) == (
+        None,
+        "no provider is configured; run /onboard first",
+    )
+    assert onboard.provider_entry([]) == (
+        None,
+        "no provider is configured; run /onboard first",
+    )
+    assert onboard.provider_entry(["not an object"]) == (
+        None,
+        "the stored provider entry is not an object; run /onboard first",
+    )
+    entry = {"id": "ollama", "model": "gemma4:cloud"}
+    assert onboard.provider_entry([entry, {"id": "second"}]) == (entry, "")
+
+
+def test_model_writes_keeps_every_other_member_of_the_entry():
+    """`05` §7.3: a model change is not a reconfiguration.
+
+    The whole `llm.providers` array is written because `04` §4.9 will not create a
+    missing index, so anything this function drops from the entry is lost on the
+    device. `base_url`, `api_key_ref`, `token_param` and an `extra_body` the catalog
+    does not model must all survive; a test that only checked `model` would pass
+    while the device went dark.
+    """
+    chain = [
+        {
+            "id": "groq",
+            "base_url": "https://api.groq.com/openai/v1",
+            "model": "old",
+            "api_key_ref": "nvs:llm_api_key",
+            "token_param": "max_completion_tokens",
+            "timeout_ms": 45000,
+            "extra_body": {"reasoning_effort": "low", "seed": 7},
+        },
+        {"id": "openrouter", "base_url": "u", "model": "b", "api_key_ref": "nvs:k"},
+    ]
+    plan, why = onboard.model_writes("new", chain)
+    assert why == ""
+    assert [kind for kind, _ in plan] == ["config"]
+    written = plan[0][1]["llm.providers"]
+    assert written[0] == {**chain[0], "model": "new"}
+    # The chain is a fallback list: the second entry is not this entry's business.
+    assert written[1] == chain[1]
+
+
+def test_model_writes_trims_the_name_it_is_given():
+    """A trailing space is a name the device would store verbatim and then fail to
+    resolve against the provider, which is a 404 on every later prompt."""
+    plan, why = onboard.model_writes("  llama3  ", [{"id": "ollama", "model": "m"}])
+    assert why == ""
+    assert plan[0][1]["llm.providers"][0]["model"] == "llama3"
+
+
+@pytest.mark.parametrize("name", ["", "   ", "\t\n"])
+def test_model_writes_refuses_a_blank_name_on_the_host(name):
+    """`03-config.md` requires 1..64 characters, so a blank write is a document the
+    device rejects; refusing here costs no round trip and can name the fix."""
+    plan, why = onboard.model_writes(name, [{"id": "ollama", "model": "m"}])
+    assert plan is None
+    assert "/model" in why
+
+
+def test_model_writes_refuses_without_a_provider():
+    plan, why = onboard.model_writes("m", [])
+    assert plan is None
+    assert "/onboard" in why
+
+    plan, why = onboard.model_writes("m", None)
+    assert plan is None
+    assert "/onboard" in why
+
+
+def test_model_writes_refuses_an_entry_that_is_not_an_object():
+    """`config.get` can answer anything; a scalar first entry is not a provider, and
+    `dict()` on it would raise instead of reporting."""
+    plan, why = onboard.model_writes("m", ["not-an-entry"])
+    assert plan is None
+    assert "not an object" in why
+
+
+# -- the model picker itself (`05` §7.3) -----------------------------------
+#
+# On `ModalHost`, not `BridgeApp`: the picker's contract is the value it dismisses
+# with, and `BridgeApp` would drag the whole session into a test of one widget.
+
+
+class _PickerApp(ModalHost):
+    def __init__(self, models: list[str], current: str = "", provider: str = "ollama") -> None:
+        super().__init__(ModelPicker(provider, provider, models, current))
+
+
+@contextlib.asynccontextmanager
+async def _picker(models: list[str], current: str = "", provider: str = "ollama"):
+    app = _PickerApp(models, current, provider)
+    async with app.run_test(size=(100, 40)) as pilot:
+        for _ in range(60):
+            if app.screen is app.modal:
+                break
+            await pilot.pause(0.02)
+        assert app.screen is app.modal
+        yield pilot, app
+
+
+async def test_the_model_picker_takes_a_typed_name_over_the_selection():
+    """`05` §7.3: the field sits beside the list, so a name the provider does not
+    publish is still one keystroke away. The device's own entry is that case —
+    `gemma4:cloud` is absent from the cloud list, so a selection-only picker would
+    move the reader off a name that works.
+    """
+    async with _picker(["kimi-k2.6", "glm-5.3"], "gemma4:cloud") as (pilot, app):
+        assert app.modal.query_one("#step-model").value == "gemma4:cloud"
+        app.modal.query_one("#step-model").value = "typed-model"
+        await pilot.pause()
+        app.modal.action_submit()
+        await pilot.pause()
+    assert app.dismissed["value"] == "typed-model"
+
+
+async def test_the_model_picker_returns_the_selection_when_the_field_is_blank():
+    async with _picker(["kimi-k2.6", "glm-5.3"]) as (pilot, app):
+        app.modal.query_one("#step-model-select").value = "glm-5.3"
+        await pilot.pause()
+        app.modal.query_one("#step-model").value = ""
+        app.modal.action_submit()
+        await pilot.pause()
+    assert app.dismissed["value"] == "glm-5.3"
+
+
+async def test_the_model_picker_cancels_to_none():
+    async with _picker(["a"], "a") as (pilot, app):
+        app.modal.action_cancel()
+        await pilot.pause()
+    assert app.dismissed["value"] is None
+
+
+async def test_the_model_picker_is_just_a_field_when_there_is_no_list():
+    """The common case, not the edge: measured keyless, only `openrouter` and
+    `ollama` publish `/models`; OpenAI, Mistral and Anthropic answer 401 and Groq
+    403, so for most providers the field is the whole picker and the stored name
+    must already be in it."""
+    async with _picker([], "gpt-4o-mini", provider="openai") as (pilot, app):
+        assert not app.modal.query("#step-model-select")
+        assert app.modal.query_one("#step-model").value == "gpt-4o-mini"
+        app.modal.action_submit()
+        await pilot.pause()
+    assert app.dismissed["value"] == "gpt-4o-mini"
+
+
+# -- `/model` through the app (`05` §7.3) ----------------------------------
+
+
+class _ProviderDevice(Device):
+    """A device that holds one provider entry and answers `config.get` for it."""
+
+    def __init__(self, entry: dict) -> None:
+        super().__init__()
+        self.entry = dict(entry)
+
+    def __call__(self, line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("name") == "config.get":
+            self.seen.append(frame)
+            body = {"name": "config.get", "ok": True,
+                    "result": {"config": {"llm": {"providers": [dict(self.entry)]}}},
+                    "duration_ms": 0}
+            return [json.dumps({"v": 1, "type": "command.result", "id": "d-9", "ts": 0,
+                                "reply_to": frame["id"], **body}).encode() + b"\n"]
+        if frame.get("name") == "config.set":
+            self.seen.append(frame)
+            value = frame["args"]["value"]
+            self.entry = dict(value[0])
+            body = {"name": "config.set", "ok": True, "result": {}, "duration_ms": 0}
+            return [json.dumps({"v": 1, "type": "command.result", "id": "d-9", "ts": 0,
+                                "reply_to": frame["id"], **body}).encode() + b"\n"]
+        return super().__call__(line)
+
+
+async def test_slash_model_with_a_name_writes_only_that_member():
+    """The no-fetch route, and the one a reader uses for a model the provider does
+    not publish — the device's own `gemma4:cloud` is exactly that. The whole entry is
+    written back, so `base_url` and `api_key_ref` must survive verbatim."""
+    device = _ProviderDevice({
+        "id": "ollama", "base_url": "https://ollama.com/v1", "model": "old",
+        "api_key_ref": "nvs:llm_api_key", "timeout_ms": 120000,
+    })
+    app = _app(device)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._config_quiet = True
+        await app._model(["gemma4:cloud"])
+        await pilot.pause()
+    written = [f for f in device.seen if f.get("name") == "config.set"][-1]
+    entry = written["args"]["value"][0]
+    assert entry["model"] == "gemma4:cloud"
+    assert entry["base_url"] == "https://ollama.com/v1"
+    assert entry["api_key_ref"] == "nvs:llm_api_key"
+    assert entry["timeout_ms"] == 120000
+
+
+async def test_slash_model_refuses_a_blank_name_before_any_frame():
+    device = _ProviderDevice({"id": "ollama", "base_url": "https://ollama.com/v1",
+                              "model": "old", "api_key_ref": "nvs:k"})
+    app = _app(device)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._config_quiet = True
+        app.action_show("chat")
+        await pilot.pause(0.1)
+        before = len(device.seen)
+        await app._model(["   "])
+        await pilot.pause()
+        assert not [f for f in device.seen[before:] if f.get("name") == "config.set"]
+        assert any("model:" in line for line in chat_lines(app))
+
+
+async def test_slash_model_refuses_when_no_provider_is_stored():
+    """An empty chain is the fresh-device state; `/onboard` is the fix, so the line
+    must name it rather than open a picker over nothing."""
+    device = Device()
+    app = _app(device)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._config_quiet = True
+        app._config = {}
+        app._config_fetched = True
+        app.action_show("chat")
+        await pilot.pause(0.1)
+        await app._model([])
+        await pilot.pause()
+        lines = chat_lines(app)
+    assert any("run /onboard" in line for line in lines), lines
+
+
+async def test_the_model_picker_lists_the_stored_name_when_the_provider_omits_it():
+    """The board's own state: `gemma4:cloud` is stored while the cloud list carries
+    23 other names. If the list omitted it, the highlight would sit on a model the
+    reader never chose and clearing the field would adopt it."""
+    async with _picker(["kimi-k2.6", "glm-5.3"], "gemma4:cloud") as (pilot, app):
+        select = app.modal.query_one("#step-model-select")
+        offered = [value for _, value in select._options]
+        assert offered[0] == "gemma4:cloud"
+        assert select.value == "gemma4:cloud"
+        # The published names are still all there.
+        assert {"kimi-k2.6", "glm-5.3"} <= set(offered)
+        app.modal.action_submit()
+        await pilot.pause()
+    assert app.dismissed["value"] == "gemma4:cloud"

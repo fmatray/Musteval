@@ -37,6 +37,7 @@ from .modals import (
     ConfirmPrompt,
     FilePrompt,
     FilterPrompt,
+    ModelPicker,
     ModelStep,
     NetworkStep,
     ProviderStep,
@@ -1758,6 +1759,10 @@ class BridgeApp(App):
         if head == "settings":
             self.action_show("settings")
             return
+        if head == "model":
+            await self._model(words[1:])
+            return
+
         if head == "files":
             # `/files` opens at the sandbox root; `/files /workspace/runs` opens there.
             target = words[1] if len(words) > 1 else SANDBOX_ROOT
@@ -2247,6 +2252,88 @@ class BridgeApp(App):
         self.run_worker(self._request("config.get"))
         self._chat().write(f"thinking: {level}")
 
+    async def _model(self, rest: list[str]) -> None:
+        """`05` §7.3: pick from the provider's published list, or name one directly.
+
+        The write is a read-modify-write of `llm.providers`, so every other member
+        of the entry survives. The list is fetched without a key — `06` A1 keeps it
+        in NVS and no frame reads it back — so a provider that guards `/models`
+        yields no list and the typed name is the route.
+        """
+        if not self._config_fetched:
+            await self._fetch_config()
+        chain = self._existing("llm.providers")
+        entry, why = onboard.provider_entry(chain)
+        if entry is None:
+            self._chat().write(f"model: {why}", kind="error")
+            return
+        provider_id = str(entry.get("id") or "")
+        stored = str(entry.get("model") or "")
+        if rest:
+            chosen: str | None = rest[0]
+        else:
+            known = providers_mod.find(provider_id) if provider_id else None
+            label = _provider_label(known, provider_id, entry.get("base_url"))
+            names = await self._model_list(entry, provider_id, label, known)
+            if not names:
+                self._chat().write(
+                    f"{label}: no model list (it is fetched without the key, which "
+                    "stays on the device); type the model name",
+                    kind="warn",
+                )
+            chosen = await self.push_screen_wait(
+                ModelPicker(provider_id, label, names, stored)
+            )
+            if chosen is None:
+                self._chat().write("model: cancelled")
+                return
+        plan, why = onboard.model_writes(chosen, chain)
+        if plan is None:
+            self._chat().write(f"model: {why}", kind="error")
+            return
+        async with self._working("writing the model", f"config.set ({chosen})"):
+            ok, refused = await self._send_body(plan[0][0], plan[0][1])
+        if not ok:
+            self._chat().write(f"model: refused ({refused})", kind="error")
+            return
+        self.run_worker(self._request("config.get"))
+        self._chat().write(f"model: {chosen}")
+
+    async def _model_list(
+        self,
+        entry: dict[str, Any],
+        provider_id: str,
+        label: str,
+        known: "providers_mod.Provider | None",
+    ) -> list[str]:
+        """The names the provider publishes, or `[]`.
+
+        The URL comes from the entry's own `base_url`, not from the catalog row: a
+        device can store `https://ollama.com/v1` while the catalog id `ollama`
+        points at `127.0.0.1`, and a `custom` entry has no row at all
+        (`05` §7.3). The catalog URL is the fallback when no `base_url` is stored.
+        """
+        base_url = str(entry.get("base_url") or "").rstrip("/")
+        url = f"{base_url}/models" if base_url else (
+            known.models_url if known is not None else ""
+        )
+        if not url:
+            return []
+        probe = providers_mod.Provider(
+            id=provider_id, label=label, base_url=base_url, models_url=url
+        )
+        async with self._working(
+            "asking the provider for its models",
+            f"{label}: one GET, no API key (it stays on the device)",
+        ):
+            # No `try`: `models_with_efforts` answers `[]` for every failure — a 401,
+            # a 403 and a refused connection alike — so the empty list is the signal
+            # and a wrapper here would be a branch that cannot run.
+            catalog = await asyncio.to_thread(
+                providers_mod.models_with_efforts, probe, "", _http_fetch
+            )
+        return [name for name, _ in catalog]
+
     def _run_local(self, head: str) -> None:
         if head == "logs":
             self.action_show("logs")
@@ -2278,15 +2365,33 @@ class BridgeApp(App):
             self.exit()
 
 
+def _provider_label(
+    known: "providers_mod.Provider | None", provider_id: str, base_url: object
+) -> str:
+    """How `/model` names the provider it is about to ask.
+
+    The catalog label describes the catalog row, not the entry: a device can carry
+    `id: ollama` with `base_url: https://ollama.com/v1`, and calling that "Ollama
+    (local)" points the reader at a server that is not there (`05` §7.3). When the
+    stored base URL is not the row's own, the host is the honest name.
+    """
+    stored = str(base_url or "").rstrip("/")
+    if known is not None and (not stored or stored == known.base_url.rstrip("/")):
+        return known.label
+    host = stored.split("://", 1)[-1].split("/", 1)[0]
+    return host or (known.label if known is not None else provider_id or "provider")
+
+
 def _http_fetch(url: str, key: str) -> bytes:
     """`GET url` with a bearer token, returning the body.
 
-    The one socket `/onboard` opens. It lives in `ui` rather than `providers.py`
-    because `09` §2 keeps L2 pure, and it is a plain `urllib` call because the project
-    ships no HTTP client and one GET does not justify a dependency.
+    The one socket `/onboard` and `/model` open. It lives in `ui` rather than in
+    `providers.py` because `09` §2 keeps L2 pure, and it is a plain `urllib` call
+    because the project ships no HTTP client and one GET does not justify a
+    dependency.
 
-    A non-200 raises, and the caller turns any failure into one chat line with an
-    empty model list, so the form stays usable.
+    A non-200 raises. `models_with_efforts` turns that into an empty list, so the
+    `/model` picker still opens with its field as the whole route.
     """
     import urllib.error
     import urllib.request
