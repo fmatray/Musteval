@@ -62,6 +62,7 @@ from .render import (
     UNREACHABLE,
     SlashHighlighter,
     clip,
+    ping_line,
     render_diag,
     render_json_block,
     hint_bar,
@@ -1643,20 +1644,9 @@ class BridgeApp(App):
             # `04` §4.25: one line. 100 % loss is a result the device measured, not
             # an error frame, so it is shown as the answer it is — but coloured as
             # the failure the reader is looking for.
-            received = result.get("received", 0)
-            sent = result.get("sent", 0)
             loss = result.get("loss_pct", 0)
-            line = (
-                f"ping {result.get('target')} {result.get('host')}: "
-                f"{received}/{sent}, {loss}% loss"
-            )
-            if loss < 100:
-                line += (
-                    f", rtt {result.get('rtt_min_ms')}/{result.get('rtt_avg_ms')}"
-                    f"/{result.get('rtt_max_ms')} ms"
-                )
             kind = "error" if loss == 100 else "warn" if loss else None
-            self._chat().write(line, kind=kind)
+            self._chat().write(ping_line(result), kind=kind)
             return
         if name == "sys.reset_counter":
             # `04` §4.23: the previous value is the proof the reply names.

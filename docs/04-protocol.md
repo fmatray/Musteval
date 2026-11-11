@@ -560,7 +560,7 @@ generic notification line and MUST NOT error.
 
 ## 4. Command catalog
 
-All twenty-five names, their arguments and their `result` shapes. Unknown names are
+All twenty-four names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -1187,13 +1187,15 @@ A 100 % loss is a result, not an error: `received: 0, loss_pct: 100` says the ho
 not answer, which is exactly what the reader asked. The command fails only when the
 probe could not be attempted: `E_CONFIG` for an unknown `target`, a missing provider,
 a missing NTP server or no loaded config; `E_WIFI` when the link is down;
-`E_BUSY` when another `net.ping` is in flight (`esp_ping` owns one session per
-device); `E_INTERNAL` when the probe session could not start.
+`E_BUSY` when another `net.ping` is already in flight (the command keeps one task
+slot and one `s_ping_busy` flag, so a second probe is refused rather than queued);
+`E_INTERNAL` when the probe task could not be started.
 
 The four probes are sent `NET_PING_INTERVAL_MS` (200 ms) apart with a
 `NET_PING_TIMEOUT_MS` (500 ms) wait each, so the command answers in under 3 s even
 when every probe times out, and it runs on its own task so `pong` keeps its 1 s
 bound (§3.7).
+The same probe backs the model's `net.ping` tool (`tools/net.md`), so the two never disagree about what a reachability answer means.
 
 
 ## 5. Error codes

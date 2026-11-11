@@ -244,8 +244,8 @@ the model can call `memory.list` and retry. A wrong argument or an over-cap writ
 
 ## See also
 
-- [Frozen tool surface](../00-overview.md#7-frozen-tool-surface) -- the twenty-five
-  built-ins, including these four names.
+- [Frozen tool surface](../00-overview.md#7-frozen-tool-surface) -- the frozen
+  set of built-ins, including these four names.
 - [Authorization model](../06-security.md#6-authorization-model) -- the sole gate
   authority; none of these tools is gated.
 - [NVS secret handling](../06-security.md#8-nvs-secret-handling) -- why `memory` keys

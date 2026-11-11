@@ -29,6 +29,7 @@ with workspace confinement detailed in §6.1.
 | `geo.md` | `geo.locate` | Geolocation |
 | `mqtt.md` | `mqtt.list`, `mqtt.publish` | MQTT broker communication |
 | `sys.md` | `sys.diagnostics` | Device health snapshot |
+| `net.md` | `net.ping` | Reachability probing |
 
 ## Governing documents
 

@@ -225,7 +225,7 @@ Full catalog, fields and state machine: `docs/04-protocol.md`.
 
 ## 7. Frozen tool surface
 
-This section freezes the **set**: which twenty-five built-ins exist, plus the two
+This section freezes the **set**: which twenty-six built-ins exist, plus the two
 non-built-in sources. It does not state gates, arguments or result shapes - those
 live in one place each.
 
@@ -237,18 +237,18 @@ live in one place each.
 | `tools/README.md` and the domain files under `docs/tools/` | arguments, result shape, model-facing JSON Schema, per-tool errors |
 | `04-protocol.md` §4 | host commands, which are not tools |
 
-Built-in, always present (twenty-five):
+Built-in, always present (twenty-six):
 
 `gpio.read` `gpio.write` `adc.read` `i2c.scan` `i2c.read` `i2c.write` `time.now`
 `fs.list` `fs.read` `fs.write` `fs.delete` `http.get` `skill.read` `task.list`
 `task.set` `event.emit` `todo` `geo.locate` `mqtt.list` `mqtt.publish`
-`memory.get` `memory.set` `memory.list` `memory.delete` `sys.diagnostics`
+`memory.get` `memory.set` `memory.list` `memory.delete` `sys.diagnostics` `net.ping`
 
 `i2c.write` is present only when the bus is configured, like `i2c.scan` and
 `i2c.read` (`tools/i2c.md`).
 
 Declarative: any `/tools/*.json` becomes a tool of the same name. MCP: namespaced
-`mcp.<server_id>.<tool_name>`. Both are additional to the twenty-five and neither can
+`mcp.<server_id>.<tool_name>`. Both are additional to the twenty-six and neither can
 shadow a built-in.
 
 Shipped-by-default declarative tools, user-editable files rather than built-ins:

@@ -113,7 +113,7 @@ section 1.2, "No multirole").
 
 | Capability | Gate | Failure code |
 |---|---|---|
-| `gpio.read`, `adc.read`, `i2c.scan`, `i2c.read`, `time.now`, `fs.list`, `fs.read`, `skill.read`, `task.list`, `event.emit`, `mqtt.list`, `todo`, `memory.get`, `memory.list`, `sys.diagnostics` | Always available (peripheral and heap bounds noted below) | `E_TOOL` on runtime failure |
+| `gpio.read`, `adc.read`, `i2c.scan`, `i2c.read`, `time.now`, `fs.list`, `fs.read`, `skill.read`, `task.list`, `event.emit`, `mqtt.list`, `todo`, `memory.get`, `memory.list`, `sys.diagnostics`, `net.ping` | Always available (peripheral and heap bounds noted below) | `E_TOOL` on runtime failure |
 | `gpio.write`, `i2c.write`, `fs.write`, `fs.delete`, `task.set` | `tools.allow_dangerous` must be `true` | `E_TOOL` (refused) |
 | `memory.set`, `memory.delete` | No gate; bounded by `tools.memory_max_bytes` and the 32-key cap instead. Nothing escapes NVS: no path, no actuation, no network | `E_TOOL` (over cap or reserved key) |
 | `fs.write` / `fs.delete` target | Must resolve under `/workspace/`, which is the `wsfs` mount; `userfs` has no tool-reachable write path | `E_TOOL` |

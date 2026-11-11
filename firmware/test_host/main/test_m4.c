@@ -482,6 +482,12 @@ TEST_CASE("a reserved memory prefix is refused and named", "[m4]")
 TEST_CASE("a tool failure carries the documented wire code", "[m4]")
 {
     /* Refusals the model can fix, whatever the tool. */
+    TEST_ASSERT_EQUAL_STRING("E_WIFI", tools_wire_code("net.ping", ESP_ERR_INVALID_STATE));
+    TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("net.ping", ESP_ERR_NOT_FOUND));
+    /* A probe that never started says nothing about reachability, and it is not a
+     * storage failure: `net_ping_icmp` reports `ESP_FAIL` from `esp_ping_new_session`. */
+    TEST_ASSERT_EQUAL_STRING("E_INTERNAL", tools_wire_code("net.ping", ESP_FAIL));
+    TEST_ASSERT_EQUAL_STRING("E_INTERNAL", tools_wire_code("net.ping", ESP_ERR_NO_MEM));
     TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("fs.read", ESP_ERR_NOT_FOUND));
     TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("skill.read", ESP_ERR_NOT_FOUND));
     TEST_ASSERT_EQUAL_STRING("E_TOOL", tools_wire_code("memory.get", ESP_ERR_NOT_FOUND));
@@ -547,6 +553,49 @@ TEST_CASE("the gate refuses actuation without allow_dangerous", "[m4]")
     tools_policy_t open = policy_with(true);
     TEST_ASSERT_EQUAL_INT(ESP_OK,
         tools_gate_check(write_tool, &open, NULL, why, sizeof why));
+}
+
+TEST_CASE("the net.ping tool is registered and valid", "[m4]")
+{
+    const tools_builtin_t *tool = tools_find("net.ping");
+    TEST_ASSERT_NOT_NULL(tool);
+    TEST_ASSERT_EQUAL(TOOLS_GATE_NONE, tool->gate);
+
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(tool->schema, strlen(tool->schema), &doc));
+    json_node_t *root = json_root(doc);
+    const json_node_t *required = json_get(root, "required");
+    TEST_ASSERT_EQUAL(1, json_array_len(required));
+    TEST_ASSERT_EQUAL_STRING("target", json_string(json_array_at(required, 0)));
+    json_free(doc);
+
+    TEST_ASSERT_TRUE(validates("net.ping", "{\"target\":\"router\"}"));
+
+    /* A target outside the enum is refused before anything is resolved, and the
+     * refusal names the argument the model must change. */
+    char why[TOOLS_ERR_MAX] = "";
+    json_doc_t *bad = NULL;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse("{\"target\":\"wan\"}", 16, &bad));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+        tools_validate("net.ping", json_root(bad), why, sizeof why));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(why, "target"), why);
+    json_free(bad);
+
+    json_doc_t *empty = NULL;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse("{}", 2, &empty));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+        tools_validate("net.ping", json_root(empty), why, sizeof why));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(why, "target"), why);
+    json_free(empty);
+}
+
+TEST_CASE("the builtin registry contains exactly twenty-six tools", "[m4]")
+{
+    size_t count = 0;
+    const tools_builtin_t *list = tools_builtins(&count);
+    TEST_ASSERT_EQUAL(TOOLS_MAX_BUILTINS, count);
+    TEST_ASSERT_EQUAL(26, count);
+    TEST_ASSERT_EQUAL_STRING("net.ping", list[count - 1].name);
 }
 
 /* `http.get` is refused unless its host is allowlisted, exactly. */

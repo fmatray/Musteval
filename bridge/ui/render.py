@@ -37,11 +37,35 @@ def render_tool_call(frame_body: dict[str, Any]) -> str:
     return f"→ {frame_body.get('tool')}({rendered})"
 
 
+def ping_line(result: dict[str, Any]) -> str:
+    """`04-protocol.md` §4.25's answer as one line, for a command result and for the
+    `net.ping` tool result alike: both carry the same eight members, so they are
+    worded once here rather than twice with a chance to drift."""
+    received = result.get("received", 0)
+    sent = result.get("sent", 0)
+    loss = result.get("loss_pct", 0)
+    line = (
+        f"ping {result.get('target')} {result.get('host')}: "
+        f"{received}/{sent}, {loss}% loss"
+    )
+    if loss < 100:
+        line += (
+            f", rtt {result.get('rtt_min_ms')}/{result.get('rtt_avg_ms')}"
+            f"/{result.get('rtt_max_ms')} ms"
+        )
+    return line
+
+
 def render_tool_result(frame_body: dict[str, Any]) -> str:
     tool = frame_body.get("tool")
     duration = frame_body.get("duration_ms", 0)
     if frame_body.get("ok"):
-        return f"  ✓ {tool} ({duration}ms) → {clip(str(frame_body.get('result')), RESULT_CLIP)}"
+        result = frame_body.get("result")
+        # `net.ping` shares its result shape with the `net.ping` command, so the
+        # reader gets the same sentence in both places.
+        if tool == "net.ping" and isinstance(result, dict):
+            return f"  ✓ {tool} ({duration}ms) → {ping_line(result)}"
+        return f"  ✓ {tool} ({duration}ms) → {clip(str(result), RESULT_CLIP)}"
     error = frame_body.get("error") or {}
     return f"  ✗ {tool} ({duration}ms) {error.get('code')}: {clip(str(error.get('message')), RESULT_CLIP)}"
 

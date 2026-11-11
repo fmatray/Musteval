@@ -18,11 +18,12 @@
 
 #include "esp_err.h"
 
+#include "net.h"
 #include "store.h"
 
 /* `03-config.md` §tools: the built-in names are frozen (`00-overview.md` §7) and a
  * declarative file cannot redefine one. */
-#define TOOLS_MAX_BUILTINS 25
+#define TOOLS_MAX_BUILTINS 26
 /* `03-config.md` §tools: `/tools/` `.json` is capped at 16 entries. */
 #define TOOLS_MAX_DECLARED 16
 /* `02-firmware.md` §7.1: `tools_json` carries built-ins, declarative and MCP
@@ -229,3 +230,17 @@ esp_err_t tools_json_build(const tools_context_t *ctx,
 esp_err_t tools_capability_names(const tools_context_t *ctx,
                                  const tools_declared_set_t *declared,
                                  json_node_t *out);
+
+/* Resolve a §4.25 target, probe it and summarise. One implementation behind both
+ * the host command (`04-protocol.md` §4.25) and the model's `net.ping` tool
+ * (`tools/net.md`): resolving needs `net`, `clock` and `llm` at once, none of
+ * which may read the others (`08-code-architecture.md` §1.1), so the resolver
+ * lives here at L2 where all three are reachable. Board-only.
+ *
+ * Returns ESP_OK on success (stats filled, incl. 100 % loss), ESP_ERR_INVALID_ARG
+ * (target not one of the three), ESP_ERR_INVALID_STATE (link down),
+ * ESP_ERR_NOT_FOUND (no gateway/provider/NTP server), ESP_ERR_INVALID_SIZE
+ * (host_cap too small), or ESP_ERR_NO_MEM/ESP_FAIL (probe failed). On failure,
+ * `why` carries one line of model-facing prose. */
+esp_err_t tools_ping(const char *target, char *host, size_t host_cap,
+                     net_ping_stats_t *stats, char *why, size_t why_cap);

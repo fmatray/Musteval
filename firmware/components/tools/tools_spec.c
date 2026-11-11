@@ -60,6 +60,8 @@
     "\"repeat\":{\"type\":\"object\"},\"missed\":{\"type\":\"string\"}}," \
     "\"required\":[\"id\",\"trigger\",\"action\"]}},\"required\":[\"task\"]}"
 
+#define S_NET_PING "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"enum\":[\"router\",\"llm\",\"ntp\"]}},\"required\":[\"target\"]}" /* tools/net.md */
+
 /* `00-overview.md` §7 order, and the gate per tool from `06-security.md` §6. */
 static const tools_builtin_t BUILTINS[TOOLS_MAX_BUILTINS] = {
     {"gpio.read",  "Read the digital level (0 or 1) of a header GPIO pin.", TOOLS_GATE_NONE, S_PIN},
@@ -87,10 +89,11 @@ static const tools_builtin_t BUILTINS[TOOLS_MAX_BUILTINS] = {
     {"memory.list", "List the durable memory keys.", TOOLS_GATE_NONE, S_MEM_LIST},
     {"memory.delete", "Delete one durable memory entry.", TOOLS_GATE_NONE, S_MEM_DELETE},
     {"sys.diagnostics", "Read a projected subset of device health counters.", TOOLS_GATE_NONE, S_SYS_DIAG},
+    {"net.ping", "Probe the router, the LLM provider or the NTP server with ICMP echo from the device.", TOOLS_GATE_NONE, S_NET_PING},
 };
 
 _Static_assert(sizeof BUILTINS / sizeof BUILTINS[0] == TOOLS_MAX_BUILTINS,
-               "the frozen surface is twenty-five built-ins (`00-overview.md` §7)");
+               "the frozen surface is twenty-six built-ins (`00-overview.md` §7)");
 
 const tools_builtin_t *tools_builtins(size_t *count)
 {
@@ -243,8 +246,9 @@ esp_err_t tools_validate(const char *tool, const json_node_t *args, char *why,
         const char *key = json_string(json_array_at(required, i));
         if (key == NULL) continue;
         if (json_get(args, key) == NULL) {
-            json_free(doc);
+            /* `key` points into `doc`, so the message is formatted before the free. */
             say(why, why_cap, "%s: %s is required", tool, key);
+            json_free(doc);
             return ESP_ERR_INVALID_ARG;
         }
     }
@@ -349,6 +353,13 @@ const char *tools_wire_code(const char *tool, esp_err_t err)
     if (tool != NULL && strcmp(tool, "http.get") == 0) {
         /* A network tool's failure is the link's, not storage's. */
         return err == ESP_ERR_TIMEOUT ? "E_TIMEOUT" : "E_WIFI";
+    }
+    /* A down link is the network's failure, and a probe that could not start is
+     * the device's; neither is the model's call to fix (`tools/net.md` §Errors). The
+     * other `net.ping` failures stay `E_TOOL`: another target is the fix. */
+    if (tool != NULL && strcmp(tool, "net.ping") == 0) {
+        if (err == ESP_ERR_INVALID_STATE) return "E_WIFI";
+        if (err == ESP_FAIL || err == ESP_ERR_NO_MEM) return "E_INTERNAL";
     }
     switch (err) {
     case ESP_OK:                return NULL;

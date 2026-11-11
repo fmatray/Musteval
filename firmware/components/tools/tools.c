@@ -26,6 +26,7 @@
 #include "net.h"
 #include "skills.h"
 #include "store.h"
+#include "llm.h"
 #include "sys.h"
 
 /* `03-config.md` §tools: `/tools/` `.json` bodies and `tools_json` share this bound. */
@@ -547,6 +548,90 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
     return ESP_OK;
 }
 
+/* --- Reachability (`04-protocol.md` §4.25) -------------------------------- */
+
+esp_err_t tools_ping(const char *target, char *host, size_t host_cap,
+                     net_ping_stats_t *stats, char *why, size_t why_cap)
+{
+    if (host == NULL || stats == NULL) return ESP_ERR_INVALID_ARG;
+    if (target == NULL) {
+        set_why(why, why_cap, "net.ping: target is required");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (host_cap == 0) return ESP_ERR_INVALID_SIZE;
+
+    bool router = strcmp(target, "router") == 0;
+    bool provider = strcmp(target, "llm") == 0;
+    bool ntp = strcmp(target, "ntp") == 0;
+    if (!router && !provider && !ntp) {
+        set_why(why, why_cap, "net.ping: unknown target");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!net_connected()) {
+        set_why(why, why_cap, "net.ping: link is down");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (router) {
+        esp_err_t err = net_gateway(host, host_cap);
+        if (err == ESP_ERR_INVALID_SIZE) return err;
+        if (err != ESP_OK) {
+            set_why(why, why_cap, "net.ping: no gateway");
+            return ESP_ERR_NOT_FOUND;
+        }
+    } else if (provider) {
+        if (!llm_active_host(host, host_cap)) {
+            set_why(why, why_cap, "net.ping: no llm provider");
+            return ESP_ERR_NOT_FOUND;
+        }
+    } else {
+        const char *server = clock_server_name();
+        if (server == NULL) {
+            set_why(why, why_cap, "net.ping: no ntp server");
+            return ESP_ERR_NOT_FOUND;
+        }
+        int n = snprintf(host, host_cap, "%s", server);
+        if (n <= 0 || (size_t)n >= host_cap) {
+            set_why(why, why_cap, "net.ping: the ntp server name does not fit");
+            return ESP_ERR_INVALID_SIZE;
+        }
+    }
+
+    int32_t rtt[NET_PING_COUNT];
+    for (size_t i = 0; i < NET_PING_COUNT; i++) rtt[i] = -1;
+    esp_err_t err = net_ping_icmp(host, rtt, NET_PING_COUNT);
+    if (err != ESP_OK) {
+        set_why(why, why_cap, "net.ping: the probe failed");
+        return err;
+    }
+    net_ping_summarise(rtt, NET_PING_COUNT, stats);
+    return ESP_OK;
+}
+
+static esp_err_t call_net_ping(const json_node_t *args, json_doc_t **out,
+                               char *why, size_t why_cap)
+{
+    const char *target = json_string(json_get(args, "target"));
+    char host[128] = "";
+    net_ping_stats_t stats;
+    esp_err_t err = tools_ping(target, host, sizeof host, &stats, why, why_cap);
+    if (err != ESP_OK) return err;
+
+    *out = json_new_object();
+    if (*out == NULL) return ESP_ERR_NO_MEM;
+    json_node_t *root = json_root(*out);
+    json_add_string(root, "target", target);
+    json_add_string(root, "host", host);
+    add_int(root, "sent", stats.sent);
+    add_int(root, "received", stats.received);
+    add_int(root, "loss_pct", stats.loss_pct);
+    add_int(root, "rtt_min_ms", stats.rtt_min_ms);
+    add_int(root, "rtt_avg_ms", stats.rtt_avg_ms);
+    add_int(root, "rtt_max_ms", stats.rtt_max_ms);
+    return ESP_OK;
+}
+
 /* --- Diagnostics ---------------------------------------------------------- */
 
 static esp_err_t call_sys_diagnostics(const json_node_t *args, json_doc_t **out,
@@ -611,6 +696,8 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         err = call_i2c(name, ctx, args, out, why, why_cap);
     } else if (strcmp(name, "time.now") == 0) {
         err = call_time_now(out, why, why_cap);
+    } else if (strcmp(name, "net.ping") == 0) {
+        err = call_net_ping(args, out, why, why_cap);
     } else if (strncmp(name, "fs.", 3) == 0) {
         err = call_fs(name, args, out, why, why_cap);
     } else if (strcmp(name, "http.get") == 0) {

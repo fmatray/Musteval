@@ -462,16 +462,23 @@ static void ping_emit(const ping_args_t *pa, const net_ping_stats_t *stats,
 static void ping_task(void *arg)
 {
     ping_args_t *pa = arg;
-    int32_t rtt[NET_PING_COUNT];
-    for (size_t i = 0; i < NET_PING_COUNT; i++) rtt[i] = -1;
-
-    esp_err_t err = net_ping_icmp(pa->host, rtt, NET_PING_COUNT);
-    if (err != ESP_OK) {
-        ping_emit(pa, NULL, "E_INTERNAL", "ping session could not start");
-    } else {
-        net_ping_stats_t stats;
-        net_ping_summarise(rtt, NET_PING_COUNT, &stats);
+    /* Resolution lives in `tools_ping` so the command and the model's `net.ping`
+     * tool (`tools/net.md`) cannot disagree about what a reachability answer means.
+     * It runs here, not in the handler, because it ends in the 2.8 s probe. */
+    char why[64] = "";
+    net_ping_stats_t stats;
+    esp_err_t err = tools_ping(pa->target, pa->host, sizeof pa->host, &stats,
+                               why, sizeof why);
+    if (err == ESP_OK) {
         ping_emit(pa, &stats, NULL, NULL);
+    } else if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_NOT_FOUND ||
+               err == ESP_ERR_INVALID_SIZE) {
+        /* §4.25: a bad or missing reference is `E_CONFIG`, and `why` says which. */
+        ping_emit(pa, NULL, "E_CONFIG", why);
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        ping_emit(pa, NULL, "E_WIFI", "link is down");
+    } else {
+        ping_emit(pa, NULL, "E_INTERNAL", "ping session could not start");
     }
     s_ping_busy = false;
     free(pa);
@@ -895,28 +902,6 @@ static void answer_command(const json_node_t *frame)
          * argument: `s_cmd_start_us` is one global that the next inbound command
          * overwrites, and this frame is answered up to 3 s later. */
         pa->start_us = esp_timer_get_time();
-
-        if (strcmp(target, "router") == 0) {
-            if (net_gateway(pa->host, sizeof pa->host) != ESP_OK) {
-                free(pa);
-                emit_failure(name, reply_to, "E_CONFIG", "no gateway: wifi is down");
-                json_free(body); return;
-            }
-        } else if (strcmp(target, "llm") == 0) {
-            if (!llm_active_host(pa->host, sizeof pa->host)) {
-                free(pa);
-                emit_failure(name, reply_to, "E_CONFIG", "no llm provider");
-                json_free(body); return;
-            }
-        } else {
-            const char *server = clock_server_name();
-            if (server == NULL) {
-                free(pa);
-                emit_failure(name, reply_to, "E_CONFIG", "no ntp server");
-                json_free(body); return;
-            }
-            snprintf(pa->host, sizeof pa->host, "%s", server);
-        }
 
         s_ping_busy = true;
         if (xTaskCreate(ping_task, "net_ping", 3072, pa, 4, NULL) != pdPASS) {

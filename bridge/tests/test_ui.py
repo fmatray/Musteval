@@ -129,6 +129,35 @@ def test_tool_result_marks_success_and_failure():
     assert "✗" in failed and "E_TOOL" in failed
 
 
+def test_ping_tool_result_reads_as_the_same_sentence_as_the_command():
+    """The `net.ping` tool and the `net.ping` command return the same eight members
+    (`04-protocol.md` §4.25), so the chat log words them the same way. A tool result
+    printed as a dict would make the model's reachability answer unreadable next to
+    the reader's own `/ping`.
+    """
+    result = {
+        "target": "ntp",
+        "host": "0.europe.pool.ntp.org",
+        "sent": 4,
+        "received": 3,
+        "loss_pct": 25,
+        "rtt_min_ms": 30,
+        "rtt_avg_ms": 36,
+        "rtt_max_ms": 44,
+    }
+    line = render_tool_result(
+        {"tool": "net.ping", "ok": True, "duration_ms": 900, "result": result}
+    )
+    assert "ping ntp 0.europe.pool.ntp.org: 3/4, 25% loss, rtt 30/36/44 ms" in line
+
+    # 100 % loss drops the rtt fields, because there is no round trip to report.
+    dead = dict(result, received=0, loss_pct=100, rtt_min_ms=0, rtt_avg_ms=0,
+                rtt_max_ms=0)
+    assert render_tool_result(
+        {"tool": "net.ping", "ok": True, "duration_ms": 900, "result": dead}
+    ).endswith("0/4, 100% loss")
+
+
 def test_status_grid_names_every_row():
     lines = "\n".join(render_status(STATUS))
     for row in ("WIFI", "TIME", "LLM", "AGENT", "MEM", "DISK", "MQTT", "GEO", "BOOT"):

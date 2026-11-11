@@ -862,7 +862,7 @@ Two built-in schemas nest: `task.set` and `todo`. The `task.set` `task` object
 mirrors `/tasks.json` verbatim (`03-config.md` §Task schema) so the model authors a
 task in the shape the file stores, and `todo`'s `list` is an array of `{phase, items}`
 objects next to an `op` enum (`tools/todo.md`). `sys.diagnostics` takes one optional
-`scope` enum (`tools/sys.md`); the other twenty-two built-ins take a flat object of
+`scope` enum (`tools/sys.md`); the other twenty-three built-ins take a flat object of
 scalars, and no schema uses `oneOf`, `anyOf`, or `$ref`. That subset is
 all any provider in the compatibility table is guaranteed to accept.
 
@@ -884,6 +884,7 @@ The per-tool schemas are canonical in each domain file, not here:
 | MQTT | `tools/mqtt.md` | `mqtt.list`, `mqtt.publish` |
 | Memory | `tools/memory.md` | `memory.get`, `memory.set`, `memory.list`, `memory.delete` |
 | System | `tools/sys.md` | `sys.diagnostics` |
+| Reachability | `tools/net.md` | `net.ping` |
 
 A tool call whose arguments fail schema validation is rejected as `E_TOOL` without
 executing, and no partial effect is applied.
