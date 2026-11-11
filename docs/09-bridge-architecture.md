@@ -201,7 +201,8 @@ already been redacted on the way in.
 ## 4. Module anatomy
 
 Every package has the same four parts: a public surface, a private implementation,
-a test seam, and a list of things it must not do.
+a test seam, and a list of things it must not do. The class-level view of all of
+them, with members and source links, is [14](14-class-diagrams.md).
 
 ### 4.1 `bridge/protocol/` (L0)
 

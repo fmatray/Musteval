@@ -205,7 +205,8 @@ points above. Everywhere else, call the function.
 ## 2. Module anatomy
 
 Every module has the same four parts, in the same order. This is the DRY rule applied
-to structure: a reader who has seen one module has seen them all.
+to structure: a reader who has seen one module has seen them all. The declaration-level
+view of every component, with fields and source links, is [14](14-class-diagrams.md).
 
 ```
 components/<name>/
