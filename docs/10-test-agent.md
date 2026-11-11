@@ -211,20 +211,28 @@ state stops being deterministic on the second run.
 | `--token <t>` | requires the token in `hello` | `link.rejected` and the no-retry rule |
 | `--script <file>` | reads a fixed list of replies from a file instead of the table | arbitrary sequences |
 
-`--script` is the escape hatch for orders the table cannot produce: two `agent.final`
-frames for one `prompt`, a `status` burst, a malformed line. Format is NDJSON, one
-object per line, sent in order; each is completed with an envelope by the tool, so
-the file carries no `v`, `id` or `ts`. An entry is consumed per inbound frame, and
-the script is not a permanent replacement: once it is exhausted the table answers
-again, so a scripted prologue cannot silently disable the rest of the peer.
+`--script` is the escape hatch for orders the table cannot produce: a whole run for
+one `prompt`, two `agent.final` frames for one `prompt`, a `status` burst, a malformed
+line. Format is NDJSON, one object per line, sent in order; each is completed with an
+envelope by the tool, so the file carries no `v`, `id` or `ts`. An entry is consumed
+per inbound frame, and the script is not a permanent replacement: once it is
+exhausted the table answers again, so a scripted prologue cannot silently disable
+the rest of the peer.
 
-Three entry shapes exist, and only the first is a normal reply:
+Four entry shapes exist, and only the first is a normal reply:
 
 | Entry | Effect |
 |---|---|
 | `{"type": ..., ...}` | reply with that type; `reply_to` is `auto` (the inbound `id`) unless the entry names one explicitly |
 | `{"wait_ms": 500}` | consume the frame and sleep, emitting nothing |
 | `{"type": "raw", "data": "..."}` | write `data` to the port verbatim, bypassing `encode` |
+| `{"burst": [...]}` | emit every listed entry for this one inbound frame, in order |
+
+`burst` exists because a run is one prompt answered by many frames — `agent.start`,
+then any number of `agent.tool` / `agent.tool_result` pairs, then `agent.final`. An
+entry is consumed per inbound frame, so without a group shape that sequence is
+unreachable and the multi-round scenario cannot be scripted at all. The inner
+entries take the same shapes as the outer ones except `burst`, which does not nest.
 
 `raw` is the only way to put a line on the wire that `encode` would refuse — a
 truncated object, invalid UTF-8, an oversize line — which is what checks 1 and 2
@@ -240,6 +248,10 @@ of §5 need to be exercised at the port rather than only in a unit test.
 
 ```json
 {"wait_ms":500}
+```
+
+```json
+{"burst":[{"type":"agent.start","run_id":"r-1","trigger":"manual","source":"prompt","provider":"openai","model":"gpt-4o-mini","input_bytes":12,"queue_depth":0},{"type":"agent.final","run_id":"r-1","text":"done","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"rounds":1,"provider":"openai","model":"gpt-4o-mini","duration_ms":5,"truncated":false,"todo_open":false}]}
 ```
 
 ## 8. Determinism and limits

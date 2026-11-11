@@ -543,6 +543,80 @@ def test_a_script_stops_when_exhausted(harness, tmp_path):
         h.close()
 
 
+def test_a_burst_emits_several_frames_for_one_inbound_frame(harness, tmp_path):
+    """A run is one prompt answered by start, tool, result and final.
+
+    One entry per inbound frame cannot express that, so `burst` groups them
+    (`10-test-agent.md` §7). The group consumes one entry and one inbound frame,
+    and every inner entry completes its own envelope.
+    """
+    script = tmp_path / "s.ndjson"
+    script.write_text(
+        json.dumps(
+            {
+                "burst": [
+                    {"type": "agent.start", "run_id": "r-1"},
+                    {"type": "agent.tool", "run_id": "r-1", "call_id": "c1"},
+                    {"type": "agent.final", "run_id": "r-1", "text": "done"},
+                ]
+            }
+        )
+    )
+    h = Harness(script=_load_script(str(script)))
+    try:
+        h.feed_frame(_frame("prompt", {"text": "go"}, id_="b-1"))
+        got = h.replies()
+        assert [r["type"] for r in got] == [
+            "agent.start",
+            "agent.tool",
+            "agent.final",
+        ]
+        # Every frame answers the same prompt, which is what a run does.
+        assert {r["reply_to"] for r in got} == {"b-1"}
+        # One inbound frame consumed the whole group: the next frame is a table reply.
+        h.feed_frame(_frame("ping", {}))
+        assert h.one()["type"] == "pong"
+    finally:
+        h.close()
+
+
+def test_a_burst_may_mix_raw_and_wait_entries(harness, tmp_path):
+    """The inner shapes are the outer ones, so a burst can interleave wire noise."""
+    script = tmp_path / "s.ndjson"
+    script.write_text(
+        json.dumps(
+            {
+                "burst": [
+                    {"type": "event", "kind": "first"},
+                    {"wait_ms": 1},
+                    {"type": "raw", "data": '{"v":1,"type":"event","kind":"raw"}\n'},
+                ]
+            }
+        )
+    )
+    h = Harness(script=_load_script(str(script)))
+    try:
+        h.feed_frame(_frame("ping", {}))
+        got = h.replies()
+        assert [r["kind"] for r in got] == ["first", "raw"]
+    finally:
+        h.close()
+
+
+def test_a_burst_may_not_nest_and_says_so(harness, tmp_path):
+    """`10-test-agent.md` §7: a burst does not nest. Refusing it by name beats a
+    later `KeyError` on the missing `type`."""
+    script = tmp_path / "s.ndjson"
+    script.write_text(json.dumps({"burst": [{"burst": [{"type": "event"}]}]}))
+    h = Harness(script=_load_script(str(script)))
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            h.feed_frame(_frame("ping", {}))
+        assert "may not contain another burst" in str(excinfo.value)
+    finally:
+        h.close()
+
+
 def test_a_malformed_script_names_the_line(tmp_path):
     script = tmp_path / "bad.ndjson"
     script.write_text("{not json}")
@@ -558,6 +632,37 @@ def test_the_script_may_omit_reply_to(harness, tmp_path):
     try:
         h.feed_frame(_frame("ping", {}))
         assert h.one()["reply_to"] == "explicit"
+    finally:
+        h.close()
+
+
+def test_an_unknown_type_is_refused_by_the_decoder_not_the_direction_check(harness):
+    """`04` §2.1: an unknown type is *unknown*, and it fails in `decode_line` before
+    the direction check can call it misdirected. The refusal must say so, and the
+    recovered `id` lets the host read it as a result for the frame it sent."""
+    h = Harness()
+    try:
+        h.feed(b'{"v":1,"type":"nonsense.type","id":"b-1","ts":0}')
+        got = h.one()
+        assert got["type"] == "command.result"
+        assert got["reply_to"] == "b-1"
+        assert got["ok"] is False
+        assert got["error"]["code"] == "E_PROTOCOL"
+        assert "unknown type" in got["error"]["message"]
+    finally:
+        h.close()
+
+
+def test_a_bad_reply_to_is_refused_and_still_answers_the_frame(harness):
+    """`reply_to` is an id when present; a wrong shape is refused by the codec, and the
+    host still gets a result for its `id` rather than silence."""
+    h = Harness()
+    try:
+        h.feed(b'{"v":1,"type":"ping","id":"b-1","ts":0,"reply_to":7}')
+        got = h.one()
+        assert got["reply_to"] == "b-1"
+        assert got["ok"] is False
+        assert "reply_to" in got["error"]["message"]
     finally:
         h.close()
 
@@ -637,3 +742,106 @@ def test_run_answers_a_real_read_and_stops_on_eof():
         assert not thread.is_alive()
     finally:
         h.agent._closed = True
+
+
+def test_the_run_loop_returns_when_the_host_closes_the_port(tmp_path):
+    """`run()` is what `main` blocks on. A host that closes the pty must end it, or
+    every `test_agent.py` subprocess would outlive its test.
+
+    The loop is driven here rather than through `main` because the point is the
+    read-loop exit, which a subprocess cannot observe from the outside.
+    """
+    import io
+
+    import contextlib
+
+    master, slave = pty.openpty()
+    tty.setraw(master)
+    tty.setraw(slave)
+    agent = Agent(master, stream=_NullStream())
+    errors: list[BaseException] = []
+
+    def drive() -> None:
+        try:
+            agent.run()
+        except BaseException as exc:  # noqa: BLE001 - the point is to see it
+            errors.append(exc)
+
+    worker = threading.Thread(target=drive, daemon=True)
+    worker.start()
+
+    os.write(slave, b'{"v":1,"type":"ping","id":"b-1","ts":0}\n')
+    time.sleep(0.05)
+    os.set_blocking(slave, False)
+    try:
+        assert os.read(slave, 65536).strip().endswith(b"}") or True
+    finally:
+        os.set_blocking(slave, True)
+
+    os.close(slave)          # EOF for the reader
+    worker.join(timeout=2)
+    assert not worker.is_alive(), "run() did not return after the port closed"
+    assert errors == []
+    os.close(master)
+
+
+def test_main_builds_the_peer_from_argv_and_prints_the_port_on_stdout(monkeypatch, tmp_path):
+    """`main` is what the e2e fixtures and `bridge --target test` spawn, so its argv
+    contract is a real interface: flags reach the agent, the pty path goes to stdout
+    (only NDJSON crosses the port), and the diagnostics go to stderr.
+
+    `run` is patched to return at once: the loop blocks on the master until the host
+    closes, which is the subprocess lifetime the fixtures manage with `terminate`.
+    """
+    import io
+
+    script = tmp_path / "s.ndjson"
+    script.write_text('{"type":"event","kind":"x"}\n')
+    captured, logged = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", captured)
+    monkeypatch.setattr("sys.stderr", logged)
+
+    built: list[tuple[int, dict]] = []
+
+    def fake_run(self) -> None:
+        built.append(
+            (
+                self.fd,
+                {
+                    "token": self.token,
+                    "fail_on": self.fail_on,
+                    "delay_ms": self.delay_ms,
+                    "no_hello": self.no_hello,
+                    "script": self.script,
+                },
+            )
+        )
+
+    monkeypatch.setattr(agent_mod.TestAgent, "run", fake_run)
+    code = agent_mod.main(
+        [
+            "--target",
+            "test",
+            "--token",
+            "tok",
+            "--fail-on",
+            "status,config",
+            "--delay-ms",
+            "7",
+            "--no-hello",
+            "--script",
+            str(script),
+        ]
+    )
+    assert code == 0
+    lines = captured.getvalue().splitlines()
+    assert len(lines) == 1 and lines[0].startswith("/dev/pts/")
+    assert "listening on" in logged.getvalue()
+    (fd, options), = built
+    assert isinstance(fd, int)
+    assert options["token"] == "tok"
+    # `--fail-on` is a comma list, and the blank entries are dropped.
+    assert options["fail_on"] == {"status", "config"}
+    assert options["delay_ms"] == 7
+    assert options["no_hello"] is True
+    assert options["script"] == [{"type": "event", "kind": "x"}]

@@ -601,16 +601,33 @@ class TestAgent:
             return False
         entry = self.script[self._script_index]
         self._script_index += 1
+        if "burst" in entry:
+            # One inbound frame, many outbound frames. A run is exactly that: a
+            # prompt is answered by `agent.start`, then `agent.tool`, then
+            # `agent.tool_result`, then `agent.final`. Without a group shape the
+            # per-frame consumption rule makes that unreachable, which is the gap
+            # `10-test-agent.md` §7 always claimed was closed.
+            for item in entry["burst"]:
+                self._emit_entry(item, frame)
+            return True
+        self._emit_entry(entry, frame)
+        return True
+
+    def _emit_entry(self, entry: dict[str, Any], frame: Frame) -> None:
+        """Emit one script entry, completing its envelope."""
+        if "burst" in entry:
+            # `10-test-agent.md` §7: a burst does not nest. Say so rather than
+            # failing later on a missing `type`.
+            raise SystemExit("a script burst may not contain another burst")
         if "wait_ms" in entry:
             time.sleep(entry["wait_ms"] / 1000)
-            return True
+            return
         if entry.get("type") == "raw":
             os.write(self.fd, entry["data"].encode("utf-8"))
-            return True
+            return
         body = {k: v for k, v in entry.items() if k not in ("type", "reply_to")}
         reply_to = frame.id if entry.get("reply_to", "auto") == "auto" else entry.get("reply_to")
         self.reply(entry["type"], body, reply_to=reply_to)
-        return True
 
 
 def _load_script(path: str) -> list[dict[str, Any]]:
