@@ -260,10 +260,9 @@ def thinking_writes(
     member = entry.without_level(entry_now.get("extra_body"))
     member.update(entry.extra_body(level))
     updated = dict(entry_now)
-    if member:
-        updated["extra_body"] = member
-    else:
-        updated.pop("extra_body", None)
+    # `05` §7.2: `none` writes `{"reasoning_effort":"none"}` rather than deleting the
+    # member, so a validated level always yields something to write.
+    updated["extra_body"] = member
     return [("config", {"llm.providers": [updated] + list(chain[1:])})], ""
 
 

@@ -267,6 +267,100 @@ def test_the_zone_the_device_holds_is_reported_as_applied():
     assert "applied" in said and "not synced" in said
 
 
+# --- the branches a complete answer never reaches -------------------------
+
+
+def test_a_model_without_a_base_url_writes_no_provider():
+    """`03` rule 9: an entry with no `base_url` is a document the device refuses."""
+    a = _answer(base_url="", api_key="k", model="m", provider="custom")
+    assert onboard.writes_provider(a) == []
+
+
+def test_a_token_param_is_written_only_when_the_reader_supplied_one():
+    """`03` §Provider compatibility names `token_param` per provider, so an absent
+    one stays absent: writing a member the provider rejects is a 400 on every call."""
+    a = _answer(base_url="u", api_key="k", model="m", provider="custom", token_param="")
+    entry = onboard.writes_provider(a)[1][1]["llm.providers"][0]
+    assert "token_param" not in entry
+
+
+def test_a_stored_provider_with_no_id_is_reported_rather_than_guessed():
+    _frames, note = onboard.thinking_writes("high", [{"base_url": "u"}])
+    assert note == "the stored provider has no id; run /onboard first"
+
+
+def test_a_stored_provider_outside_the_catalog_is_reported_by_name():
+    _frames, note = onboard.thinking_writes("high", [{"id": "retired"}])
+    assert note == "provider 'retired' is not in this bridge's catalog"
+    assert onboard.thinking_line("high", [{"id": "retired"}]) == (
+        "thinking: retired is not in this bridge's catalog"
+    )
+
+
+def test_a_provider_with_no_thinking_levels_says_so_both_ways():
+    _frames, note = onboard.thinking_writes("high", [{"id": "custom"}])
+    assert note == "custom takes no thinking level; nothing to set"
+    assert onboard.thinking_line("none", [{"id": "custom"}]) == (
+        "thinking: custom takes no thinking level"
+    )
+
+
+def test_turning_thinking_off_writes_the_level_rather_than_deleting_the_member():
+    """`05` §7.2: a stale explicit level must not survive a reader turning thinking
+    off, so `none` is written, not dropped."""
+    frames, note = onboard.thinking_writes(
+        "none", [{"id": "openai", "extra_body": {"reasoning_effort": "high"}}]
+    )
+    assert note == ""
+    assert frames[0][1]["llm.providers"][0]["extra_body"] == {"reasoning_effort": "none"}
+
+
+def test_status_without_a_wifi_block_is_named_as_missing():
+    """A missing block is not "off": the device answered, just not about the radio."""
+    assert onboard.verdict_network({"wifi": "unknown"}) == (
+        "network: the device did not report a wifi block"
+    )
+
+
+def test_a_connecting_radio_is_reported_with_the_ssid_it_is_trying():
+    assert onboard.verdict_network(
+        {"wifi": {"state": "connecting", "ssid": "Cafe"}}
+    ) == "network: still connecting to Cafe"
+    assert onboard.verdict_network({"wifi": {"state": "connecting"}}) == (
+        "network: still connecting to the configured ssid"
+    )
+
+
+def test_a_provider_verdict_without_a_base_url_or_a_key_names_the_missing_one():
+    assert onboard.verdict_provider([], _answer(base_url="")) == "provider: no base url"
+    assert onboard.verdict_provider([], _answer(base_url="u", api_key="")) == (
+        "provider: no key typed, so the list cannot be checked"
+    )
+
+
+def test_the_narration_names_a_replacement_when_a_chain_already_exists():
+    a = _answer(base_url="u", api_key="k", model="m", provider="custom")
+    lines = onboard.narration(
+        a, {"llm.providers": [{"id": "openai"}, {"id": "groq"}]}, "provider"
+    )
+    assert "replaces llm.providers (2 entries → 1)" in lines
+
+
+def test_the_narration_names_a_server_replacement_when_servers_exist():
+    a = _answer(timezone="UTC0", ntp_server="pool.ntp.org")
+    lines = onboard.narration(a, {"ntp": {"servers": ["a", "b"]}}, "network")
+    assert "replaces ntp.servers (2 → 1)" in lines
+
+
+def test_a_time_verdict_without_a_block_or_a_zone_is_named():
+    assert onboard.verdict_time({"time": "unknown"}, "UTC0") == (
+        "time: the device did not report a time block"
+    )
+    assert onboard.verdict_time({"time": {"tz": None}}, "UTC0") == (
+        "time: the device reports no zone"
+    )
+
+
 # --- the screens ----------------------------------------------------------
 
 

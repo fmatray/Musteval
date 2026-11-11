@@ -22,7 +22,15 @@ from bridge.ui.history import MAX_ENTRIES, PromptHistory
 from bridge.ui.testing import chat_lines
 from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
 from bridge.ui.task_prompt import TaskPrompt
-from bridge.ui.settings import ROWS, coerce, flatten, lookup, render_value
+from bridge.ui.settings import (
+    ROWS,
+    coerce,
+    flatten,
+    lookup,
+    render_value,
+    rows_for,
+    sections,
+)
 
 from .test_ui import _reply
 
@@ -1176,3 +1184,49 @@ async def test_prompt_timeout_is_reported_not_swallowed():
         assert any("did not answer in time" in line for line in lines), lines
         assert any("✗ " in line for line in lines), lines
     await session.close()
+
+
+def test_every_row_belongs_to_exactly_one_section():
+    """`05` §6.6 groups the settings screen by section; a row in two would be edited
+    twice, and a section with no rows would open an empty tab."""
+    named = sections()
+    assert named
+    assert len(set(named)) == len(named)
+    assert sum(len(rows_for(name)) for name in named) == len(ROWS)
+    assert all(rows_for(name) for name in named)
+
+
+def test_a_bool_row_rejects_a_word_that_is_not_true_or_false():
+    bool_row = next(row for row in ROWS if row.kind == "bool")
+    with pytest.raises(ValueError, match="expects true or false"):
+        coerce(bool_row, "maybe")
+
+
+def test_an_int_row_naming_a_closed_set_rejects_a_value_outside_it():
+    """`03` §Full schema writes some int cells as a set of backticked values rather
+    than a range; the screen must enforce the set it displays."""
+    listed = next(
+        row
+        for row in ROWS
+        if row.kind == "int" and not _range_of(row) and _tokens(row)
+    )
+    with pytest.raises(ValueError, match="expects one of"):
+        coerce(listed, "7")
+
+
+def test_an_int_list_rejects_a_word_among_the_numbers():
+    list_row = next(row for row in ROWS if row.kind == "int[]")
+    with pytest.raises(ValueError, match="comma-separated integers"):
+        coerce(list_row, "1,two")
+
+
+def _range_of(row):
+    from bridge.ui.settings import _range
+
+    return _range(row.bound)
+
+
+def _tokens(row):
+    from bridge.ui.settings import _BACKTICKED, _INTEGER
+
+    return [token for token in _BACKTICKED.findall(row.bound) if _INTEGER.fullmatch(token)]
