@@ -132,6 +132,11 @@ esp_err_t store_map_path(const char *agent_path, char *out, size_t out_cap);
  * bytes and over-long paths with E_TOOL. */
 esp_err_t store_resolve_write_path(const char *in, char *out, size_t out_cap);
 
+/* The `sandbox.list` admission: `store_resolve_write_path` plus the workspace root
+ * itself, because `04` §4.17 defaults a listing to `/workspace/`. Never use it for a
+ * file target: the root has no name there. */
+esp_err_t store_resolve_sandbox_path(const char *in, char *out, size_t out_cap);
+
 /* True when `path` is `dir` itself or lies below it. Whole segments are compared,
  * so `/workspace/a` is not under `/workspace/ab`. Pure. */
 bool store_path_is_under(const char *dir, const char *path);

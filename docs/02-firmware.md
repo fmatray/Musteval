@@ -81,10 +81,16 @@ path. Pure prefix substitution, no filesystem access:
   text under `/workspace/`; UTF-8 validated, invalid sequences return `E_STORAGE`.
   `total` is the file's whole length, which is what `04` §4.18 reports as `bytes`
   even when the cap stopped the read short.
+- `store_resolve_sandbox_path(in, out, out_len)`: the listing admission. Same
+  canonicalisation as `store_resolve_write_path`, except that `/workspace` itself
+  is admitted, because `04` §4.17 defaults `sandbox.list` to it. It exists so a
+  caller cannot reach the root by passing the file-target resolver, whose refusal
+  of `/workspace/` is correct there and wrong here.
 - `store_list_dir(agent_path, out, cap, count)`: list one directory under
   `/workspace/`, sorting directories first then names. A listing exceeding the
   cap returns `E_STORAGE`. The root `/workspace/` is a legal listing target,
-  though not a legal file target; the resolver is applied to entries within.
+  though not a legal file target; `store_resolve_sandbox_path` is the admission
+  for it, and the resolver is applied to entries within.
   The staging file of a live transfer is never listed, because `04` §4.16
   forbids exposing partial state: an entry whose path equals the current
   staging path is skipped, and nothing else is.

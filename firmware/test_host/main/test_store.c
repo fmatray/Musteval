@@ -89,6 +89,37 @@ TEST_CASE("a write inside the workspace is canonicalised", "[store]")
     TEST_ASSERT_EQUAL_STRING("/workspace/b.txt", out);
 }
 
+TEST_CASE("a listing admits the workspace root, a write does not", "[store]")
+{
+    char out[256];
+
+    /* `04` §4.17 defaults `sandbox.list` to the root, so the listing admission
+     * returns it rather than refusing it. The write admission must keep refusing
+     * it: the root has no name as a file target. */
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      store_resolve_sandbox_path("/workspace/", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/workspace", out);
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      store_resolve_sandbox_path("/workspace", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/workspace", out);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      store_resolve_write_path("/workspace/", out, sizeof out));
+
+    /* Everything below the root behaves identically in both admissions. */
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      store_resolve_sandbox_path("/workspace/runs/", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/workspace/runs", out);
+
+    /* And the listing still refuses an escape. */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      store_resolve_sandbox_path("/workspace/../config.json",
+                                                 out, sizeof out));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      store_resolve_sandbox_path("/fs/skills/", out, sizeof out));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      store_resolve_sandbox_path("workspace/a", out, sizeof out));
+}
+
 TEST_CASE("map roots anything outside the workspace at userfs", "[store]")
 {
     char out[256];

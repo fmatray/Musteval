@@ -173,21 +173,19 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
      * longer does, because `fs.list`/`fs.read` may reach `/fs` (`06` §6.1). */
     static char s_sandbox_path[STORE_PATH_MAX];
     const char *given = json_string(json_get(args, "path"));
-    if (given == NULL && strcmp(name, "sandbox.list") == 0) given = STORE_ROOT_WORKSPACE;
+    bool listing = strcmp(name, "sandbox.list") == 0;
+    if (given == NULL && listing) given = STORE_ROOT_WORKSPACE;
     if (given != NULL) {
-        esp_err_t perr = store_resolve_write_path(given, s_sandbox_path,
-                                                  sizeof s_sandbox_path);
+        /* A listing admits `/workspace` itself, which is its documented default
+         * (`04` §4.17); every other command names a file target, which the root is
+         * not. */
+        esp_err_t perr = listing
+            ? store_resolve_sandbox_path(given, s_sandbox_path, sizeof s_sandbox_path)
+            : store_resolve_write_path(given, s_sandbox_path, sizeof s_sandbox_path);
         if (perr != ESP_OK) {
             emit_failure(name, reply_to, "E_CONFIG",
                          "path does not resolve under /workspace/");
             return perr;
-        }
-        if (s_sandbox_path[0] == '\0') {
-            /* `store_resolve_write_path` already refused `/workspace` bare, so an
-             * empty result can only come from a rejection. Unreachable, kept safe. */
-            emit_failure(name, reply_to, "E_CONFIG",
-                         "path does not resolve under /workspace/");
-            return ESP_ERR_INVALID_ARG;
         }
     }
     if (strcmp(name, "sandbox.list") == 0) {
