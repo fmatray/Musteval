@@ -1261,9 +1261,9 @@ TEST_CASE("the pin allowlist admits header pins and nothing else", "[m4]")
 TEST_CASE("history_trim never leaves an orphan tool message", "[m4]")
 {
     char buf[512];
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
-           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
     size_t used = strlen(buf);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 1));
@@ -1273,10 +1273,10 @@ TEST_CASE("history_trim never leaves an orphan tool message", "[m4]")
 
     /* Dropping the user turn leaves the pair whole; the bound is honoured here
      * because dropping one message does not split a call from its result. */
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"user\",\"content\":\"q\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
-           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
     used = strlen(buf);
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
@@ -1295,11 +1295,11 @@ TEST_CASE("history_trim never leaves an orphan tool message", "[m4]")
 TEST_CASE("history_trim keeps a whole pair rather than half of one", "[m4]")
 {
     char buf[512];
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
            "{\"role\":\"tool\",\"content\":\"r1\",\"tool_call_id\":\"c1\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c2\"}]},"
-           "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}]");
+           "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}");
     size_t used = strlen(buf);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 3));
@@ -1310,11 +1310,11 @@ TEST_CASE("history_trim keeps a whole pair rather than half of one", "[m4]")
     TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
 
     /* A bound that already lands on a call is honoured exactly. */
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
            "{\"role\":\"tool\",\"content\":\"r1\",\"tool_call_id\":\"c1\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c2\"}]},"
-           "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}]");
+           "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}");
     used = strlen(buf);
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
@@ -1327,12 +1327,12 @@ TEST_CASE("history_trim keeps a whole pair rather than half of one", "[m4]")
 TEST_CASE("history_truncate restores the depth a run started from", "[m4]")
 {
     char buf[512];
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"user\",\"content\":\"q1\"},"
            "{\"role\":\"assistant\",\"content\":\"a1\"},"
            "{\"role\":\"user\",\"content\":\"q2\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
-           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
     size_t used = strlen(buf);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 2));
@@ -1353,22 +1353,22 @@ TEST_CASE("history_truncate restores the depth a run started from", "[m4]")
 TEST_CASE("history_truncate never leaves a call without its result", "[m4]")
 {
     char buf[512];
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"user\",\"content\":\"q\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
            "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"},"
-           "{\"role\":\"assistant\",\"content\":\"a\"}]");
+           "{\"role\":\"assistant\",\"content\":\"a\"}");
     size_t used = strlen(buf);
 
     /* Four would keep the call and drop its result. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 4));
     TEST_ASSERT_EQUAL_size_t(4, agent_history_count(buf));
 
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"user\",\"content\":\"q\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
            "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"},"
-           "{\"role\":\"assistant\",\"content\":\"a\"}]");
+           "{\"role\":\"assistant\",\"content\":\"a\"}");
     used = strlen(buf);
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 3));
     TEST_ASSERT_EQUAL_size_t(3, agent_history_count(buf));
@@ -1377,10 +1377,10 @@ TEST_CASE("history_truncate never leaves a call without its result", "[m4]")
 
     /* Keeping only the call's own turn is refused too: two drops the call, not the
      * result alone. */
-    strcpy(buf,
+    snprintf(buf, sizeof buf,
            "[{\"role\":\"user\",\"content\":\"q\"},"
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
-           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}]");
+           "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
     used = strlen(buf);
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_truncate(buf, &used, 2));
     TEST_ASSERT_EQUAL_size_t(1, agent_history_count(buf));

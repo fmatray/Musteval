@@ -75,7 +75,7 @@ TEST_CASE("the retry backoff repeats its last entry", "[m3]")
 static net_scan_entry_t ap(const char *ssid, int32_t rssi, uint8_t auth)
 {
     net_scan_entry_t e = {.rssi = rssi, .auth = auth};
-    strncpy(e.ssid, ssid, sizeof e.ssid - 1);
+    snprintf(e.ssid, sizeof e.ssid, "%s", ssid);
     return e;
 }
 

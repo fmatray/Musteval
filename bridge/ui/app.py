@@ -2380,14 +2380,22 @@ def _http_fetch(url: str, key: str) -> bytes:
     because the project ships no HTTP client and one GET does not justify a
     dependency.
 
-    A non-200 raises. `models_with_efforts` turns that into an empty list, so the
-    `/model` picker still opens with its field as the whole route.
+    A non-http(s) scheme and a non-200 both raise. `models_with_efforts` turns
+    either into an empty list, so the `/model` picker still opens with its field
+    as the whole route.
     """
     import urllib.error
+    import urllib.parse
     import urllib.request
 
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"refusing a non-http scheme: {parts.scheme or '(none)'}")
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     if key:
         request.add_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - https
+    # The rule cannot see the scheme guard above, which closes exactly the `file://`
+    # risk it names, so this call is safe.
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - scheme pinned above
         return response.read()

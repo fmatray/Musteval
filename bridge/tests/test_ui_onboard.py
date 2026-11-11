@@ -21,6 +21,7 @@ from bridge import providers
 from bridge.protocol import reset_ids
 from bridge.ui import BridgeApp
 from bridge.ui import onboard
+from bridge.ui.app import _http_fetch
 from bridge.ui.modals import ModelPicker, ModelStep, NetworkStep, ProviderStep
 from bridge.ui.testing import ModalHost, chat_lines
 
@@ -1027,6 +1028,14 @@ async def test_the_wizard_fetches_ollama_cloud_models_without_a_key(monkeypatch)
         assert names == ["gemma4:31b", "gpt-oss:120b"]
         assert asked == [("https://ollama.com/v1/models", "")]
         assert answers.model_efforts == {"gemma4:31b": (), "gpt-oss:120b": ()}
+
+
+def test_the_fetch_refuses_a_url_that_is_not_http():
+    """`_http_fetch` is the one socket the bridge opens, and `urllib` reads `file://`
+    for real, so the scheme is pinned before the request is built."""
+    for url in ("file:///etc/passwd", "ftp://127.0.0.1/x", "/etc/passwd", ""):
+        with pytest.raises(ValueError, match="refusing a non-http scheme"):
+            _http_fetch(url, "")
 
 
 async def test_a_stored_level_the_row_does_not_offer_survives_a_re_run():
