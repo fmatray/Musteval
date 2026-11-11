@@ -462,3 +462,75 @@ def test_matching_targets_pass():
 
     check_target("usb", "/dev/ttyACM0")
     check_target("test", "/dev/pts/3")
+
+
+async def test_serial_transport_names_a_write_that_fails_on_a_live_port(monkeypatch):
+    """`09` §7: a vanished device surfaces as `write failed: ...`, not a traceback.
+
+    `OSError` stands in for `serial.SerialException`, which subclasses it: importing
+    pyserial outside `bridge/link/` is what the `09` grep law forbids, and the branch
+    under test is the same one either way.
+    """
+
+    class Dying:
+        in_waiting = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def read(self, size):
+            time.sleep(0.005)
+            return b""
+
+        def write(self, data):
+            raise OSError(5, "device reported an input protocol error")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", Dying)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.02)
+    await transport.open()
+    try:
+        with pytest.raises(TransportError) as excinfo:
+            await transport.write_line(b"x")
+        assert str(excinfo.value).startswith("write failed: ")
+    finally:
+        await transport.close()
+
+
+async def test_serial_transport_close_survives_a_port_that_refuses_to_close(monkeypatch):
+    """A CDC port whose peer is gone can throw on `close`; shutdown still completes."""
+
+    class Stubborn:
+        in_waiting = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def read(self, size):
+            time.sleep(0.005)
+            return b""
+
+        def write(self, data):
+            pass
+
+        def flush(self):
+            pass
+
+        def close(self):
+            raise OSError(errno.EIO, "device gone")
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", Stubborn)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.02)
+    await transport.open()
+    await transport.close()
+    assert await transport.read_line() is None
+
+
+def test_serial_transport_exposes_the_port_it_was_built_with():
+    """`__main__` and the tests both need the path back; it never changes."""
+    assert SerialTransport("/dev/ttyUSB9").port == "/dev/ttyUSB9"

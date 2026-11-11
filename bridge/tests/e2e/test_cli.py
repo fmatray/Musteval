@@ -89,6 +89,109 @@ def test_json_switch_writes_redacted_frames(agent, tmp_path):
     assert lines and all("v" in frame and "type" in frame for frame in lines)
 
 
+def test_a_missing_target_check_is_reported_as_usage(monkeypatch, capsys):
+    """`check_target` refuses a pty for `usb` and a USB device for `test`; both are
+    the reader's mistake, so both are `2`."""
+    from bridge.link import TransportError
+
+    def refuses(target: str, port: str) -> None:
+        raise TransportError(f"{port} is not a usb device")
+
+    monkeypatch.setattr("bridge.__main__.check_target", refuses)
+    assert main(["--target", "usb", "--port", "/dev/ttyACM0"]) == 2
+    assert "not a usb device" in capsys.readouterr().err
+
+
+def test_target_test_without_a_port_is_refused(monkeypatch, capsys):
+    """A test target has no autodetect: there is no test agent until the caller
+    names one, so guessing a port would hand the user a stranger's device."""
+    assert main(["--target", "test"]) == 2
+    assert "--target test requires --port" in capsys.readouterr().err
+
+
+def test_json_logging_writes_every_frame_to_the_named_file(agent, tmp_path, capsys):
+    """`04` §1: `--json --log-file` exists so a bug report carries the wire, and the
+    file must hold the frames rather than being created empty."""
+    log = tmp_path / "frames.ndjson"
+    assert main(["--target", "test", "--port", agent.port, "--json", "--log-file", str(log),
+                 "--send", "/status"]) == 0
+    lines = [line for line in log.read_text().splitlines() if line.strip()]
+    assert any('"hello"' in line for line in lines)
+    assert any('"status"' in line or '"command_result"' in line for line in lines)
+
+
+def test_a_keyboard_interrupt_exits_130(monkeypatch):
+    """A Ctrl-C is a user action, not a crash: the shell convention is 130."""
+    import bridge.__main__ as entry
+
+    def interrupted(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(entry.asyncio, "run", interrupted)
+    assert entry.main([]) == 130
+
+
+def test_no_device_is_a_usage_error_not_a_traceback(monkeypatch, capsys):
+    """`05` §5.1: a missing port names what to pass, rather than opening the TUI."""
+    monkeypatch.setattr("bridge.__main__.find_port", lambda: None)
+    assert main([]) == 2
+    assert "pass --port" in capsys.readouterr().err
+
+
+def test_a_usage_error_in_a_slash_command_exits_two(agent, capsys):
+    """`05` §6: a malformed command is the reader's mistake, so it is `2`, not `1`."""
+    code = main(["--target", "test", "--port", agent.port, "--send", "/config"])
+    assert code == 2
+    assert "usage" in capsys.readouterr().err.lower()
+
+
+def test_a_local_command_sends_nothing(agent, capsys):
+    """`parse` may answer a slash command with no frame; the CLI must say so."""
+    code = main(["--target", "test", "--port", agent.port, "--send", "/help"])
+    assert code == 0
+    assert "local command" in capsys.readouterr().err
+
+
+def test_a_fire_and_forget_command_does_not_wait_for_a_reply(agent, capsys):
+    """`/cancel` and `/ping` have no dedicated reply, so they must not block."""
+    code = main(["--target", "test", "--port", agent.port, "--send", "/cancel"])
+    assert code == 0
+
+
+def test_two_sends_run_in_sequence(agent, capsys):
+    """A `--send` may be repeated: each one runs after the previous reply."""
+    code = main(
+        ["--target", "test", "--port", agent.port, "--send", "/status", "--send", "hi"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "'boot_id'" in out
+    assert "echo" in out.lower()
+
+
+def test_a_connect_timeout_is_reported_as_not_connected(monkeypatch, capsys):
+    """`--connect-timeout` bounds the handshake, and failing it is `1`."""
+    from bridge.link import FakeTransport
+
+    def silent(line: bytes) -> list[bytes]:
+        return []
+
+    real = Session
+
+    def patched(transport, **kwargs):
+        kwargs.setdefault("ack_timeout", 0.05)
+        return real(transport, **kwargs)
+
+    monkeypatch.setattr("bridge.__main__.Session", patched)
+    monkeypatch.setattr(
+        "bridge.__main__.SerialTransport", lambda *a, **k: FakeTransport(on_write=silent)
+    )
+    monkeypatch.setattr("bridge.__main__.check_target", lambda *a: None)
+    assert main(["--target", "test", "--port", "/dev/irrelevant", "--send", "/status"]) == 1
+    assert "not connected" in capsys.readouterr().err
+
+
 async def test_send_prompt_that_is_never_answered_exits_one(capsys):
     """A linked peer that goes quiet on the prompt fails as a line, not a traceback.
 

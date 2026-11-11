@@ -8,7 +8,7 @@ import pytest
 
 from bridge.client import LinkState, Session
 from bridge.client.session import SessionError
-from bridge.link import FakeTransport
+from bridge.link import FakeTransport, TransportError
 from bridge.protocol import Frame, encode, new_id, reset_ids
 
 FAST = dict(ack_timeout=0.2, ping_interval=0.05, pong_timeout=0.05, backoff=(0.01, 0.01))
@@ -388,4 +388,280 @@ async def test_peer_disappearing_restarts_the_cycle():
     await session.connect()
     await asyncio.sleep(0.4)
     assert transport.opens >= 2
+    await session.close()
+
+
+# -- failure paths the happy cases cannot reach ------------------------------
+
+
+async def test_a_transport_that_will_not_open_is_retried_not_fatal():
+    """An unplugged port is routine; the supervisor keeps trying (`05` §4.1)."""
+
+    class Unopenable(FakeTransport):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def open(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TransportError("no such device")
+            await super().open()
+
+    transport = Unopenable()
+    session = Session(transport, ack_timeout=0.2, backoff=(0.01,), ping_interval=99)
+    assert await session.connect() is not LinkState.CONNECTED
+    assert transport.attempts == 1
+    assert session.state is LinkState.DOWN
+    await asyncio.sleep(0.1)
+    assert transport.attempts >= 2
+    await session.close()
+
+
+async def test_a_write_that_fails_names_the_operation_not_a_bare_error():
+    """`09` §7: the message reaches the reader, so it must say what failed."""
+
+    class Unwritable(FakeTransport):
+        async def write_line(self, line: bytes) -> None:
+            raise TransportError("write failed: device removed")
+
+    session = Session(Unwritable(), ack_timeout=0.2, backoff=(0.01,), ping_interval=99)
+    await session.connect()
+    with pytest.raises(SessionError) as excinfo:
+        await session.send(Frame(type="ack", id=new_id("b"), ts=0, body={"ack_of": "d-1"}))
+    assert str(excinfo.value) == "write failed: device removed"
+    await session.close()
+
+
+async def test_a_frame_that_cannot_be_encoded_is_a_session_error():
+    """A body that redefines an envelope member is the caller's bug, not the wire's."""
+    session = Session(FakeTransport(on_write=_agent()), **{**FAST, "ping_interval": 99})
+    await session.connect()
+    with pytest.raises(SessionError) as excinfo:
+        await session.send(Frame(type="ack", id="b-1", ts=0, body={"type": "event"}))
+    assert str(excinfo.value).startswith("encode failed:")
+    await session.close()
+
+
+async def test_a_hello_answered_with_the_wrong_frame_is_not_connected():
+    """`04` §3.1: only `hello_ack` completes the handshake; anything else retries."""
+    attempts = 0
+
+    def handler(line: bytes) -> list[bytes]:
+        nonlocal attempts
+        frame = __import__("json").loads(line)
+        if frame["type"] == "hello":
+            attempts += 1
+            return [encode(Frame(type="pong", id="d-1", ts=0, body={}, reply_to=frame["id"]))]
+        return []
+
+    session = Session(
+        FakeTransport(on_write=handler), ack_timeout=0.2, backoff=(0.01,), ping_interval=99
+    )
+    assert await session.connect() is not LinkState.CONNECTED
+    await asyncio.sleep(0.1)
+    assert attempts >= 2
+    await session.close()
+
+
+async def test_a_rejection_during_the_handshake_closes_without_a_retry():
+    """`05` §4.1: an auth refusal is terminal, so no second attempt is scheduled."""
+    attempts = 0
+
+    def handler(line: bytes) -> list[bytes]:
+        nonlocal attempts
+        frame = __import__("json").loads(line)
+        if frame["type"] == "hello":
+            attempts += 1
+            return [
+                encode(
+                    Frame(
+                        type="event",
+                        id="d-1",
+                        ts=0,
+                        body={"kind": "link.rejected", "data": {"reason": "auth"}},
+                    )
+                )
+            ]
+        return []
+
+    transport = FakeTransport(on_write=handler)
+    session = Session(transport, ack_timeout=0.2, backoff=(0.01,), ping_interval=99)
+    assert await session.connect() is LinkState.REJECTED
+    await asyncio.sleep(0.1)
+    assert attempts == 1
+    await session.close()
+
+
+async def test_a_pong_returns_a_degraded_link_to_connected():
+    """`05` §4.2: degraded is a warning, not a terminal state — a pong clears it.
+
+    The fourth consecutive miss ends the loop and starts backoff, so the pong has
+    to arrive on the fourth ping: after three misses the link is DEGRADED and
+    still answering.
+    """
+    pings = {"n": 0}
+
+    def handler(line: bytes) -> list[bytes]:
+        frame = __import__("json").loads(line)
+        if frame["type"] == "hello":
+            return [_ack(frame["id"])]
+        if frame["type"] == "ping":
+            pings["n"] += 1
+            if pings["n"] >= 4:
+                return [
+                    encode(Frame(type="pong", id="d-9", ts=0, body={}, reply_to=frame["id"]))
+                ]
+        return []
+
+    session = Session(
+        FakeTransport(on_write=handler),
+        ping_interval=0.02,
+        pong_timeout=0.02,
+        ack_timeout=0.2,
+        backoff=(9,),
+    )
+    states: list[LinkState] = []
+    session._on_state = states.append
+    await session.connect()
+    await asyncio.sleep(0.3)
+    assert LinkState.DEGRADED in states, states
+    assert session.state is LinkState.CONNECTED, states
+    # The handshake also reports CONNECTED, so compare against the last one.
+    assert states[-1] is LinkState.CONNECTED
+    assert states.index(LinkState.DEGRADED) < len(states) - 1
+    await session.close()
+
+
+async def test_a_rejection_while_connected_closes_the_reader():
+    """A rejection mid-session stops the read loop and does not reschedule."""
+
+    def handler(line: bytes) -> list[bytes]:
+        frame = __import__("json").loads(line)
+        if frame["type"] == "hello":
+            return [_ack(frame["id"])]
+        if frame["type"] == "ack":
+            return [
+                encode(
+                    Frame(
+                        type="event",
+                        id="d-7",
+                        ts=0,
+                        body={"kind": "link.rejected", "data": {"reason": "auth"}},
+                    )
+                )
+            ]
+        return []
+
+    session = Session(
+        FakeTransport(on_write=handler), ack_timeout=0.2, backoff=(0.01,), ping_interval=99
+    )
+    await session.connect()
+    await session.send(Frame(type="ack", id=new_id("b"), ts=0, body={"ack_of": "d-1"}))
+    await asyncio.sleep(0.1)
+    assert session.state is LinkState.REJECTED
+    assert session._reader is None
+    await session.close()
+
+
+async def test_the_ping_cache_is_bounded():
+    """A ping whose pong never arrives must not accumulate forever."""
+    session = Session(FakeTransport(on_write=_agent()), **{**FAST, "ping_interval": 99})
+    await session.connect()
+    try:
+        for index in range(70):
+            await session._send(Frame(type="ping", id=f"b-{index}", ts=0, body={}))
+        assert len(session._ping_sent) <= 65
+    finally:
+        await session.close()
+
+
+async def test_a_connect_called_twice_does_not_start_a_second_supervisor():
+    session = Session(FakeTransport(on_write=_agent()), **FAST)
+    await session.connect()
+    supervisor = session._supervisor
+    assert await session.connect() is LinkState.CONNECTED
+    assert session._supervisor is supervisor
+    await session.close()
+
+
+async def test_a_read_error_ends_the_loop_without_a_traceback():
+    """`09` §7: a vanished device is a `TransportError` on read, and the supervisor
+    retries; the read loop itself must just return."""
+
+    class ReadFails(FakeTransport):
+        def __init__(self):
+            super().__init__(on_write=_agent())
+            self.reads = 0
+
+        async def read_line(self):
+            self.reads += 1
+            if self.reads > 1:
+                raise TransportError("read failed: device removed")
+            return await super().read_line()
+
+    session = Session(ReadFails(), **{**FAST, "backoff": (9,)})
+    assert await session.connect() is LinkState.CONNECTED
+    await asyncio.sleep(0.1)
+    assert session.state is LinkState.DOWN
+    assert session._reader is None
+    await session.close()
+
+
+async def test_stopping_without_a_reader_is_not_an_error():
+    """`close` runs from the UI and from `__main__`; both may arrive before a reader
+    exists, and neither may raise."""
+    session = Session(FakeTransport(on_write=_agent()), **FAST)
+    await session._stop_reader()
+    await session.close()
+
+
+async def test_a_supervisor_that_stops_lets_the_first_attempt_resolve():
+    """`connect` waits on the first attempt: a session stopped mid-handshake must not
+    leave that wait hanging."""
+    from bridge.link import FakeTransport as Transport
+
+    session = Session(Transport(on_write=lambda line: []), ack_timeout=5, backoff=(9,))
+    assert await session.connect() is not LinkState.CONNECTED
+    assert session._first_attempt.is_set()
+    await session.close()
+
+
+async def test_a_state_hook_installed_after_construction_receives_transitions():
+    """`09` §5: `__main__` builds the session before the app exists, so the hook is
+    installed later and must still see every transition that follows."""
+    session = Session(FakeTransport(on_write=_agent()), **{**FAST, "ping_interval": 99})
+    seen: list[LinkState] = []
+    session.install_state_hook(seen.append)
+    await session.connect()
+    assert seen[-1] is LinkState.CONNECTED
+    await session.close()
+
+
+async def test_a_rejection_during_the_connect_attempt_closes_the_port():
+    """`05` §4.1: a refusal arrives on the reader before `hello_ack`, so the attempt
+    must close the port it opened rather than leave it held for the retry loop."""
+    rejects = {"on": True}
+
+    def handler(line: bytes) -> list[bytes]:
+        frame = __import__("json").loads(line)
+        if frame["type"] == "hello" and rejects["on"]:
+            return [
+                encode(
+                    Frame(
+                        type="event",
+                        id="d-1",
+                        ts=0,
+                        body={"kind": "link.rejected", "data": {"reason": "auth"}},
+                    )
+                )
+            ]
+        if frame["type"] == "hello":
+            return [_ack(frame["id"])]
+        return []
+
+    transport = FakeTransport(on_write=handler)
+    session = Session(transport, ack_timeout=0.3, backoff=(0.01,), ping_interval=99)
+    assert await session.connect() is LinkState.REJECTED
+    assert transport._opened is False
     await session.close()

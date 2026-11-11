@@ -45,6 +45,11 @@ def test_a_sandbox_path_normalises_to_its_canonical_form(typed, expected):
         "/config.json",
         "//etc/passwd",
         "/workspace/a\x00b",
+        # `..` before any segment has nothing to pop, so it escapes by climbing
+        # above `/` rather than above `/workspace`. `/workspace/..` is refused one
+        # branch later; these are the earlier one.
+        "/../workspace/a",
+        "/..",
     ],
 )
 def test_a_path_outside_the_sandbox_is_refused(typed):

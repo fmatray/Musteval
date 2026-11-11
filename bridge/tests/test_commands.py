@@ -150,6 +150,19 @@ def test_mqtt_alone_asks_for_status():
     assert parse("/mqtt")[0].body["name"] == "mqtt.status"
 
 
+def test_an_mqtt_subcommand_that_is_not_publish_is_a_usage_error():
+    """`05` §6.4: only `/mqtt publish` exists, so anything else names the usage."""
+    with pytest.raises(CommandError) as excinfo:
+        parse("/mqtt subscribe s1 home/temp")
+    assert str(excinfo.value) == "usage: /mqtt [publish <srv> <topic> <payload>]"
+
+
+def test_diag_is_an_alias_for_status():
+    """`05` §6.4 maps `/diag` onto `status`, so a screen has one source."""
+    (frame,) = parse("/diag")
+    assert frame.body == {"name": "status", "args": {}}
+
+
 def test_tasks_list():
     assert parse("/tasks")[0].body["name"] == "tasks.list"
 

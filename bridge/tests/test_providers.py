@@ -8,6 +8,7 @@ answer turns into a 400 on a device.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -529,3 +530,89 @@ def test_names_off_the_ladder_are_not_offered_as_levels():
         }
     ).encode()
     assert providers.parse_catalog(payload) == [("m", ("high",))]
+
+
+# -- the branches a well-formed file never reaches ---------------------------
+
+
+def test_a_row_that_is_not_an_object_is_skipped_with_its_reason(tmp_path):
+    """A JSON array may hold a string; it names no provider, so it is reported."""
+    path = tmp_path / "providers.json"
+    path.write_text(json.dumps(["not an entry"]))
+    entries, notes = providers.load_custom(str(path))
+    assert entries == []
+    assert any("not an object" in note for note in notes)
+
+
+def test_an_unknown_id_is_none_not_an_error(tmp_path):
+    """`find` is a lookup, and a device may name a provider this build lacks."""
+    path = tmp_path / "providers.json"
+    assert providers.find("no-such-provider", str(path)) is None
+
+
+def test_a_catalog_row_that_is_not_an_object_is_skipped():
+    """The list endpoint is remote input: one bad row must not lose the rest."""
+    payload = json.dumps(
+        {
+            "data": [
+                "nonsense",
+                {"id": "good-model", "reasoning": {"supported_efforts": ["low"]}},
+            ]
+        }
+    ).encode()
+    assert providers.parse_catalog(payload) == [("good-model", ("low",))]
+
+
+def test_a_reasoning_object_without_a_list_of_efforts_offers_none():
+    """`mandatory: true` alone says nothing about which rungs exist."""
+    payload = json.dumps(
+        {"data": [{"id": "m1", "reasoning": {"mandatory": True, "supported_efforts": "low"}}]}
+    ).encode()
+    assert providers.parse_catalog(payload) == [("m1", ())]
+
+
+def test_the_efforts_fetch_is_silent_on_a_provider_without_a_models_url():
+    provider = dataclasses.replace(providers.BUILTIN[0], models_url="")
+    assert providers.models_with_efforts(provider, "k", lambda url, key: b"{}") == []
+
+
+def test_the_efforts_fetch_returns_empty_instead_of_raising():
+    """A failed fetch is a chat line, not a crash (`05` §7.1)."""
+    provider = dataclasses.replace(
+        providers.BUILTIN[0], models_url="https://example.invalid/models"
+    )
+
+    def boom(url: str, key: str) -> bytes:
+        raise OSError("network is down")
+
+    assert providers.models_with_efforts(provider, "k", boom) == []
+
+
+def test_an_empty_level_writes_nothing_into_extra_body():
+    """`none` cleared in the picker must not become a member named `""`."""
+    for entry in providers.BUILTIN:
+        assert entry.extra_body("") == {}
+
+
+def test_a_stored_tz_string_maps_back_to_its_region_name():
+    """`05` §7.3: the dropdown is pre-filled from `ntp.timezone`, which holds the TZ
+    string. Showing the raw string back was the bug; it must render "Europe / Western".
+    """
+    assert providers.region_for_timezone("CET-1CEST,M3.5.0,M10.5.0/3") == "Europe / Western"
+    assert providers.region_for_timezone("UTC0") == "UTC"
+
+
+def test_a_tz_string_the_table_does_not_list_names_no_region():
+    """An unlisted string leaves the dropdown empty so the manual field offers it."""
+    assert providers.region_for_timezone("XYZ-5") == ""
+    assert providers.region_for_timezone("") == ""
+
+
+def test_every_region_round_trips_through_its_tz_string():
+    """`region_for_timezone` is the inverse of the table; a duplicate TZ string would
+    make two rows indistinguishable and the round trip would pick one silently."""
+    names = providers.region_names()
+    assert len(set(names)) == len(names)
+    for name in names:
+        tz, _server = providers.timezone_for(name)
+        assert providers.region_for_timezone(tz) == name
