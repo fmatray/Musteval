@@ -16,7 +16,7 @@ from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
 from bridge.ui.modals import HelpModal
-from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, ChatScreen
+from bridge.ui.app import BOUNDS_CLIP, COMPLETION_ROWS, COMPOSER_MAX_ROWS, ChatScreen
 from bridge.ui.render import LINK_WORDS, clip
 from bridge.ui.history import MAX_ENTRIES, PromptHistory, history_path
 from bridge.ui.testing import chat_lines
@@ -1320,3 +1320,128 @@ def _tokens(row):
     from bridge.ui.settings import _BACKTICKED, _INTEGER
 
     return [token for token in _BACKTICKED.findall(row.bound) if _INTEGER.fullmatch(token)]
+
+
+# -- Ctrl+C clear_input tests ---------------------------------------------
+
+async def test_ctrl_c_clears_typed_text():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.focus()
+        await pilot.press(*"hello world")
+        assert field.value == "hello world"
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert field.value == ""
+        await session.close()
+
+
+async def test_ctrl_c_closes_the_candidate_panel():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.focus()
+        # Trigger candidate list
+        field.value = "/st"
+        await pilot.pause(0.1)
+        panel = app.query_one("#completion")
+        assert panel.display is True
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert panel.display is False
+        assert field.value == ""
+        await session.close()
+
+
+async def test_ctrl_c_resets_the_history_walk():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.focus()
+        # Submit two prompts to establish history
+        for text in ("first prompt", "second prompt"):
+            await pilot.press(*text)
+            await pilot.press("enter")
+            await pilot.pause(0.15)
+        assert field.value == ""
+        # Walk back to the first (older) prompt
+        await pilot.press("up")
+        await pilot.pause(0.1)
+        await pilot.press("up")
+        await pilot.pause(0.1)
+        assert field.value == "first prompt"
+        # Clear input (and reset walk)
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert field.value == ""
+        # Next 'up' should land on the newest prompt, not the older one
+        await pilot.press("up")
+        await pilot.pause(0.1)
+        assert field.value == "second prompt"
+        await session.close()
+
+
+async def test_ctrl_c_shrinks_the_composer_box():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.focus()
+        # Press Ctrl+J enough times to hit max height (6 rows + 2 borders = 8)
+        # Need 6 newlines to reach COMPOSER_MAX_ROWS
+        for _ in range(COMPOSER_MAX_ROWS + 1):
+            await pilot.press("ctrl+j")
+        await pilot.pause(0.1)
+        assert field.styles.height.value == COMPOSER_MAX_ROWS + 2
+        # Clear
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert field.styles.height.value == 3
+        await session.close()
+
+
+async def test_ctrl_c_does_not_cancel_a_run_or_quit():
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        # Submit a prompt to start a run
+        await pilot.press(*"hi")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        # Clear input
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert app.is_running
+        # Check that no cancel frame was sent to the device
+        assert not any(b'"type":"cancel"' in line for line in transport.written)
+        await session.close()
+
+
+async def test_ctrl_c_is_scoped_to_chat_and_ignored_when_hidden():
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connected(pilot)
+        field = app.query_one("#chat-input")
+        field.focus()
+        await pilot.press(*"keep me")
+        assert field.value == "keep me"
+        # Switch to logs screen
+        app.action_show("logs")
+        await pilot.pause(0.1)
+        # Press Ctrl+C while Chat is hidden
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        # Chat composer should still hold its text
+        assert field.value == "keep me"
+        await session.close()

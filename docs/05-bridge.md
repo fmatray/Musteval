@@ -641,6 +641,7 @@ future that is never resolved.
 | Chat | `Up`/`Down` | Recall a submitted prompt; `Down` past the newest returns to the draft |
 | Chat | `Esc` | No modal and no other screen on top: cancel the current agent run (`cancel` message) |
 | Chat | `Ctrl+L` | Clear current session scrollback |
+| Chat | `Ctrl+C` | Clear the composer input: the typed text, the candidate list and the history walk are dropped; the run is not cancelled |
 | Status | `Ctrl+R` | Request `status` command |
 | Tasks | `Up`/`Down` | Navigate task list |
 | Tasks | `Enter` | Send `tasks.run` for selected ID |

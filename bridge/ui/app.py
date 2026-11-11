@@ -121,6 +121,7 @@ class ChatScreen(Vertical):
         Binding("pagedown", "page_forward", "Later", show=False),
         Binding("ctrl+j", "newline", "Newline", show=False),
         Binding("ctrl+l", "clear_log", "Clear", show=False),
+        Binding("ctrl+c", "clear_input", "Clear input", show=False),
         # `Input` accepts this key itself when it is multiline; the binding is
         # what makes it reachable once the composer has focus.
         Binding("shift+enter", "newline", "Newline", show=False),
@@ -295,6 +296,17 @@ class ChatScreen(Vertical):
         """`05` §6.2: clear this session's scrollback, which is local only."""
         self.query_one("#chat-log", RichLog).clear()
         self._turns = 0
+
+    def action_clear_input(self) -> None:
+        """`05` §6.2: drop the composer, its candidate list and its walk cursor.
+
+        The run is untouched: this discards what has been typed, not what is
+        running, and the history entries stay readable through `Up`.
+        """
+        self._input().value = ""
+        self._history.reset()
+        self._show_options("")
+        self._fit_composer()
 
     def open_turn(self) -> None:
         """`05` §5.1: separate this prompt from the turn before it.
