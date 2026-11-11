@@ -135,10 +135,20 @@ def test_hello_ack_reports_the_device_contract(harness):
     assert ack["protocol"] == 1
 
 
-def test_ping_gets_a_pong(harness):
-    harness.feed_frame(_frame("ping", {}))
-    pong = harness.one()
-    assert pong["type"] == "pong" and pong["reply_to"] == "b-1"
+def test_net_ping_is_answered_generically(harness):
+    """`04` §4.25: `net.ping` is a known name, so the double must answer it.
+
+    The reply is flat — `name` and `ok` sit on the frame root, not under a `body`
+    member — which is what `test_every_other_known_command_is_answered` also
+    asserts for every other name.
+    """
+    harness.feed_frame(
+        _frame("command", {"name": "net.ping", "args": {"target": "router"}})
+    )
+    reply = harness.one()
+    assert reply["type"] == "command.result"
+    assert reply["name"] == "net.ping"
+    assert reply["ok"] is True
 
 
 def test_ack_is_silent(harness):

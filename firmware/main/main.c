@@ -20,6 +20,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <stdlib.h>
+
 #include "cfg.h"
 #include "clock.h"
 #include "llm.h"
@@ -409,6 +411,74 @@ static esp_err_t handle_templates_list(const json_node_t *args, json_node_t *roo
     return ESP_OK;
 }
 
+/* `04` §4.25: four ICMP probes on `link_task` would hold `pong` for up to 2.8 s,
+ * which §3.7 bounds at 1 s. The task owns every byte it needs: the caller's frame is
+ * freed when `answer_command` returns. */
+typedef struct {
+    char reply_to[LINK_ID_MAX + 1];
+    char target[8];
+    char host[128];
+    int64_t start_us;
+} ping_args_t;
+
+static volatile bool s_ping_busy;
+
+static void ping_emit(const ping_args_t *pa, const net_ping_stats_t *stats,
+                      const char *code, const char *msg)
+{
+    json_doc_t *body = json_new_object();
+    if (body == NULL) return;
+    json_node_t *root = json_root(body);
+    /* `d-<counter>` is allocated per frame; `frame_id`'s buffer is shared with
+     * `link_task`, which may be answering a `pong` right now. */
+    char id[16];
+    link_next_id(id, sizeof id);
+    json_add_string(root, "name", "net.ping");
+    json_add_bool(root, "ok", stats != NULL);
+    json_add_int(root, "duration_ms", (esp_timer_get_time() - pa->start_us) / 1000);
+    if (stats != NULL) {
+        json_node_t *result = json_add_object(root, "result");
+        if (result != NULL) {
+            json_add_string(result, "target", pa->target);
+            json_add_string(result, "host", pa->host);
+            json_add_int(result, "sent", stats->sent);
+            json_add_int(result, "received", stats->received);
+            json_add_int(result, "loss_pct", stats->loss_pct);
+            json_add_int(result, "rtt_min_ms", stats->rtt_min_ms);
+            json_add_int(result, "rtt_avg_ms", stats->rtt_avg_ms);
+            json_add_int(result, "rtt_max_ms", stats->rtt_max_ms);
+        }
+    } else {
+        json_node_t *err = json_add_object(root, "error");
+        if (err != NULL) {
+            json_add_string(err, "code", code);
+            json_add_string(err, "message", msg);
+        }
+    }
+    link_emit_body("command.result", id, 0, pa->reply_to, body);
+    json_free(body);
+}
+
+static void ping_task(void *arg)
+{
+    ping_args_t *pa = arg;
+    int32_t rtt[NET_PING_COUNT];
+    for (size_t i = 0; i < NET_PING_COUNT; i++) rtt[i] = -1;
+
+    esp_err_t err = net_ping_icmp(pa->host, rtt, NET_PING_COUNT);
+    if (err != ESP_OK) {
+        ping_emit(pa, NULL, "E_INTERNAL", "ping session could not start");
+    } else {
+        net_ping_stats_t stats;
+        net_ping_summarise(rtt, NET_PING_COUNT, &stats);
+        ping_emit(pa, &stats, NULL, NULL);
+    }
+    s_ping_busy = false;
+    free(pa);
+    vTaskDelete(NULL);
+}
+
+
 static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
                                      json_node_t *result)
 {
@@ -420,6 +490,7 @@ static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
     char path[80];
     int n = snprintf(path, sizeof path, "/prompts/%s", name);
     if (n <= 0 || (size_t)n >= sizeof path) return ESP_ERR_INVALID_ARG;
+
 
     /* Static for the same reason as `sandbox.read`: 4097 bytes does not fit on the
      * 4 KiB link stack (`02-firmware.md` §3.1). */
@@ -796,6 +867,66 @@ static void answer_command(const json_node_t *frame)
             json_add_bool(result, "safe_mode", s_safe_mode);
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "net.ping") == 0) {
+        const char *target = json_string(json_get(args, "target"));
+        if (target == NULL ||
+            (strcmp(target, "router") != 0 && strcmp(target, "llm") != 0 &&
+             strcmp(target, "ntp") != 0)) {
+            emit_failure(name, reply_to, "E_CONFIG", "unknown target");
+            json_free(body); return;
+        }
+        if (s_ping_busy) {
+            emit_failure(name, reply_to, "E_BUSY", "a ping is already in flight");
+            json_free(body); return;
+        }
+        if (!net_connected()) {
+            emit_failure(name, reply_to, "E_WIFI", "link is down");
+            json_free(body); return;
+        }
+
+        ping_args_t *pa = calloc(1, sizeof *pa);
+        if (pa == NULL) {
+            emit_failure(name, reply_to, "E_INTERNAL", "ping task not started");
+            json_free(body); return;
+        }
+        snprintf(pa->reply_to, sizeof pa->reply_to, "%s", reply_to);
+        snprintf(pa->target, sizeof pa->target, "%s", target);
+        /* The same instant `answer_command` stamped, captured into the task's own
+         * argument: `s_cmd_start_us` is one global that the next inbound command
+         * overwrites, and this frame is answered up to 3 s later. */
+        pa->start_us = esp_timer_get_time();
+
+        if (strcmp(target, "router") == 0) {
+            if (net_gateway(pa->host, sizeof pa->host) != ESP_OK) {
+                free(pa);
+                emit_failure(name, reply_to, "E_CONFIG", "no gateway: wifi is down");
+                json_free(body); return;
+            }
+        } else if (strcmp(target, "llm") == 0) {
+            if (!llm_active_host(pa->host, sizeof pa->host)) {
+                free(pa);
+                emit_failure(name, reply_to, "E_CONFIG", "no llm provider");
+                json_free(body); return;
+            }
+        } else {
+            const char *server = clock_server_name();
+            if (server == NULL) {
+                free(pa);
+                emit_failure(name, reply_to, "E_CONFIG", "no ntp server");
+                json_free(body); return;
+            }
+            snprintf(pa->host, sizeof pa->host, "%s", server);
+        }
+
+        s_ping_busy = true;
+        if (xTaskCreate(ping_task, "net_ping", 3072, pa, 4, NULL) != pdPASS) {
+            s_ping_busy = false;
+            free(pa);
+            emit_failure(name, reply_to, "E_INTERNAL", "ping task not started");
+            json_free(body); return;
+        }
+        json_free(body);
+        return;
     } else if (name && strcmp(name, "wifi.scan") == 0) {
         /* §4.24: a scan and a connection attempt cannot share the radio, so a run in
          * flight means `E_BUSY` rather than a scan that steals the station. */

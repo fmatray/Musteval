@@ -18,7 +18,13 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+
+#include "lwip/inet.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
+#include "ping/ping_sock.h"
 
 #include "cfg.h"
 
@@ -41,6 +47,7 @@ static int32_t s_backoff[NET_MAX_BACKOFF];
 static size_t s_backoff_count;
 static int32_t s_connect_timeout_ms = NET_DEFAULT_CONNECT_TIMEOUT_MS;
 static int32_t s_failovers;
+
 static net_state_t s_state = NET_STATE_OFF;
 static char s_ip[16];
 static char s_ssid[33];
@@ -566,4 +573,117 @@ esp_err_t net_request(const char *method, const char *url,
     return net_exchange(verb, url, body != NULL ? "application/json" : NULL, NULL,
                         header_names, header_values, count, body, body_len, timeout_ms,
                         resp);
+}
+
+/* --- Reachability (`04-protocol.md` §4.25) -------------------------------- */
+
+typedef struct {
+    int32_t *rtt_ms;
+    size_t   count;
+    SemaphoreHandle_t done;
+} net_ping_ctx_t;
+
+static void net_ping_on_success(esp_ping_handle_t hdl, void *args)
+{
+    net_ping_ctx_t *ctx = args;
+    uint16_t seqno = 0;
+    uint32_t elapsed = 0;
+    if (esp_ping_get_profile(hdl, ESP_PING_PROF_SEQNO, &seqno, sizeof seqno) != ESP_OK) return;
+    if (esp_ping_get_profile(hdl, ESP_PING_PROF_TIMEGAP, &elapsed, sizeof elapsed) != ESP_OK) return;
+    if (seqno >= 1 && (size_t)seqno <= ctx->count) {
+        ctx->rtt_ms[seqno - 1] = (int32_t)elapsed;
+    }
+}
+
+static void net_ping_on_end(esp_ping_handle_t hdl, void *args)
+{
+    (void)hdl;
+    net_ping_ctx_t *ctx = args;
+    xSemaphoreGive(ctx->done);
+}
+
+esp_err_t net_gateway(char *out, size_t cap)
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    if (cap < IP4ADDR_STRLEN_MAX) return ESP_ERR_INVALID_SIZE;
+    if (!net_connected() || s_sta == NULL) return ESP_ERR_INVALID_STATE;
+
+    esp_netif_ip_info_t info;
+    esp_err_t err = esp_netif_get_ip_info(s_sta, &info);
+    if (err != ESP_OK) return ESP_ERR_INVALID_STATE;
+
+    ip4_addr_t gw;
+    gw.addr = info.gw.addr;
+    if (ip4addr_ntoa_r(&gw, out, (int)cap) == NULL) return ESP_ERR_INVALID_SIZE;
+
+    return ESP_OK;
+}
+
+esp_err_t net_ping_icmp(const char *host, int32_t *rtt_ms, size_t count)
+{
+    if (host == NULL || host[0] == '\0' || rtt_ms == NULL || count == 0) return ESP_ERR_INVALID_ARG;
+    if (!net_connected()) return ESP_ERR_INVALID_STATE;
+
+    ip_addr_t target;
+    ip4_addr_t quad;
+    if (ip4addr_aton(host, &quad)) {
+        ip_addr_copy_from_ip4(target, quad);
+    } else {
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+        struct addrinfo *res = NULL;
+        if (getaddrinfo(host, NULL, &hints, &res) != 0 || res == NULL) return ESP_ERR_NOT_FOUND;
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)res->ai_addr;
+        /* `ip_addr_set_ip4_u32` guards its argument with `if (ipaddr)`, which a
+         * stack address makes constant-true, and GCC 14 refuses that under
+         * `-Werror=address`. Write the v4 member directly instead. */
+        target.type = IPADDR_TYPE_V4;
+        ip4_addr_set_u32(ip_2_ip4(&target), sin->sin_addr.s_addr);
+        freeaddrinfo(res);
+    }
+
+    for (size_t i = 0; i < count; i++) rtt_ms[i] = -1;
+
+    net_ping_ctx_t ctx = { .rtt_ms = rtt_ms, .count = count, .done = xSemaphoreCreateBinary() };
+    if (ctx.done == NULL) return ESP_FAIL;
+
+    esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
+    config.count = (uint32_t)count;
+    config.interval_ms = NET_PING_INTERVAL_MS;
+    config.timeout_ms = NET_PING_TIMEOUT_MS;
+    config.data_size = 32;
+    config.task_prio = 2;
+    config.target_addr = target;
+
+    const esp_ping_callbacks_t cbs = {
+        .cb_args = &ctx,
+        .on_ping_success = net_ping_on_success,
+        .on_ping_timeout = NULL,
+        .on_ping_end = net_ping_on_end,
+    };
+
+    esp_ping_handle_t hdl = NULL;
+    esp_err_t err = esp_ping_new_session(&config, &cbs, &hdl);
+    if (err != ESP_OK) {
+        vSemaphoreDelete(ctx.done);
+        return ESP_FAIL;
+    }
+
+    err = esp_ping_start(hdl);
+    if (err != ESP_OK) {
+        esp_ping_delete_session(hdl);
+        vSemaphoreDelete(ctx.done);
+        return ESP_FAIL;
+    }
+
+    uint32_t timeout_ms = (uint32_t)count * (NET_PING_INTERVAL_MS + NET_PING_TIMEOUT_MS) + 1000;
+    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        err = ESP_FAIL;
+    } else {
+        err = ESP_OK;
+    }
+
+    esp_ping_stop(hdl);
+    esp_ping_delete_session(hdl);
+    vSemaphoreDelete(ctx.done);
+    return err;
 }

@@ -152,6 +152,13 @@ an entry already carrying `.new` hides nothing at all, which is the shape of the
 bug it exists to prevent.
 - `store_nvs_set_int(key, val)` / `store_nvs_get_int(key, &val)`: Access
   NVS namespace `runtime`.
+
+`net.ping` also creates a short-lived task, one per command: four ICMP probes take up
+to 2.8 s, and `answer_command` runs on `link_task`'s 4 KiB stack, which must answer
+`pong` inside 1 s even while the ping is in flight (`04-protocol.md` §3.7). The task
+copies its host and `reply_to`, emits one `command.result`, and deletes itself. A
+second `net.ping` while one is in flight is `E_BUSY` (`04-protocol.md` §4.25).
+
 - Exactly three APIs write `userfs`: `config.set`, which targets `/fs/config.json`
   and is not reachable through any tool path; `store_task_write()`, which targets
   `/fs/tasks.json` and is reachable from the `task.set` tool and the

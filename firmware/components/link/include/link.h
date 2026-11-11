@@ -17,6 +17,11 @@
 #define LINK_RX_MAX 4096
 #define LINK_TX_MAX 16384
 
+/* The id bound of `04-protocol.md` §2: 1-32 chars from `[A-Za-z0-9._-]`. Exported
+ * because a caller that answers asynchronously must own a copy of the id it owes a
+ * reply to, and it may not assume a smaller size. */
+#define LINK_ID_MAX 32
+
 /* Why a line was refused. The codec reports, the caller decides the wire shape:
  * `04-protocol.md` §1.2 makes the answer depend on whether an `id` is recoverable. */
 typedef enum {

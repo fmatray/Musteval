@@ -273,3 +273,28 @@ const char *llm_last_error(void)
 {
     return s_last_error;
 }
+
+
+bool llm_active_host(char *out, size_t cap)
+{
+    if (out == NULL || cap < 2) return false;
+    out[0] = '\0';
+    if (s_provider_count == 0) return false;
+
+    const char *url = s_providers[0].base_url;
+    const char *scheme = strstr(url, "://");
+    const char *host = scheme != NULL ? scheme + 3 : url;
+    size_t n;
+    if (host[0] == '[') {
+        const char *close = strchr(host, ']');
+        if (close == NULL) return false;
+        host++;
+        n = (size_t)(close - host);
+    } else {
+        n = strcspn(host, ":/");
+    }
+    if (n == 0 || n >= cap) return false;
+    memcpy(out, host, n);
+    out[n] = '\0';
+    return true;
+}

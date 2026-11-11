@@ -153,6 +153,12 @@ bool llm_last_answer(const char **id, const char **model);
  * `llm.limit_day`). 0 means the window is disabled and is reported as null. */
 void llm_limits(int32_t *hour, int32_t *day);
 
+/* Copy the host only — no scheme, no port, no path — of the first configured
+ * provider's `base_url` into `out` (`04-protocol.md` §4.25, `net.ping` target `llm`).
+ * Returns false when no provider is loaded or the host does not fit. The API key is
+ * never part of the result: the caller wants a name to probe, not a credential. */
+bool llm_active_host(char *out, size_t cap);
+
 /* Human-readable reason the chain last failed, for the `error.message` of
  * `E_LLM_UNAVAILABLE`. Borrowed and stable until the next call. When the last
  * attempt was rejected with a body, it carries that body's words (`02-firmware.md`

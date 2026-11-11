@@ -120,10 +120,18 @@ def test_options_lists_every_command_for_a_bare_slash():
     [
         ("/st", ["/status"]),
         ("/tasks ad", ["/tasks add"]),
+        ("/ping r", ["/ping router"]),
+        ("/ping ", ["/ping device", "/ping router", "/ping llm", "/ping ntp"]),
     ],
 )
 def test_options_filters_a_unique_prefix(typed, expected):
     assert options(typed) == expected
+
+
+def test_ping_usage_names_every_target():
+    """`05-bridge.md` §7: the four targets are the whole surface of `/ping`."""
+    ping = next(command for command in COMMANDS if command.name == "ping")
+    assert ping.usage == "/ping device|router|llm|ntp"
 
 
 def test_options_keeps_an_exact_match():

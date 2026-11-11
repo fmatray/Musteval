@@ -55,6 +55,11 @@ const char *clock_tz(void);
  * for the current instant. Used by `time.now`'s local field (`03-config.md` §ntp). */
 int32_t clock_utc_offset_s(void);
 
+/* The first configured SNTP server, borrowed and stable for the life of the process,
+ * or NULL before `clock_init` populated the list (`04-protocol.md` §4.25, `net.ping`
+ * target `ntp`). */
+const char *clock_server_name(void);
+
 /* Pure: how long to wait before the next re-sync, clamped so a nonsensical
  * `sync_interval_s` cannot disable the timer. Separated from the SNTP call so the
  * host suite can prove the clamp without a radio. */

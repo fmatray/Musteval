@@ -155,3 +155,37 @@ void net_scan_condense(net_scan_entry_t *entries, size_t *count, size_t cap,
 /* The wire word for a `wifi_auth_mode_t`: `open`, `wep`, `wpa`, `wpa2`, `wpa3`,
  * `wpa2_enterprise`, `wpa3_enterprise`, `unknown` (§4.24). Pure. */
 const char *net_auth_name(uint8_t auth);
+
+/* --- Reachability (`04-protocol.md` §4.25) -------------------------------- */
+
+/* The §4.25 probe shape: four echoes, 200 ms apart, each abandoned after 500 ms, so
+ * `/ping router|llm|ntp` answers inside the 1 s `pong` promise of §3.7 only because
+ * the caller runs it off the link task (`main.c`). */
+#define NET_PING_COUNT 4
+#define NET_PING_INTERVAL_MS 200
+#define NET_PING_TIMEOUT_MS 500
+
+/* `rtt_ms[i] < 0` means that probe timed out; `received` counts the rest. `loss_pct`
+ * is rounded to nearest, so 1 of 3 lost is 33 and 2 of 3 is 67. Every field is 0
+ * when `count` is 0, and the rtt fields are 0 when nothing came back. */
+typedef struct {
+    int32_t sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms;
+} net_ping_stats_t;
+
+/* Pure, so the §4.25 arithmetic is proven on the host rather than inferred from a
+ * ping that happened to be answered. */
+void net_ping_summarise(const int32_t *rtt_ms, size_t count, net_ping_stats_t *out);
+
+/* The default gateway as a dotted quad, which `/ping router` probes. Returns
+ * ESP_ERR_INVALID_STATE when the link is down and ESP_ERR_INVALID_SIZE when `cap`
+ * is below `IP4ADDR_STRLEN_MAX`. Board-only. */
+esp_err_t net_gateway(char *out, size_t cap);
+
+/* ICMP echo `count` times to `host`, resolving a name with `getaddrinfo` when it is
+ * not already a dotted quad, and filling `rtt_ms[i]` with the round trip in ms or
+ * `-1` for a timeout. Blocks for up to `count * (interval + timeout)`, so it must not
+ * be called on the link task. Returns ESP_ERR_INVALID_STATE when the link is down,
+ * ESP_ERR_INVALID_ARG for a NULL `rtt_ms` or an empty host, ESP_ERR_NOT_FOUND when
+ * resolution fails, ESP_FAIL when the probe could not start. Total loss is a result,
+ * not an error. Board-only. */
+esp_err_t net_ping_icmp(const char *host, int32_t *rtt_ms, size_t count);

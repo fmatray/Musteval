@@ -560,7 +560,7 @@ generic notification line and MUST NOT error.
 
 ## 4. Command catalog
 
-All twenty-four names, their arguments and their `result` shapes. Unknown names are
+All twenty-five names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -591,6 +591,8 @@ reads are never refused.
 | `sandbox.move` | `{from, to}` | `{from, to, moved}` | `E_CONFIG` (either path outside `/workspace/`, or `to` exists), `E_STORAGE` (missing source, or a cross-mount move) | yes |
 | `sys.reset_counter` | `{}` | `{reset, previous, safe_mode}` | `E_INTERNAL` | yes |
 | `wifi.scan` | `{}` | `{networks:[{ssid,rssi,auth}], truncated}` | `E_WIFI` (radio unavailable), `E_BUSY` (run in flight) | no |
+| `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
+
 
 ### 4.1 `status`
 
@@ -1150,6 +1152,49 @@ anyway — `03-config.md` requires 1..8 entries — so refusing to scan for that
 would refuse on the only device that needs it.) The bridge treats `E_WIFI` as
 "nothing to scan" and leaves the manual SSID field as the only route, rather than
 reporting a device fault.
+
+
+### 4.25 `net.ping`
+
+Probes one host with ICMP echo from the device and reports the round-trip statistics.
+It answers a different question from `ping`/`pong` (§3.7), which measures the link
+between the bridge and the device, and from `wifi.scan` (§4.24), which reports the
+radio: this one reaches the host the question is actually about.
+
+```json
+{"v":1,"type":"command","id":"b-40","ts":1730572530,"name":"net.ping","args":{"target":"router"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-50","ts":1730572531,"reply_to":"b-40","name":"net.ping","ok":true,"result":{"target":"router","host":"192.168.1.1","sent":4,"received":4,"loss_pct":0,"rtt_min_ms":1,"rtt_avg_ms":2,"rtt_max_ms":3},"duration_ms":812}
+```
+
+`target` selects the host, and nothing else:
+
+| `target` | Host |
+|---|---|
+| `router` | The default gateway the station received over DHCP |
+| `llm` | The host of the first provider in `llm.providers[]`; the key is never read |
+| `ntp` | The first entry of `ntp.servers[]` |
+
+`host` is the probed name or address, so the reader can see what was measured rather
+than trusting that `router` resolved to the gateway they expected. `sent` is always
+`NET_PING_COUNT` (4) on a successful result; `received` is how many echo replies
+came back, and `loss_pct` is `100 * (sent - received) / sent`. `rtt_min_ms`,
+`rtt_avg_ms` and `rtt_max_ms` are the round trips of the replies, in milliseconds.
+
+A 100 % loss is a result, not an error: `received: 0, loss_pct: 100` says the host did
+not answer, which is exactly what the reader asked. The command fails only when the
+probe could not be attempted: `E_CONFIG` for an unknown `target`, a missing provider,
+a missing NTP server or no loaded config; `E_WIFI` when the link is down;
+`E_BUSY` when another `net.ping` is in flight (`esp_ping` owns one session per
+device); `E_INTERNAL` when the probe session could not start.
+
+The four probes are sent `NET_PING_INTERVAL_MS` (200 ms) apart with a
+`NET_PING_TIMEOUT_MS` (500 ms) wait each, so the command answers in under 3 s even
+when every probe times out, and it runs on its own task so `pong` keeps its 1 s
+bound (§3.7).
+
 
 ## 5. Error codes
 

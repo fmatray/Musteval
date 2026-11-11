@@ -93,7 +93,12 @@ COMMANDS: tuple[CommandHelp, ...] = (
         False,
     ),
     CommandHelp("retry", "/retry", "resend the last prompt", False),
-    CommandHelp("ping", "/ping", "test link latency", False),
+    CommandHelp(
+        "ping",
+        "/ping device|router|llm|ntp",
+        "link latency, or reach the router, llm, ntp",
+        False,
+    ),
     CommandHelp("cancel", "/cancel", "cancel the current run", False),
     CommandHelp(
         "thinking",
@@ -125,6 +130,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "sandbox": ("list", "read", "write", "mkdir", "move", "delete"),
     "sys": ("reset-counter",),
     "secret": ("set",),
+    "ping": ("device", "router", "llm", "ntp"),
 }
 
 _NAMES: tuple[str, ...] = tuple(command.name for command in COMMANDS)

@@ -1638,6 +1638,25 @@ class BridgeApp(App):
             )
             self.run_worker(self.browse(self._files_path))
             return
+        if name == "net.ping" and isinstance(result, dict):
+            # `04` §4.25: one line. 100 % loss is a result the device measured, not
+            # an error frame, so it is shown as the answer it is — but coloured as
+            # the failure the reader is looking for.
+            received = result.get("received", 0)
+            sent = result.get("sent", 0)
+            loss = result.get("loss_pct", 0)
+            line = (
+                f"ping {result.get('target')} {result.get('host')}: "
+                f"{received}/{sent}, {loss}% loss"
+            )
+            if loss < 100:
+                line += (
+                    f", rtt {result.get('rtt_min_ms')}/{result.get('rtt_avg_ms')}"
+                    f"/{result.get('rtt_max_ms')} ms"
+                )
+            kind = "error" if loss == 100 else "warn" if loss else None
+            self._chat().write(line, kind=kind)
+            return
         if name == "sys.reset_counter":
             # `04` §4.23: the previous value is the proof the reply names.
             self._chat().write(f"boot failures: {result.get('previous')} -> 0")

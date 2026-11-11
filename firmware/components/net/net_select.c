@@ -112,3 +112,32 @@ void net_scan_condense(net_scan_entry_t *entries, size_t *count, size_t cap,
     }
     *count = kept;
 }
+
+/* --- Reachability (`04-protocol.md` §4.25) -------------------------------- */
+
+void net_ping_summarise(const int32_t *rtt_ms, size_t count, net_ping_stats_t *out)
+{
+    if (out == NULL) return;
+    *out = (net_ping_stats_t){0};
+    if (rtt_ms == NULL || count == 0) return;
+
+    int64_t sum = 0;
+    int32_t min = INT32_MAX, max = 0;
+    int32_t received = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        int32_t rtt = rtt_ms[i];
+        if (rtt < 0) continue;
+        if (received == 0 || rtt < min) min = rtt;
+        if (received == 0 || rtt > max) max = rtt;
+        sum += rtt;
+        received++;
+    }
+
+    out->sent = (int32_t)count;
+    out->received = received;
+    out->rtt_min_ms = received ? min : 0;
+    out->rtt_avg_ms = received ? (int32_t)((sum + received / 2) / received) : 0;
+    out->rtt_max_ms = received ? max : 0;
+    out->loss_pct = (int32_t)(((int64_t)(count - received) * 100 + count / 2) / count);
+}

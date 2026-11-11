@@ -101,6 +101,8 @@ COMMAND_NAMES = frozenset(
         "sandbox.mkdir",
         "sandbox.move",
         "sys.reset_counter",
+        # `04-protocol.md` §4.25: ICMP reachability from the device itself.
+        "net.ping",
     }
 )
 

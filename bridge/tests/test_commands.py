@@ -100,7 +100,8 @@ def test_retry_without_a_prompt_is_rejected():
 
 
 def test_ping_and_cancel_are_fire_and_forget():
-    assert parse("/ping")[0].type == "ping"
+    assert parse("/ping device")[0].type == "ping"
+    assert parse("/ping router")[0].body == {"name": "net.ping", "args": {"target": "router"}}
     cancel = parse("/cancel")[0]
     assert cancel.type == "cancel"
     assert cancel.body["reason"] == "user"
@@ -118,6 +119,7 @@ def test_ping_and_cancel_are_fire_and_forget():
         ("/tasks enable", True),
         ("/tasks set", True),
         ("/tasks add", True),
+
         ("/tasks bogus", True),
         ("/fs", True),
         ("/fs put", True),
@@ -332,7 +334,6 @@ def test_new_slash_forms_send_zero_frames_on_refusal():
     assert sent == []
 
 def test_every_produced_name_is_a_frozen_command_updated():
-    # Ensure new commands are in COMMAND_NAMES
     texts = [
         "/sandbox mkdir /workspace/a",
         "/sandbox move /workspace/a /workspace/b",
@@ -344,4 +345,35 @@ def test_every_produced_name_is_a_frozen_command_updated():
         for frame in parse(text, state):
             if frame.type == "command":
                 assert frame.body["name"] in COMMAND_NAMES
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/ping device", {"type": "ping"}),
+        ("/ping router", {"name": "net.ping", "args": {"target": "router"}}),
+        ("/ping llm", {"name": "net.ping", "args": {"target": "llm"}}),
+        ("/ping ntp", {"name": "net.ping", "args": {"target": "ntp"}}),
+    ],
+)
+def test_ping_targets_map_to_correct_frames(text, expected):
+    """`05-bridge.md` §7: `device` is the latency check, the rest are reachability."""
+    frame = parse(text)[0]
+    assert frame.type == expected.get("type", "command")
+    if "name" in expected:
+        assert frame.body["name"] == expected["name"]
+        assert frame.body["args"] == expected["args"]
+
+
+def test_bare_and_bogus_ping_raise_the_usage_error():
+    usage = "usage: /ping device|router|llm|ntp"
+    for text in ("/ping", "/ping foo", "/ping router extra"):
+        with pytest.raises(CommandError, match=usage.replace("|", "\\|")):
+            parse(text, CommandState())
+
+
+def test_a_ping_target_never_falls_back_to_device():
+    """The user's request: `/ping` alone is an error, not an alias for `/ping device`."""
+    with pytest.raises(CommandError):
+        parse("/ping", CommandState())
 

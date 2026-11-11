@@ -130,7 +130,14 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     if head == "geo":
         return [_command("geo.locate")]
     if head == "ping":
-        return [Frame(type="ping", id=new_id("b"), ts=0, body={})]
+        # `05-bridge.md` §7: `device` is the link-latency ping the bridge already
+        # measured; the other three make the device run an ICMP round itself.
+        # Bare `/ping` used to mean `device`, which is the guess this removes.
+        if rest == ["device"]:
+            return [Frame(type="ping", id=new_id("b"), ts=0, body={})]
+        if len(rest) == 1 and rest[0] in ("router", "llm", "ntp"):
+            return [_command("net.ping", {"target": rest[0]})]
+        raise CommandError("usage: /ping device|router|llm|ntp")
     if head == "cancel":
         return [Frame(type="cancel", id=new_id("b"), ts=0, body={"reason": "user"})]
     if head == "retry":

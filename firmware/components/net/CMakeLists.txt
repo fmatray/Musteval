@@ -10,7 +10,7 @@ set(reqs cfg)
 if(NOT IDF_TARGET STREQUAL "linux")
     list(APPEND srcs "net.c")
     list(APPEND reqs esp_wifi esp_netif esp_event esp_http_client esp-tls mbedtls
-                esp_timer)
+                esp_timer lwip)
 endif()
 idf_component_register(SRCS ${srcs}
                        INCLUDE_DIRS "include"

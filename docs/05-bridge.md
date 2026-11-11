@@ -714,7 +714,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/todo` | (Local) | none | Re-renders the phases and their tasks from the last observed `todo` tool result, one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished. It also marks a finished run whose `agent.final` carried `todo_open: true`, so an unfinished plan is visible instead of silent |
 | `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
-| `/ping` | `ping` | none | Tests link latency: the answer is a `pong: <n> ms` chat line and the `PING` row on F3 |
+| `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |
 | `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
 | `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
 | `/cancel` | `cancel` | none | Cancels current run |
@@ -729,8 +729,9 @@ Commands marked `(Local)` render from state the bridge already holds from
 `/onboard`, which is local only in that it takes no argument from the command line:
 its whole purpose is to send the frames in its mapping. The five rows that are
 neither `command` nor `(Local)` send the frame named in their mapping instead:
-`/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping` sends `ping`,
-`/diag` sends `status`, and `/cancel` sends `cancel`.
+`/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping device` sends
+`ping` while `/ping router|llm|ntp` sends `net.ping`, `/diag` sends `status`, and
+`/cancel` sends `cancel`.
 
 `/onboard`'s writes are whole-value sets rather than per-leaf paths:
 `config.set` with path `wifi.networks.0.ssid` assumes index 0 exists, and `04` §4.9

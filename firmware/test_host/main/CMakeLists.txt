@@ -1,5 +1,6 @@
 set(SRCS "test_main.c" "test_smoke.c" "test_store.c" "test_link.c" "test_sys.c"
-         "test_frame.c" "test_quota.c" "test_log.c" "test_sandbox.c" "test_cfg.c" "test_m3.c" "test_m4.c")
+         "test_frame.c" "test_quota.c" "test_log.c" "test_sandbox.c" "test_cfg.c" "test_m3.c" "test_m4.c"
+         "test_net_ping.c")
 
 # WHOLE_ARCHIVE is required, not cosmetic: TEST_CASE registers itself from a
 # constructor in a translation unit nothing references, so a normal link drops

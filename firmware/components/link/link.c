@@ -133,7 +133,6 @@ const char *link_reader_line(const link_reader_t *reader)
 
 static bool id_valid(const char *id)
 {
-#define LINK_ID_MAX 32 /* `04-protocol.md` §2: 1-32 chars from [A-Za-z0-9._-] */
     size_t n = 0;
     if (id == NULL) return false;
     for (const char *p = id; *p != '\0'; p++, n++) {

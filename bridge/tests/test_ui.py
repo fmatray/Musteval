@@ -241,7 +241,7 @@ async def test_a_typed_ping_answers_in_chat_as_well_as_the_footer():
 
         field = app.query_one("#chat-input")
         field.focus()
-        field.value = "/ping"
+        field.value = "/ping device"
         await pilot.pause(0.05)
         await pilot.press("enter")
         for _ in range(100):
@@ -250,6 +250,83 @@ async def test_a_typed_ping_answers_in_chat_as_well_as_the_footer():
             await pilot.pause(0.02)
 
         assert "pong:" in str(log.lines[-1].text)
+        await session.close()
+
+
+@pytest.mark.parametrize(
+    ("loss", "marker", "expect_rtt"),
+    [(0, "", True), (50, "!", True), (100, "✗", False)],
+)
+async def test_net_ping_result_is_one_chat_line(loss, marker, expect_rtt):
+    """`04-protocol.md` §4.25: the device measured reachability, so the reader gets
+    the number it measured — and 100 % loss is a result, coloured as the failure it
+    is, not an error frame that would read as a protocol fault.
+    """
+    from bridge.ui import BridgeApp
+
+    def reply_for(sent):
+        frame = json.loads(sent)
+        if frame.get("name") != "net.ping":
+            return _reply(sent)
+        sent_count = 4
+        received = sent_count - sent_count * loss // 100
+        return [
+            encode(
+                Frame(
+                    type="command.result",
+                    id="r-1",
+                    ts=0,
+                    reply_to=frame["id"],
+                    body={
+                        "name": "net.ping",
+                        "ok": True,
+                        "duration_ms": 900,
+                        "result": {
+                            "target": "router",
+                            "host": "192.168.1.1",
+                            "sent": sent_count,
+                            "received": received,
+                            "loss_pct": loss,
+                            "rtt_min_ms": 1 if received else 0,
+                            "rtt_avg_ms": 2 if received else 0,
+                            "rtt_max_ms": 3 if received else 0,
+                        },
+                    },
+                )
+            )
+        ]
+
+    session = Session(
+        FakeTransport(on_write=reply_for), ack_timeout=1, ping_interval=99
+    )
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        log = app.query_one("#chat-log")
+        before = len(log.lines)
+
+        field = app.query_one("#chat-input")
+        field.focus()
+        field.value = "/ping router"
+        await pilot.pause(0.05)
+        await pilot.press("enter")
+        for _ in range(100):
+            if len(log.lines) > before:
+                break
+            await pilot.pause(0.02)
+
+        line = log.lines[-1]
+        text = str(line.text)
+        assert "192.168.1.1" in text
+        assert f"{4 - 4 * loss // 100}/4" in text
+        assert f"{loss}% loss" in text
+        assert ("rtt" in text) is expect_rtt
+        # The kind is the marker in the text, not a widget attribute: `ChatLog.write`
+        # prefixes `!` for warn and `✗` for error so the fact survives a pipe.
+        assert text.startswith(f"{marker} ping " if marker else "ping ")
         await session.close()
 
 

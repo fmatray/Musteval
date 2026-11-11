@@ -184,3 +184,9 @@ int32_t clock_utc_offset_s(void)
     if (delta < -12 * 3600) delta += 86400;
     return (int32_t)delta;
 }
+
+
+const char *clock_server_name(void)
+{
+    return s_server_count > 0 ? s_servers[0] : NULL;
+}
