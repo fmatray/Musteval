@@ -3,11 +3,13 @@
  * wrong order only shows up as "connected to the wrong hotspot", which is hard to
  * notice on a bench and trivial to test as a list. */
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "net.h"
+#include "net_internal.h"
 
 void net_rank(net_candidate_t *candidates, size_t count)
 {
@@ -114,6 +116,20 @@ void net_scan_condense(net_scan_entry_t *entries, size_t *count, size_t cap,
 }
 
 /* --- Reachability (`04-protocol.md` §4.25) -------------------------------- */
+
+bool net_disconnect_ignored(bool leaving, bool attempting, int reason)
+{
+    /* A deliberate leave is not an attempt that failed. So is `UNSPECIFIED` while an
+     * attempt is live: the driver emits it for the disconnect this module issues
+     * before configuring the next AP, after the event loop has already dispatched it
+     * past the `leaving` flag, and scoring it abandons an AP the driver is still
+     * associating with. A real refusal carries its own reason (`AUTH_FAIL`,
+     * `NO_AP_FOUND`, ...) and is scored. */
+    if (leaving) return true;
+    if (reason == NET_WIFI_REASON_ASSOC_LEAVE) return true;
+    if (reason == NET_WIFI_REASON_STA_LEAVING) return true;
+    return attempting && reason == NET_WIFI_REASON_UNSPECIFIED;
+}
 
 void net_ping_summarise(const int32_t *rtt_ms, size_t count, net_ping_stats_t *out)
 {

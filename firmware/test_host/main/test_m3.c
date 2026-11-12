@@ -9,6 +9,7 @@
 #include "clock.h"
 #include "llm.h"
 #include "net.h"
+#include "net_internal.h"
 #include "store.h" /* `json_parse_at`, which is strict about trailing content */
 
 /* --- clock ---------------------------------------------------------------- */
@@ -403,6 +404,31 @@ TEST_CASE("a rejection echoing the key is redacted", "[m3]")
     llm_redact(out, "sk-live-abc123");
     TEST_ASSERT_NULL(strstr(out, "sk-live-abc123"));
     TEST_ASSERT_NOT_NULL(strstr(out, "***"));
+}
+
+/* Every case here was observed on the board: the reasonless event arrives after the
+ * deliberate leave, and scoring it made `net_connect` report `E_WIFI` with
+ * "timeout 15000 ms" after ten milliseconds while the driver was still associating. */
+TEST_CASE("a disconnect is scored only when it is a real refusal", "[m3]")
+{
+    /* The deliberate leave `net_connect` issues before each AP. */
+    TEST_ASSERT_TRUE(net_disconnect_ignored(true, false, NET_WIFI_REASON_ASSOC_LEAVE));
+    TEST_ASSERT_TRUE(net_disconnect_ignored(true, true, NET_WIFI_REASON_UNSPECIFIED));
+    /* Dispatched after the flag cleared, but the attempt is still live. */
+    TEST_ASSERT_TRUE(net_disconnect_ignored(false, true, NET_WIFI_REASON_UNSPECIFIED));
+    /* A live link that drops for no stated reason is a real drop. */
+    TEST_ASSERT_FALSE(net_disconnect_ignored(false, true, 202)); /* AUTH_FAIL, not ignored */
+    TEST_ASSERT_FALSE(net_disconnect_ignored(false, false, NET_WIFI_REASON_UNSPECIFIED));
+    TEST_ASSERT_FALSE(net_disconnect_ignored(false, true, 201)); /* NO_AP_FOUND, not ignored */
+    /* The driver's own values. A fallback `#ifndef` in this header once defined
+     * UNSPECIFIED as 0 while the driver uses 1, so the predicate was true in this
+     * suite and false on the board. Pinning the numbers stops that recurring. */
+    TEST_ASSERT_EQUAL_INT(1, NET_WIFI_REASON_UNSPECIFIED);
+    TEST_ASSERT_EQUAL_INT(8, NET_WIFI_REASON_ASSOC_LEAVE);
+    /* Observed on target as the reason the driver actually reported for the leave
+     * `net_connect` issues: 36, not 8, which is why the first fix changed nothing. */
+    TEST_ASSERT_TRUE(net_disconnect_ignored(false, true, NET_WIFI_REASON_STA_LEAVING));
+    TEST_ASSERT_EQUAL_INT(36, NET_WIFI_REASON_STA_LEAVING);
 }
 
 /* The ordinary case: most providers do not echo, and a no-op must not corrupt the

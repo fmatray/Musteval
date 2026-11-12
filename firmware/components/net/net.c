@@ -3,6 +3,7 @@
  * applies live in `net_select.c` and are covered on the host. */
 
 #include "net.h"
+#include "net_internal.h"
 
 #include <inttypes.h>
 #include <stdlib.h>
@@ -79,8 +80,9 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
          * is the reliable signal: the event can be dispatched after the call that
          * caused it has returned, so a flag set around it races the handler. */
         const wifi_event_sta_disconnected_t *gone = data;
-        if (s_leaving ||
-            (gone != NULL && gone->reason == WIFI_REASON_ASSOC_LEAVE)) {
+        int reason = gone != NULL ? gone->reason : NET_WIFI_REASON_UNSPECIFIED;
+        if (net_disconnect_ignored(s_leaving, s_attempting, reason)) {
+            ESP_LOGD(TAG, "wifi: ignoring disconnect, reason %d", reason);
             return;
         }
         /* A drop must downgrade the state, not just raise the flag: otherwise
