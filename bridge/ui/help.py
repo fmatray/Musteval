@@ -3,6 +3,10 @@
 `COMMANDS` is the only catalogue of slash commands: the help screen, the composer
 highlighter and the input suggester all read it, so a command cannot be documented
 in one place and offered in another.
+
+`SUBCOMMAND_HELP` is the second, narrower owner: the one-line description of each
+sub-command form, which `COMMANDS` cannot carry because a head has one `summary`
+and several forms. Nothing else describes a sub-command.
 """
 
 from __future__ import annotations

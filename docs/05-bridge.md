@@ -142,12 +142,13 @@ The primary interaction pane.
     after `/tasks ` and the like. The list filters as the user types, shows at
     most eight rows and ends with a `+N more` row when the list is longer, so it
     never pushes the conversation off the screen. Each row names its candidate and
-    then that candidate's one-line help, taken from the same `COMMANDS` catalogue
-    the help screen prints (§5.6), so a command cannot be described in one place
-    and differently in another. A sub-command's row describes that form rather than
-    repeating the head's summary, so `/tasks ` answers "which form does what" while
-    `/tasks` alone answers "what is this command". The help column is clipped to
-    the panel, so a row is always one line and `+N more` stays visible. The list
+    then a one-line help, from whichever owner holds that prose. A command's help
+    is its `summary` in `COMMANDS`, the catalogue the help screen prints (§5.6). A
+    sub-command's help is its line in `SUBCOMMAND_HELP`, the only place that prose
+    lives, and a verb with no line there falls back to the head's summary rather
+    than showing a blank column. So `/tasks` answers "what is this command" while
+    `/tasks ` answers "which form does what". The help column is clipped to the
+    panel, so a row is always one line and `+N more` stays visible. The list
     disappears when the composer is empty and when the typed text stops being a
     command prefix.
   - The list is navigated the way OMP navigates a picker. Its top row is
