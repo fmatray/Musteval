@@ -36,6 +36,14 @@ because the list was never written to flash.
 | `append` | one phase | Appends `pending` tasks to `phase`, creating the phase if missing. |
 | `view` | nothing | Read-only echo of the current list: no write, no normalization. |
 
+No op rewrites the `content` of a task already in the list: the address *is* the
+content, so changing a task's text means `append` the new text and `rm` the old one,
+in that order, never in a single call. A refused `append` leaves the old task in
+place, and between the two ops the list holds both tasks. `rm` matches a `task` by
+exact content across the whole list before it consults `phase` (see *Targeting and
+normalization*), so if two phases hold the same content the first one is the one
+removed.
+
 **Arguments**
 
 | Name | Type | Required | Bounds |

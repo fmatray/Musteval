@@ -21,7 +21,10 @@ from textual.widgets import (
 from textual.widgets.text_area import Selection
 
 from .. import providers
+from ..commands import CommandError, TODO_EDIT_ACTIONS, todo_edit_frames
+from ..protocol import Frame
 from . import onboard
+from .render import sanitize
 
 _T = TypeVar("_T")
 
@@ -1059,3 +1062,83 @@ class HelpModal(ModalScreen[None]):
         # F1 is usually after.
         first = next(iter(self.categories))
         self.query_one("#help-tabs", TabbedContent).active = f"help-tab-{first.lower()}"
+
+class TodoEditPrompt(PromptBox[list[Frame] | None]):
+    """`05` §7 `/todo edit`: add, modify and delete, staged then sent as one plan.
+
+    The device has no rename op, so the planner turns a modify into `append` + `rm`
+    (`bridge.commands.todo_edit_frames`). Staging keeps the modal open for several
+    strokes; `Ctrl+S` sends the plan and Esc drops it.
+    """
+
+    BINDINGS = [
+        Binding("enter", "stage", "Stage", show=False),
+        Binding("ctrl+s", "send", "Send", show=False),
+    ]
+    CSS = _CSS
+    AUTO_FOCUS = "#todo-phase"
+
+    def __init__(self, phases: list[str] | None = None) -> None:
+        super().__init__()
+        #: Phase names from the last `todo.apply` the UI saw; empty until one lands.
+        self.phases = phases or []
+        self._frames: list[Frame] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="prompt-box"):
+            yield Static("todo edit", classes="prompt-title")
+            yield Select(
+                [(action, action) for action in TODO_EDIT_ACTIONS],
+                value=TODO_EDIT_ACTIONS[0],
+                allow_blank=False,
+                id="todo-action",
+            )
+            yield Input(
+                placeholder="phase",
+                suggester=SuggestFromList(self.phases, case_sensitive=False)
+                if self.phases
+                else None,
+                id="todo-phase",
+            )
+            yield Input(placeholder="task (modify, delete)", id="todo-task")
+            yield Input(placeholder="new content (add, modify)", id="todo-content")
+            yield Static(sanitize(self._phase_note()), id="todo-phases",
+                         classes="prompt-hint")
+            yield Static("", id="todo-status", markup=False)
+            yield Static("Enter: stage | Ctrl+S: send | Esc: cancel",
+                         classes="prompt-hint")
+
+    def _phase_note(self) -> str:
+        if not self.phases:
+            return "no todo observed yet; type the phase"
+        return "phases: " + ", ".join(self.phases)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_stage()
+
+    def action_stage(self) -> None:
+        chosen = self.query_one("#todo-action", Select).value
+        action = chosen if isinstance(chosen, str) else TODO_EDIT_ACTIONS[0]
+        try:
+            frames = todo_edit_frames(
+                action,
+                phase=self.query_one("#todo-phase", Input).value,
+                task=self.query_one("#todo-task", Input).value,
+                new=self.query_one("#todo-content", Input).value,
+            )
+        except CommandError as exc:
+            self.query_one("#todo-status", Static).update(sanitize(str(exc)))
+            return
+        self._frames.extend(frames)
+        self.query_one("#todo-task", Input).value = ""
+        self.query_one("#todo-content", Input).value = ""
+        self.query_one("#todo-status", Static).update(
+            f"staged {len(self._frames)} frame(s)"
+        )
+
+    def action_send(self) -> None:
+        if not self._frames:
+            self.query_one("#todo-status", Static).update("nothing staged")
+            return
+        self.dismiss(self._frames)

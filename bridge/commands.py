@@ -304,6 +304,52 @@ def _todo(rest: list[str]) -> list[Frame]:
     return [_command("todo.apply", args)]
 
 
+#: The verbs `/todo edit` offers. None is an op: the modal is a UI verb like
+#: `/files`, so `edit` stays out of `TODO_OPS` and out of the wire grammar.
+TODO_EDIT_ACTIONS = ("add", "modify", "delete")
+
+
+def todo_edit_frames(
+    action: str,
+    *,
+    phase: str = "",
+    task: str = "",
+    new: str = "",
+) -> list[Frame]:
+    """`05-bridge.md` §7 `/todo edit`: the modal's plan, built here so it is pure.
+
+    The device has no rename op (`copy_text(t->content, ...)` runs only inside
+    `task_add`), so a modify is `append` then `rm`, in that order. The append comes
+    first, and a refused argument emits neither frame, so the old task survives.
+
+    shortcut: `rm` resolves a `task` by exact content across the whole list, so a
+    content that appears in two phases removes the first one found (`04` §4.27
+    targeting order); upgrade to a phase-scoped op when the tool grows one.
+    """
+    phase, task, new = phase.strip(), task.strip(), new.strip()
+    if action == "add":
+        if not phase or not new:
+            raise CommandError(
+                "add needs a phase and a content: /todo edit add <phase> <content>"
+            )
+        return [_command("todo.apply", {"op": "append", "phase": phase, "items": [new]})]
+    if action == "modify":
+        if not phase or not task or not new:
+            raise CommandError(
+                "modify needs a phase, a task and a content: "
+                "/todo edit modify <phase> <task> <content>"
+            )
+        return [
+            _command("todo.apply", {"op": "append", "phase": phase, "items": [new]}),
+            _command("todo.apply", {"op": "rm", "task": task}),
+        ]
+    if action == "delete":
+        if not task:
+            raise CommandError("delete needs a task: /todo edit delete <task>")
+        return [_command("todo.apply", {"op": "rm", "task": task})]
+    raise CommandError(f"unknown todo edit action: {action or '(none)'}")
+
+
 def _tasks(rest: list[str], state: CommandState) -> list[Frame]:
     if not rest:
         return [_command("tasks.list")]

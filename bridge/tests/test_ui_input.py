@@ -944,7 +944,8 @@ async def test_typing_a_slash_lists_the_commands_above_the_composer():
         await pilot.pause(0.1)
         assert panel.display is True
         listed = str(panel.content).splitlines()
-        assert listed[0] == "> /status"
+        assert listed[0].startswith("> ")
+        assert _candidate(listed[0]) == "/status"
         assert len(listed) == COMPLETION_ROWS + 1  # eight rows, then the overflow
         assert listed[-1].startswith("+") and listed[-1].endswith("more")
         await session.close()
@@ -957,11 +958,14 @@ async def test_the_list_filters_to_the_typed_prefix():
         await _connected(pilot)
         app.query_one("#chat-input").value = "/ta"
         await pilot.pause(0.1)
-        assert str(app.query_one("#completion").content).splitlines() == ["> /tasks"]
+        listed = str(app.query_one("#completion").content).splitlines()
+        assert [_candidate(line) for line in listed] == ["/tasks"]
         app.query_one("#chat-input").value = "/tasks "
         await pilot.pause(0.1)
         assert "+" not in str(app.query_one("#completion").content)
-        assert str(app.query_one("#completion").content).splitlines()[0] == "> /tasks add"
+        first = str(app.query_one("#completion").content).splitlines()[0]
+        assert first.startswith("> ")
+        assert _candidate(first) == "/tasks add"
         await session.close()
 
 
@@ -1020,6 +1024,17 @@ async def _open_list(pilot, app, value="/"):
     return app.query_one("#completion")
 
 
+def _candidate(line: str) -> str:
+    """The candidate a rendered row names, without its marker or help column.
+
+    `05` §5.1 draws `> /status     force a status refresh`: the candidate is padded
+    to the widest one in the slice, then two spaces and the help. Splitting on the
+    run of spaces keeps every assertion below about the marker and the name, which
+    is what they were always checking.
+    """
+    return line[2:].split("  ")[0].rstrip() if line.startswith(("> ", "  ")) else line
+
+
 async def test_the_list_opens_with_its_top_row_selected():
     """OMP's SelectList starts on index 0 rather than on nothing."""
     session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
@@ -1028,7 +1043,8 @@ async def test_the_list_opens_with_its_top_row_selected():
         await _connected(pilot)
         panel = await _open_list(pilot, app)
         first = str(panel.content).splitlines()[0]
-        assert first == "> /status"
+        assert first.startswith("> ")
+        assert _candidate(first) == "/status"
         await session.close()
 
 
@@ -1041,13 +1057,16 @@ async def test_the_arrows_walk_the_list_and_wrap_at_the_edges():
 
         await pilot.press("down")
         await pilot.pause(0.1)
-        assert str(panel.content).splitlines()[1] == "> /reload"
+        second = str(panel.content).splitlines()[1]
+        assert second.startswith("> ")
+        assert _candidate(second) == "/reload"
 
         # Down past the last row wraps to the first.
         for _ in range(COMPLETION_ROWS - 1):
             await pilot.press("down")
         await pilot.pause(0.1)
-        assert str(panel.content).splitlines()[0] == "> /status"
+        assert _candidate(str(panel.content).splitlines()[0]) == "/status"
+        assert str(panel.content).splitlines()[0].startswith("> ")
 
         # Up from the top wraps to the last.
         await pilot.press("up")
@@ -1143,7 +1162,7 @@ async def test_home_and_end_jump_to_the_edges():
         assert str(panel.content).splitlines()[COMPLETION_ROWS - 1].startswith("> ")
         await pilot.press("home")
         await pilot.pause(0.1)
-        assert str(panel.content).splitlines()[0] == "> /status"
+        assert _candidate(str(panel.content).splitlines()[0]) == "/status"
         await session.close()
 
 
@@ -1187,12 +1206,14 @@ async def test_a_new_list_starts_on_the_top_row_again():
         panel = await _open_list(pilot, app)
         await pilot.press("down")
         await pilot.pause(0.1)
-        assert str(panel.content).splitlines()[0] != "> /status"
+        # The list re-opens on its top row: the marker is back on row 0, which is
+        # what this test is about, so it asserts the marker rather than the name.
+        assert not str(panel.content).splitlines()[0].startswith("> ")
         await pilot.press("backspace")
         await pilot.pause(0.1)
         app.query_one("#chat-input").value = "/"
         await pilot.pause(0.2)
-        assert str(panel.content).splitlines()[0] == "> /status"
+        assert _candidate(str(panel.content).splitlines()[0]) == "/status"
         await session.close()
 
 
@@ -1207,7 +1228,7 @@ async def test_the_selection_never_lands_on_a_row_that_is_not_drawn():
             await pilot.press("down")
             await pilot.pause(0.02)
             drawn = str(panel.content).splitlines()
-            marked = [line[2:] for line in drawn if line.startswith("> ")]
+            marked = [_candidate(line) for line in drawn if line.startswith("> ")]
             assert len(marked) == 1, drawn
             # The marked row is a real candidate, never the `+N more` counter.
             assert not marked[0].startswith("+"), marked

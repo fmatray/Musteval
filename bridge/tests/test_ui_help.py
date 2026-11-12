@@ -13,7 +13,14 @@ from bridge.client import Session
 from bridge.commands import LOCAL_COMMANDS
 from bridge.link import FakeTransport
 from bridge.ui import BridgeApp
-from bridge.ui.help import COMMANDS, HELP_TEXT, _SUBCOMMANDS, options, suggest
+from bridge.ui.help import (
+    COMMANDS,
+    HELP_TEXT,
+    SUBCOMMAND_HELP,
+    _SUBCOMMANDS,
+    options,
+    suggest,
+)
 from bridge.ui.modals import (
     ConfirmPrompt,
     FilePrompt,
@@ -113,7 +120,9 @@ def test_suggest_declines_what_it_cannot_complete(typed):
 
 
 def test_options_lists_every_command_for_a_bare_slash():
-    assert options("/") == [f"/{command.name}" for command in COMMANDS]
+    assert [candidate.text for candidate in options("/")] == [
+        f"/{command.name}" for command in COMMANDS
+    ]
 
 
 @pytest.mark.parametrize(
@@ -126,7 +135,7 @@ def test_options_lists_every_command_for_a_bare_slash():
     ],
 )
 def test_options_filters_a_unique_prefix(typed, expected):
-    assert options(typed) == expected
+    assert [candidate.text for candidate in options(typed)] == expected
 
 
 def test_ping_usage_names_every_target():
@@ -136,15 +145,17 @@ def test_ping_usage_names_every_target():
 
 
 def test_options_keeps_an_exact_match():
-    assert options("/logs") == ["/logs"]
+    assert [candidate.text for candidate in options("/logs")] == ["/logs"]
 
 
 def test_options_lists_subcommands_after_a_head_and_a_space():
-    assert options("/tasks ") == [f"/tasks {name}" for name in _SUBCOMMANDS["tasks"]]
+    assert [candidate.text for candidate in options("/tasks ")] == [
+        f"/tasks {name}" for name in _SUBCOMMANDS["tasks"]
+    ]
 
 
 def test_options_filters_a_partial_subcommand():
-    assert options("/wifi ") == [
+    assert [candidate.text for candidate in options("/wifi ")] == [
         "/wifi scan",
         "/wifi status",
         "/wifi connect",
@@ -152,12 +163,46 @@ def test_options_filters_a_partial_subcommand():
         "/wifi reconnect",
     ]
 
-    assert options("/config s") == ["/config set"]
+    assert [candidate.text for candidate in options("/config s")] == ["/config set"]
 
 
 @pytest.mark.parametrize("typed", ["hello", "/zzz", "/status ", "/tasks zz"])
 def test_options_declines_what_it_cannot_complete(typed):
     assert options(typed) == []
+
+
+def test_every_candidate_carries_the_catalogue_summary():
+    """`05` §5.1: the list's help column is the help screen's own text, so a
+    command cannot be documented in one place and described differently here."""
+    summaries = {command.name: command.summary for command in COMMANDS}
+    for candidate in options("/"):
+        assert candidate.help == summaries[candidate.text[1:]]
+        assert candidate.help
+
+
+def test_every_subcommand_candidate_has_help_to_show():
+    """A blank column would be the silent half of this feature, so it fails here
+    rather than in the panel."""
+    for head, subcommands in _SUBCOMMANDS.items():
+        candidates = options(f"/{head} ")
+        assert [candidate.text for candidate in candidates] == [
+            f"/{head} {name}" for name in subcommands
+        ]
+        assert all(candidate.help for candidate in candidates), head
+
+
+def test_every_subcommand_in_the_list_has_its_own_help_line():
+    """`05` §5.1: the list says which form does what, not ten copies of the head.
+
+    `SUBCOMMAND_HELP` is the owner of that prose. A verb added to `_SUBCOMMANDS`
+    and never described here would silently show the head's summary instead, which
+    reads as an answer and is not one — so this test fails on it.
+    """
+    for head, subcommands in _SUBCOMMANDS.items():
+        described = SUBCOMMAND_HELP[head]
+        assert set(described) == set(subcommands), head
+        lines = {described[verb] for verb in subcommands}
+        assert len(lines) == len(subcommands), f"{head} repeats a help line"
 
 
 # -- modals and the Esc stack -------------------------------------------

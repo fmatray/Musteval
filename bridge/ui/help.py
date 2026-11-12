@@ -142,7 +142,61 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "secret": ("set",),
     "ping": ("device", "router", "llm", "ntp"),
     "wifi": ("scan", "status", "connect", "disconnect", "reconnect"),
-    "todo": TODO_OPS,
+    # `edit` is a UI verb, not a device op: it opens a modal, so it is offered in
+    # the list without being part of `TODO_OPS`, which is `tools/todo.md`'s op set.
+    "todo": (*TODO_OPS, "edit"),
+}
+
+#: What each sub-command does, keyed by head then verb. The head's own `summary`
+#: says what the command is for; this says which form does what, which is the
+#: question a reader typing `/tasks ` actually has. A verb missing here falls back
+#: to the head's summary rather than a blank column.
+SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
+    "tasks": {
+        "add": "add a task from a JSON description",
+        "set": "update one field of a task by id",
+        "enable": "let a task fire again",
+        "disable": "keep a task but stop it firing",
+        "delete": "remove a task by id",
+    },
+    "config": {"get": "read one value by path", "set": "write one value by path"},
+    "mqtt": {"publish": "publish one message to one broker"},
+    "fs": {"put": "upload a local file into userfs"},
+    "sandbox": {
+        "list": "list a directory",
+        "read": "print a file",
+        "write": "write a file",
+        "mkdir": "create a directory",
+        "move": "move or rename a path",
+        "delete": "remove a path",
+    },
+    "sys": {"reset-counter": "clear the boot-failure counter"},
+    "secret": {"set": "store a secret, prompted and masked"},
+    "ping": {
+        "device": "ping the link itself",
+        "router": "ping the gateway",
+        "llm": "ping the model provider",
+        "ntp": "check the clock source",
+    },
+    "wifi": {
+        "scan": "list visible networks",
+        "status": "show the current link",
+        "connect": "join a network",
+        "disconnect": "drop the link, and stay down",
+        "reconnect": "join the configured network again",
+    },
+    "todo": {
+        "view": "show the phases and their tasks",
+        "init": "replace the list, one phase of items",
+        "start": "mark a task or phase in progress",
+        "done": "mark a task or phase completed",
+        "drop": "abandon a task or phase",
+        "block": "mark a task blocked, with a reason",
+        "unblock": "clear a blocker",
+        "rm": "remove a task",
+        "append": "add items to a phase, creating it",
+        "edit": "open a modal to add, modify or delete",
+    },
 }
 
 _NAMES: tuple[str, ...] = tuple(command.name for command in COMMANDS)
@@ -229,17 +283,51 @@ def suggest(value: str) -> str | None:
     return _complete(partial, subcommands, f"/{head} ")
 
 
-def options(value: str) -> list[str]:
-    """Candidate completions for the token being typed, in catalogue order."""
+def _summary(name: str) -> str:
+    for command in COMMANDS:
+        if command.name == name:
+            return command.summary
+    return ""
+
+
+def options(value: str) -> list[Completion]:
+    """Candidate completions for the token being typed, in catalogue order.
+
+    A sub-command gets its own line from `SUBCOMMAND_HELP`, falling back to the
+    head's summary when the table has none: `/tasks ` answers "which form does
+    what", while `/tasks` alone answers "what is this command".
+    """
     if not value.startswith("/"):
         return []
     head, separator, partial = value[1:].partition(" ")
     if not separator:
-        return [f"/{name}" for name in _NAMES if name.startswith(head)]
+        return [
+            Completion(f"/{name}", _summary(name))
+            for name in _NAMES
+            if name.startswith(head)
+        ]
     subcommands = _SUBCOMMANDS.get(head)
     if subcommands is None:
         return []
-    return [f"/{head} {subcommand}" for subcommand in subcommands if subcommand.startswith(partial)]
+    summary = _summary(head)
+    help_by_verb = SUBCOMMAND_HELP.get(head, {})
+    return [
+        Completion(f"/{head} {subcommand}", help_by_verb.get(subcommand, summary))
+        for subcommand in subcommands
+        if subcommand.startswith(partial)
+    ]
+
+
+@dataclass(frozen=True)
+class Completion:
+    """One row of the candidate list: what Tab would insert, and what it does."""
+
+    text: str
+    """The completion itself, e.g. `/tasks add`."""
+
+    help: str
+    """One line from the same `COMMANDS` catalogue the help screen prints, so a
+    command cannot be documented in one place and described differently here."""
 
 
 class CommandSuggester(Suggester):

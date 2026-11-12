@@ -141,8 +141,15 @@ The primary interaction pane.
     above the composer: the command names after `/`, and a command's subcommands
     after `/tasks ` and the like. The list filters as the user types, shows at
     most eight rows and ends with a `+N more` row when the list is longer, so it
-    never pushes the conversation off the screen. The list disappears when the
-    composer is empty and when the typed text stops being a command prefix.
+    never pushes the conversation off the screen. Each row names its candidate and
+    then that candidate's one-line help, taken from the same `COMMANDS` catalogue
+    the help screen prints (§5.6), so a command cannot be described in one place
+    and differently in another. A sub-command's row describes that form rather than
+    repeating the head's summary, so `/tasks ` answers "which form does what" while
+    `/tasks` alone answers "what is this command". The help column is clipped to
+    the panel, so a row is always one line and `+N more` stays visible. The list
+    disappears when the composer is empty and when the typed text stops being a
+    command prefix.
   - The list is navigated the way OMP navigates a picker. Its top row is
     selected when the list opens and a `>` marks it, so the selection is never
     carried by colour. `Up` and `Down` walk the rows and wrap at the edges,
@@ -721,7 +728,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/mcp` | (Local) | none | Lists servers from the last `status.mcp[]` |
 | `/usage` | (Local) | none | Token totals from observed `agent.final.usage` |
 | `/context` | (Local) | none | Shows last `input_bytes` and observed `usage` totals |
-| `/todo [op] [target]` | `command {name:"todo.apply"}` | `op, task?, phase?, items?, reason?` | Renders the phases and their tasks as one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished and a blocked task's `blocker` shown. Bare `/todo` is `view`. Verbs: `init [item...]` (no items clears), `start <task>`, `append <phase> <item>...`, `done`, `drop`, `rm`, `block`, `unblock`. A trailing target is sent as both `task` and `phase`: the tool's own `task → phase` chain decides which one matched, so `/todo done auth` finishes every task in phase `auth` without the bridge guessing, and each op keeps its own rule for what a phase target means (`block` still leaves a finished task alone). A required argument is refused by the bridge rather than sent. A finished run whose `agent.final` carried `todo_open: true` prints a hint pointing here, so an unfinished plan is visible instead of silent |
+| `/todo [op] [target]` | `command {name:"todo.apply"}` | `op, task?, phase?, items?, reason?` | Renders the phases and their tasks as one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished and a blocked task's `blocker` shown. Bare `/todo` is `view`. Verbs: `init [item...]` (no items clears), `start <task>`, `append <phase> <item>...`, `done`, `drop`, `rm`, `block`, `unblock`. A trailing target is sent as both `task` and `phase`: the tool's own `task → phase` chain decides which one matched, so `/todo done auth` finishes every task in phase `auth` without the bridge guessing, and each op keeps its own rule for what a phase target means (`block` still leaves a finished task alone). A required argument is refused by the bridge rather than sent. A finished run whose `agent.final` carried `todo_open: true` prints a hint pointing here, so an unfinished plan is visible instead of silent. `edit` is a UI verb, not an op: the completion list offers it after the device verbs, and it opens a modal that stages actions and sends them as one plan on `Ctrl+S`, while `Esc` sends nothing. Modify is `append` + `rm` because the device has no rename op, so a refused `append` leaves the old task in place. |
 | `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
 | `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |

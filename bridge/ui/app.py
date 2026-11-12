@@ -28,7 +28,7 @@ from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
 from .. import providers as providers_mod
 from .. import transfer
 from ..protocol import Frame, new_id
-from .help import COMMANDS, CommandSuggester, help_tabs, options
+from .help import COMMANDS, CommandSuggester, Completion, help_tabs, options
 from .history import PromptHistory, history_path
 from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import (
@@ -136,7 +136,7 @@ class ChatScreen(Vertical):
         super().__init__(**kwargs)
         self._history = PromptHistory(path=history_path())
         #: Candidates currently listed, and the index the arrows sit on.
-        self._candidates: list[str] = []
+        self._candidates: list[Completion] = []
         self._total = 0
         #: Index the arrows sit on. OMP opens the list with the top row chosen.
         self._cursor = 0
@@ -193,14 +193,21 @@ class ChatScreen(Vertical):
             panel.display = False
             return
         # A marker, not a colour: colour never carries meaning on its own.
-        lines = [
-            f"{'> ' if index == self._cursor else '  '}{candidate}"
-            for index, candidate in enumerate(self._candidates)
-        ]
+        width = max(len(candidate.text) for candidate in self._candidates)
+        # The help column is clipped to the panel so a row never wraps: the box is
+        # sized to the line count, and a wrapped row would clip `+N more`.
+        room = max((panel.size.width or 80) - width - 4, 0)
+        lines: list[Text] = []
+        for index, candidate in enumerate(self._candidates):
+            marker = "> " if index == self._cursor else "  "
+            row = Text(f"{marker}{candidate.text.ljust(width)}")
+            if room > 2:
+                row.append("  " + clip(candidate.help, room), style="dim")
+            lines.append(row)
         hidden = self._total - len(self._candidates)
         if hidden > 0:
-            lines.append(f"+{hidden} more")
-        panel.update("\n".join(lines))
+            lines.append(Text(f"+{hidden} more"))
+        panel.update(Text("\n").join(lines))
         panel.display = True
 
     def _move_cursor(self, delta: int) -> None:
@@ -289,7 +296,7 @@ class ChatScreen(Vertical):
         # is why `/tasks a` + Enter runs `/tasks add` rather than the fragment.
         text = event.value.strip()
         if self._candidates:
-            text = self._candidates[self._cursor]
+            text = self._candidates[self._cursor].text
         event.input.value = ""
         self._show_options("")
         self._fit_composer()
@@ -373,7 +380,7 @@ class ChatScreen(Vertical):
         where it is silently lost.
         """
         if self._candidates:
-            self._apply(self._candidates[self._cursor])
+            self._apply(self._candidates[self._cursor].text)
             return
         field = self._input()
         if field._suggestion and field.cursor_at_end:
@@ -976,10 +983,30 @@ class BridgeApp(App):
         self._usage_total = 0
         self._last_input_bytes = 0
         self._seen_lines: set[str] = set()
+        self._reader_pinged = False
         self._files_path: str = ""
         #: Set when `/files <path>` wants a specific directory; `action_show` is
         #: the one place that fetches, so the screen never lists twice.
         self._files_target: str = ""
+        #: Phase names from the last `todo.apply`, so `/todo edit` can suggest
+        #: them instead of asking the user to remember the tree.
+        self._todo_phases: list[str] = []
+
+    async def _send_frames(self, frames: list[Frame]) -> None:
+        """Send one plan the way every command does: one await per frame."""
+        if any(frame.type == "ping" for frame in frames):
+            self._reader_pinged = True
+        for frame in frames:
+            if frame.type == "command":
+                await self._request(frame.body["name"], frame.body.get("args"))
+            elif frame.type == "prompt":
+                await self._send_prompt(frame.body["text"])
+            elif frame.type == "secret.set":
+                # Request, not send: the store reply is what confirms the write,
+                # and its `result` never carries the value (`04` §4.10).
+                await self._request_secret(frame)
+            else:
+                await self.session.send(frame)
 
     # -- lifecycle ------------------------------------------------------
 
@@ -1602,6 +1629,10 @@ class BridgeApp(App):
             self.run_worker(self._request("tasks.list"))
             return
         if name == "todo.apply" and isinstance(result, dict):
+            self._todo_phases = [
+                str(p.get("name") or "") for p in result.get("phases") or []
+                if isinstance(p, dict) and p.get("name")
+            ]
             for line in todo_lines(result):
                 self._chat().write(line)
             return
@@ -1770,6 +1801,15 @@ class BridgeApp(App):
     async def _run_command(self, text: str) -> None:
         head = text[1:].split()[0] if len(text) > 1 else ""
         words = text[1:].split()
+        if words[:2] == ["todo", "edit"]:
+            # `05` §7: `edit` is a UI verb with no device op, so it never reaches
+            # `parse`; the modal plans the frames and they go out like any other.
+            from .modals import TodoEditPrompt
+            frames = await self.push_screen_wait(TodoEditPrompt(self._todo_phases))
+            if frames:
+                await self._send_frames(frames)
+            return
+
         # `05-bridge.md` §7: the bare form opens its screen; a sub-command such as
         # `/mqtt publish` answers in chat, so it lands there rather than moving
         # the reader to a screen that will not show the answer.
@@ -1839,19 +1879,7 @@ class BridgeApp(App):
         except CommandError as exc:
             self._chat().write(f"{exc}", kind="error")
             return
-        if any(frame.type == "ping" for frame in frames):
-            self._reader_pinged = True
-        for frame in frames:
-            if frame.type == "command":
-                await self._request(frame.body["name"], frame.body.get("args"))
-            elif frame.type == "prompt":
-                await self._send_prompt(frame.body["text"])
-            elif frame.type == "secret.set":
-                # Request, not send: the store reply is what confirms the write,
-                # and its `result` never carries the value (`04` §4.10).
-                await self._request_secret(frame)
-            else:
-                await self.session.send(frame)
+        await self._send_frames(frames)
 
     async def _request_secret(self, frame: Frame) -> None:
         outgoing = Frame(
