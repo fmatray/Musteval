@@ -72,6 +72,7 @@ from .render import (
     render_tool_call,
     render_tool_result,
     sanitize,
+    todo_lines,
     wifi_scan_lines,
     wifi_state_line,
 )
@@ -974,7 +975,6 @@ class BridgeApp(App):
         self._last_prompt: str | None = None
         self._usage_total = 0
         self._last_input_bytes = 0
-        self._todo_open = False
         self._seen_lines: set[str] = set()
         self._files_path: str = ""
         #: Set when `/files <path>` wants a specific directory; `action_show` is
@@ -1511,8 +1511,12 @@ class BridgeApp(App):
         usage = frame.body.get("usage") or {}
         self._usage_total += usage.get("total_tokens", 0)
         self._refresh_bar()
-        self._todo_open = bool(frame.body.get("todo_open"))
         self._chat().write(str(frame.body.get("text", "")), kind="assistant")
+        if frame.body.get("todo_open"):
+            # `05` §7: the list is device-resident, so a run that stopped with open
+            # todos says so here — otherwise the plan dies with the run and the user
+            # only finds out by asking.
+            self._chat().write("todos left open: /todo", kind="hint")
         if frame.body.get("truncated"):
             # `05-bridge.md` §5: a reply cut at the provider's token cap stops
             # mid-sentence. Rendered as-is it reads as a finished answer.
@@ -1596,6 +1600,10 @@ class BridgeApp(App):
             self._chat().write(f"{name} {result.get('id') or result.get('task_id')}")
             self._tasks_quiet = True
             self.run_worker(self._request("tasks.list"))
+            return
+        if name == "todo.apply" and isinstance(result, dict):
+            for line in todo_lines(result):
+                self._chat().write(line)
             return
         if name == "mqtt.status":
             servers = result if isinstance(result, list) else (result or {}).get("servers", [])
@@ -2366,10 +2374,6 @@ class BridgeApp(App):
         elif head == "context":
             self._chat().write(
                 f"last input: {self._last_input_bytes} bytes | tokens: {self._usage_total}"
-            )
-        elif head == "todo":
-            self._chat().write(
-                "last run left the todo list open" if self._todo_open else "no open todos"
             )
         elif head == "export":
             stamp = time.strftime("%Y%m%d-%H%M%S")

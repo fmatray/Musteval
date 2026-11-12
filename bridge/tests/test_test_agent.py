@@ -222,6 +222,38 @@ def test_fake_device_steers_the_station(harness):
     assert down["result"]["ssid"] is None
 
 
+def test_fake_device_keeps_a_todo_list_across_ops(harness):
+    """`10-test-agent.md` §6: the double holds the tree, so a `done` after `init` is
+    observable. An echo of `args` would let a bridge test assert its own request."""
+    harness.feed_frame(
+        _frame(
+            "command",
+            {"name": "todo.apply", "args": {"op": "init", "phase": "auth", "items": ["wire jwt"]}},
+        )
+    )
+    created = harness.one()["result"]["phases"]
+    assert [(p["name"], [t["status"] for t in p["tasks"]]) for p in created] == [
+        ("auth", ["pending"])
+    ]
+
+    harness.feed_frame(
+        _frame(
+            "command",
+            {"name": "todo.apply", "args": {"op": "done", "task": "auth", "phase": "auth"}},
+        )
+    )
+    assert harness.one()["result"]["phases"][0]["tasks"][0]["status"] == "completed"
+
+
+def test_fake_device_view_does_not_change_the_list(harness):
+    harness.feed_frame(
+        _frame("command", {"name": "todo.apply", "args": {"op": "init", "items": ["a"]}})
+    )
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply", "args": {"op": "view"}}))
+    assert harness.one()["result"]["phases"][0]["tasks"][0]["status"] == "pending"
+
+
 def test_sandbox_list_of_a_nested_directory(harness):
     harness.feed_frame(_frame("command", {"name": "sandbox.list", "args": {"path": "/workspace/runs/"}}))
     entries = harness.one()["result"]["entries"]

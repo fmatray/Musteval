@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from textual.suggester import Suggester
 
+from ..commands import TODO_OPS
+
 
 @dataclass(frozen=True)
 class CommandHelp:
@@ -36,10 +38,10 @@ class CommandHelp:
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Device": (
         "status", "reload", "reboot", "tasks", "run", "config", "secret",
-        "templates", "template", "mqtt", "geo", "wifi", "fs", "sandbox", "sys",
+        "templates", "template", "mqtt", "geo", "wifi", "todo", "fs", "sandbox", "sys",
     ),
     "Chat": ("retry", "ping", "cancel", "diag", "thinking", "model", "export"),
-    "Info": ("tools", "mcp", "usage", "context", "todo"),
+    "Info": ("tools", "mcp", "usage", "context"),
     "Screens": ("settings", "onboard", "files", "logs", "help", "quit"),
 }
 
@@ -119,7 +121,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),
     CommandHelp("usage", "/usage", "token totals for this link session", True),
     CommandHelp("context", "/context", "input size and token usage", True),
-    CommandHelp("todo", "/todo", "re-render todo phases and tasks", True),
+    CommandHelp("todo", "/todo [op] [target]", "read and steer the run's todo list", False),
     CommandHelp("export", "/export", "write the chat log to a markdown file", True),
     CommandHelp("settings", "/settings", "browse and edit device config", True),
     CommandHelp("onboard", "/onboard", "set wifi, provider key and model", True),
@@ -140,6 +142,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "secret": ("set",),
     "ping": ("device", "router", "llm", "ntp"),
     "wifi": ("scan", "status", "connect", "disconnect", "reconnect"),
+    "todo": TODO_OPS,
 }
 
 _NAMES: tuple[str, ...] = tuple(command.name for command in COMMANDS)

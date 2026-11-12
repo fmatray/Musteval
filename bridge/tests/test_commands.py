@@ -9,6 +9,7 @@ import pytest
 from bridge.commands import (
     FS_PUT_CHUNK_BYTES,
     LOCAL_COMMANDS,
+    TODO_OPS,
     CommandError,
     CommandState,
     parse,
@@ -219,6 +220,36 @@ def test_wifi_refuses_an_unknown_verb():
         parse("/wifi bogus")
     with pytest.raises(CommandError):
         parse("/wifi")
+
+
+def test_todo_is_the_tools_op_set_over_the_wire():
+    """`05` §7: every `/todo` verb is a `tools/todo.md` op of the same name, so the
+    command cannot drift from the tool the model calls. The op set is the doc's."""
+    for op in TODO_OPS:
+        (frame,) = parse(f"/todo {op}")
+        assert frame.body == {"name": "todo.apply", "args": {"op": op}}
+    assert TODO_OPS == (
+        "init", "start", "done", "drop", "block", "unblock", "rm", "append", "view"
+    )
+
+
+def test_todo_bare_views_and_a_verb_it_lacks_is_refused():
+    (frame,) = parse("/todo")
+    assert frame.body == {"name": "todo.apply", "args": {"op": "view"}}
+    # `expand` is a bridge-side verb the tool has no op for: sending it would be a
+    # frame the device refuses, so the bridge refuses it first with a usage line.
+    with pytest.raises(CommandError, match=r"usage: /todo \["):
+        parse("/todo expand")
+
+
+def test_todo_target_reaches_both_task_and_phase():
+    """A target is not resolved here: `todo_apply`'s own `task → phase` chain decides,
+    so `/todo done auth` finishes every task in phase `auth` with no bridge guessing."""
+    (frame,) = parse("/todo done auth")
+    assert frame.body["args"] == {"op": "done", "task": "auth", "phase": "auth"}
+
+    (frame,) = parse("/todo done wire jwt")
+    assert frame.body["args"] == {"op": "done", "task": "wire jwt", "phase": "wire jwt"}
 
 
 def test_fs_put_splits_under_the_rx_cap():

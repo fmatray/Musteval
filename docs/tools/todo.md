@@ -14,10 +14,13 @@ The params object is a **single op at its top level** -- `op` plus that op's fie
 with no `args` wrapper and no `ops` array. One call, one operation, one returned list.
 
 The checklist lives in RAM only. It never reaches LittleFS, and it is cleared by
-`reload` (`../04-protocol.md` §4.2) and by reboot. No frame carries the list: the
-bridge's `/todo` re-renders only the last `todo` tool result it observed
-(`../05-bridge.md` §7), so a fresh bridge session shows nothing until the device
-calls `todo` again (`../02-firmware.md` §2 `agent`).
+`reload` (`../04-protocol.md` §4.2) and by reboot. The `todo.apply` command
+(`../04-protocol.md` §4.27) is the one frame that reaches the list: it carries this
+section's arguments object unchanged and answers with this section's result, which is
+how `05-bridge.md` §7's `/todo` reads and steers a live run's plan
+(`../02-firmware.md` §2 `agent`). It is the tool's own apply path, so an op means the
+same thing whichever side sent it; what it cannot do is show a plan from a past boot,
+because the list was never written to flash.
 
 **Operations**
 

@@ -75,6 +75,13 @@ static char s_run_id[24];
 static uint32_t s_run_counter;
 static volatile bool s_busy;
 
+/* `todo_apply` commits with `*list = s_scratch`, an 8 KiB non-atomic copy, and it
+ * is now reachable from two tasks: the agent task through the `todo` tool, and the
+ * link task through the `todo.apply` command (`04` §4.27). Without a lock a `/todo`
+ * arriving mid-run would tear the list the model is reading, so both paths take this
+ * one mutex — the same shape as `net.c`'s in-flight lock. */
+static SemaphoreHandle_t s_todo_lock;
+
 /* History as JSON text, handed to `llm` verbatim (`agent.h`). */
 /* PSRAM, not static: `s_tools_json` alone is `TOOLS_MAX_TOTAL * 512` = 32 KiB and the
  * three text buffers are 8 KiB each, which together overflow `dram0_0_seg` by 21 KiB.
@@ -120,6 +127,12 @@ const char *agent_source_name(agent_source_t source)
 /* Defined below, after the tree it touches. */
 static esp_err_t todo_port_apply(const json_node_t *args, json_doc_t **out,
                                  char *why, size_t why_cap, void *ctx);
+
+esp_err_t agent_todo_apply(const json_node_t *args, json_doc_t **out, char *why,
+                           size_t why_cap)
+{
+    return todo_port_apply(args, out, why, why_cap, NULL);
+}
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -576,13 +589,24 @@ static esp_err_t todo_port_apply(const json_node_t *args, json_doc_t **out,
                                  char *why, size_t why_cap, void *ctx)
 {
     (void)ctx;
+    if (s_todo_lock != NULL) xSemaphoreTake(s_todo_lock, portMAX_DELAY);
     esp_err_t err = todo_apply(agent_todo_phases(), args, why, why_cap);
-    if (err != ESP_OK) return err;
-    if (out == NULL) return ESP_OK;
+    if (err != ESP_OK) {
+        if (s_todo_lock != NULL) xSemaphoreGive(s_todo_lock);
+        return err;
+    }
+    if (out == NULL) {
+        if (s_todo_lock != NULL) xSemaphoreGive(s_todo_lock);
+        return ESP_OK;
+    }
 
     json_doc_t *doc = json_new_object();
-    if (doc == NULL) return ESP_ERR_NO_MEM;
+    if (doc == NULL) {
+        if (s_todo_lock != NULL) xSemaphoreGive(s_todo_lock);
+        return ESP_ERR_NO_MEM;
+    }
     err = todo_render(agent_todo_phases(), json_root(doc));
+    if (s_todo_lock != NULL) xSemaphoreGive(s_todo_lock);
     if (err != ESP_OK) {
         json_free(doc);
         return err;
@@ -704,8 +728,14 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
             /* The close-out gate (`02-firmware.md` §4.1 step 5). While it fails and
              * rounds remain, take another round with the frozen message appended;
              * a run never finalizes with work it did not account for. */
+            /* The list is read here on the agent task and written by the link task
+             * through `agent_todo_apply` (§4.27), so this read takes the same lock:
+             * without it a `/todo` mid-closeout could hand the check a half-committed
+             * list and let a run finalize with tasks it never accounted for. */
+            if (s_todo_lock != NULL) xSemaphoreTake(s_todo_lock, portMAX_DELAY);
             closeout_verdict_t verdict =
                 agent_closeout_check(agent_todo_phases(), rounds, ever_initialised);
+            if (s_todo_lock != NULL) xSemaphoreGive(s_todo_lock);
             if (verdict != CLOSEOUT_OK) {
                 const char *prompt = agent_closeout_prompt(verdict);
                 if (prompt != NULL && rounds + 1 < s_rounds_max) {
@@ -813,6 +843,9 @@ esp_err_t agent_start(void)
         heap_caps_free(s_reply);
         return ESP_ERR_NO_MEM;
     }
+
+    s_todo_lock = xSemaphoreCreateMutex();
+    if (s_todo_lock == NULL) return ESP_ERR_NO_MEM;
 
     s_queue = xQueueCreate(AGENT_MAX_QUEUE, sizeof(agent_job_t));
     if (s_queue == NULL) return ESP_ERR_NO_MEM;

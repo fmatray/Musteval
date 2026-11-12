@@ -359,6 +359,90 @@ async def test_net_ping_result_is_one_chat_line(loss, marker, expect_rtt):
         await session.close()
 
 
+async def test_todo_round_trips_the_device_list_into_chat():
+    """`05` §7: `/todo` sends `todo.apply` and renders the answer. Before this it
+    wrote "no open todos" from a local flag and sent nothing, so a device list the
+    model had built was invisible to the reader — the doc promised the render and
+    the code did not do it.
+    """
+    from bridge.ui import BridgeApp
+
+    sent_names: list[str] = []
+
+    def reply_for(sent):
+        frame = json.loads(sent)
+        if frame.get("name") != "todo.apply":
+            return _reply(sent)
+        sent_names.append(frame["name"])
+        assert frame["args"] == {"op": "view"}
+        return [
+            encode(
+                Frame(
+                    type="command.result",
+                    id="r-1",
+                    ts=0,
+                    reply_to=frame["id"],
+                    body={
+                        "name": "todo.apply",
+                        "ok": True,
+                        "duration_ms": 3,
+                        "result": {
+                            "phases": [
+                                {
+                                    "name": "auth",
+                                    "tasks": [
+                                        {"content": "wire jwt", "status": "completed"},
+                                        {"content": "rotate key", "status": "in_progress"},
+                                        {
+                                            "content": "tag release",
+                                            "status": "blocked",
+                                            "blocker": "needs ci",
+                                        },
+                                    ],
+                                }
+                            ]
+                        },
+                    },
+                )
+            )
+        ]
+
+    session = Session(FakeTransport(on_write=reply_for), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        log = app.query_one("#chat-log")
+
+        field = app.query_one("#chat-input")
+        field.focus()
+        field.value = "/todo"
+        await pilot.pause(0.05)
+        await pilot.press("enter")
+        for _ in range(100):
+            if any(str(line.text).startswith("auth") for line in log.lines):
+                break
+            await pilot.pause(0.02)
+
+        assert sent_names == ["todo.apply"]
+        # The connect banner lands asynchronously, so the todo block is selected by
+        # its own first line rather than by an index taken before the keystroke.
+        start = next(
+            i for i, line in enumerate(log.lines) if str(line.text) == "auth"
+        )
+        texts = [str(line.text) for line in log.lines[start:]]
+        assert texts[0] == "auth"
+        assert "[x] wire jwt" in texts[1]
+        assert "completed" in texts[1]
+        assert "[>] rotate key" in texts[2]
+        assert "in_progress" in texts[2]
+        assert "[!] tag release" in texts[3]
+        assert "(needs ci)" in texts[3]
+        await session.close()
+
+
 async def test_status_footer_shows_the_round_trip_a_real_pong_measured():
     """`05-bridge.md` §10: `pong` updates the latency the Status screen shows.
 

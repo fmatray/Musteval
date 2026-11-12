@@ -384,12 +384,15 @@ dropping reclaims a body that cannot be assembled. Whatever adds tools at M5 mus
 also add the rule that sends a subset (`07-roadmap.md` M5).
 
 ### `agent` — Core Loop
-- `agent_submit(text, len, reply_to, source)`: Queue one prompt for the loop. The
-  text is **copied** into the module's own buffer; the caller's pointer is not
-  retained (the link task's stack is 4 KiB and a borrowed 8 KiB prompt on it was a
-  stack overflow). Returns `E_BUSY` when the queue (`AGENT_MAX_QUEUE`, two deep) is
-  full — `04-protocol.md` §3.15. `source` records which trigger started the run, for
-  `status`.
+- `agent_submit(prompt, len, source, reply_to, run_id_out, run_id_cap)`: Queue one
+  prompt for the loop. The text is **copied** into the module's own buffer; the
+  caller's pointer is not retained (the link task's stack is 4 KiB and a borrowed
+  8 KiB prompt on it was a stack overflow). `run_id_out` receives the id **minted
+  before** the enqueue, because the replies that start a run name it — `tasks.run`
+  (`04-protocol.md` §4.5) and `fired` (§3.16) — and a refusal writes `""`; it may be
+  NULL when the caller does not need the id. Returns `E_BUSY` when the queue
+  (`AGENT_MAX_QUEUE`, two deep) is full — `04-protocol.md` §3.15. `source` records
+  which trigger started the run, for `status`.
 - `agent_cancel()`: Set the run's cancel flag and abort any request already on the
   wire (`llm_abort()`). A `cancel` frame therefore ends a run that is inside
   `esp_http_client_perform` instead of waiting out the provider's `timeout_ms`; when
@@ -397,9 +400,15 @@ also add the rule that sends a subset (`07-roadmap.md` M5).
 - `agent_status()`, `agent_start()`, `agent_todo_phases()`, `agent_todo_reset()`.
   `agent_todo_phases()` returns the live todo phase/task tree. The list is state
   owned by this module, not by the `tools` module, so it outlives a tool call and
-  survives across runs until `reload` or reboot. `tools/todo.md` is its only consumer
-  and the canonical description of the shape. The loop reads it for the close-out
-  check described in §4.1 step 5.
+  survives across runs until `reload` or reboot. `docs/tools/todo.md` is the canonical
+  description of the shape. The loop reads it for the close-out check described in
+  §4.1 step 5.
+- `agent_todo_apply(args, out, why, why_cap)`: the `todo.apply` command's entry
+  (`04-protocol.md` §4.27), and the `todo` tool's apply path — one function behind
+  both, so an op cannot come to mean two things. `out` receives `tools/todo.md`
+  §Result; `view` writes nothing. `todo_apply` commits with an 8 KiB non-atomic
+  struct copy, so this module holds one mutex that both callers take: without it a
+  `/todo` arriving mid-run would tear the list the model is reading.
 
 The loop is entered only through `agent_submit`; there is no synchronous entry and
 no per-call tool entry point. Dispatch to built-in, declarative or MCP tools is

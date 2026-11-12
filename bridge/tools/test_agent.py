@@ -131,6 +131,9 @@ class TestAgent:
         self.stream = stream or sys.stderr
         self.hello_seen = False
         self.run_id: str | None = None
+        # The `todo` list the device keeps in `agent` RAM (`tools/todo.md` §State),
+        # so a `done` is observable after the `init` that created the task.
+        self._todo: list[dict[str, Any]] = []
         self._script_index = 0
         self._buf = bytearray()
         self._closed = False
@@ -573,6 +576,21 @@ class TestAgent:
                 reply_to=frame.id,
             )
             return
+        elif name == "todo.apply":
+            # `10-test-agent.md` §6: a list the double actually holds, so `done` after
+            # `start` is observable. An echo of `args` would let a broken bridge pass:
+            # every assertion would read its own request back.
+            self.reply(
+                "command.result",
+                {
+                    "name": name,
+                    "ok": True,
+                    "result": self._todo_apply(args),
+                    "duration_ms": 0,
+                },
+                reply_to=frame.id,
+            )
+            return
         elif name == "wifi.scan":
             # `10-test-agent.md` §6: an echo would give the dropdown `args` and no
             # `networks`, which is the failure it shows against a real device.
@@ -598,6 +616,51 @@ class TestAgent:
             {"name": name, "ok": True, "result": result, "duration_ms": 0},
             reply_to=frame.id,
         )
+
+    def _todo_apply(self, args: dict) -> dict:
+        """`tools/todo.md` §Operations, enough of it to be worth asserting against.
+
+        The double keeps the tree so a `done` is visible in the reply after the
+        `init` that created it. Bounds and the all-or-nothing rule belong to the
+        firmware and are proven on target; what is proven here is that the bridge
+        sends the op and renders the answer.
+        """
+        op = args.get("op", "view")
+        target = args.get("task")
+        if op == "init":
+            self._todo = [{"name": args.get("phase") or "Tasks", "tasks": []}]
+            for item in args.get("items") or []:
+                self._todo[0]["tasks"].append({"content": item, "status": "pending"})
+        elif op == "append":
+            self._todo.append(
+                {
+                    "name": args.get("phase") or "Tasks",
+                    "tasks": [
+                        {"content": item, "status": "pending"}
+                        for item in args.get("items") or []
+                    ],
+                }
+            )
+        elif op in ("start", "done", "drop", "rm", "block", "unblock"):
+            status = {"start": "in_progress", "done": "completed", "drop": "abandoned"}.get(op)
+            for phase in self._todo:
+                kept = []
+                for task in phase["tasks"]:
+                    hit = target is None or target in (task["content"], phase["name"])
+                    if hit and op == "rm":
+                        continue
+                    if hit and status:
+                        task["status"] = status
+                    if hit and op == "block" and task["status"] not in ("completed", "abandoned"):
+                        # `tools/todo.md` §Operations: `block` leaves a finished task alone.
+                        task["status"] = "blocked"
+                        task["blocker"] = args.get("reason") or "blocked"
+                    if hit and op == "unblock":
+                        task["status"] = "pending"
+                        task.pop("blocker", None)
+                    kept.append(task)
+                phase["tasks"] = kept
+        return {"phases": self._todo}
 
     def _answer_prompt(self, frame: Frame) -> None:
         text = frame.body["text"]

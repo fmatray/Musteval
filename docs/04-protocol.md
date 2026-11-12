@@ -222,7 +222,7 @@ seconds rather than minutes. Cancellation is not a failure and is never retried.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the twenty-nine names in §4. |
+| `name` | string | yes | One of the thirty names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -569,7 +569,7 @@ generic notification line and MUST NOT error.
 
 ## 4. Command catalog
 
-All twenty-nine names, their arguments and their `result` shapes. Unknown names are
+All thirty names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -604,6 +604,7 @@ reads are never refused.
 | `wifi.connect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
 | `wifi.disconnect` | `{}` | wifi object (§3.9), `state: "off"` | `E_WIFI` (radio did not leave), `E_BUSY` (run in flight or a connect already in flight) | yes |
 | `wifi.reconnect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
+| `todo.apply` | `{op, task?, phase?, items?, content?, reason?, from?, to?}` | `{phases:[{name, tasks:[{content,status,blocker?}]}]}` | `E_TOOL` (schema violation, no task matches, or a bound breach), `E_INTERNAL` | yes |
 | `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
 
 
@@ -1260,6 +1261,40 @@ attempt loop's next round.
 the caller sees `state: "failed"` and the `failovers` count that says how many were
 tried — the error is not the only information in the reply.
 
+### 4.27 `todo.apply`
+
+The run's todo tree, read and steered. `args` is the `todo` tool's own arguments
+object, unchanged: this command is the tool's apply path reached over the link, not a
+second implementation of it, so `{"op":"done","task":"3"}` means the same thing to
+`/todo done 3` and to the model. Operation names, bounds, targeting and the
+all-or-nothing rule are owned by `docs/tools/todo.md` and are not restated here.
+
+```json
+{"v":1,"type":"command","id":"b-42","ts":1730572610,"name":"todo.apply","args":{"op":"view"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-52","ts":1730572610,"reply_to":"b-42","name":"todo.apply","ok":true,"result":{"phases":[{"name":"Task 1","tasks":[{"content":"wire jwt","status":"completed"},{"content":"rotate key","status":"in_progress"}]}]},"duration_ms":3}
+```
+
+`result` is `docs/tools/todo.md` §Result verbatim: one `phases` entry per phase, one
+`tasks` entry per task in it. A `blocked` task carries `blocker`, the reason it stopped.
+
+**The list is device-resident and dies with the boot.** It lives in `agent` RAM, is
+cleared by `reload` and by every reboot, and is not written to flash — so `todo.apply`
+reads a live run's plan, never a record of a past one. Asking after a reboot returns
+an empty `phases`, which is the truth, not a loss.
+
+**A mutation is refused while the list is being changed by someone else**, and that
+refusal is not visible as `E_BUSY`: the command and the model share one lock, so a
+`/todo` sent mid-run waits for the model's op to finish and then applies. The lock is
+what makes a concurrent `start` and `done` land in some order instead of tearing an
+8 KiB copy. `todo.apply` is therefore busy-safe in the table above, which is the
+`wifi.status` (§4.26) precedent: a read of state that a run also writes, serialized
+rather than refused.
+
+`E_TOOL` carries the tool's own refusal text in `message`, because it is the sentence
+the model would have been given and the user should read the same one.
 
 ## 5. Error codes
 

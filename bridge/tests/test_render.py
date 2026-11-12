@@ -20,7 +20,7 @@ from bridge.ui.render import (
     hint_bar,
     key_label,
     render_prompt_bar,
-    render_prompt_text,
+    render_prompt_text,    todo_lines,
 )
 from bridge.ui.render import _bar_segments, _fit
 
@@ -217,6 +217,62 @@ def test_wifi_scan_sanitises_ssid():
     assert key_label("ctrl+d") == "Ctrl+D"
     assert key_label("enter") == "Enter"
     assert key_label("escape") == "Escape"
+
+
+def test_todo_lines_distinguish_the_five_states():
+    """`05` §7: one line per task, every state named. Two tasks in one phase must
+    not collapse into one line: `done` on a task is the whole point of the command."""
+    result = {
+        "phases": [
+            {
+                "name": "auth",
+                "tasks": [
+                    {"content": "wire jwt", "status": "completed"},
+                    {"content": "rotate key", "status": "in_progress"},
+                    {"content": "audit", "status": "pending"},
+                    {"content": "rewrite", "status": "abandoned"},
+                ],
+            }
+        ]
+    }
+    lines = todo_lines(result)
+    assert lines[0] == "auth"
+    # The status is the last field; the mark is the first. A padded content column
+    # must not swallow either.
+    statuses = [line.rsplit("  ", 1)[1].strip() for line in lines[1:]]
+    assert statuses == ["completed", "in_progress", "pending", "abandoned"]
+    # The mark is a fixed three-character field; `[ ]` contains a space, so splitting
+    # on whitespace would read it as `[` and quietly pass for the wrong reason.
+    marks = [line.lstrip()[:3] for line in lines[1:]]
+    assert marks == ["[x]", "[>]", "[ ]", "[-]"]
+
+
+def test_todo_lines_show_a_blocker_and_sanitise_every_payload():
+    result = {
+        "phases": [
+            {
+                "name": "\x1b[31mship\x1b[0m",
+                "tasks": [
+                    {
+                        "content": "\x1b[31mtag\x1b[0m",
+                        "status": "blocked",
+                        "blocker": "\x1b[31mci\x1b[0m",
+                    }
+                ],
+            }
+        ]
+    }
+    lines = todo_lines(result)
+    assert not any("\x1b" in line for line in lines)
+    assert lines[1].startswith("  [!] [31mtag")
+    assert "([31mci[0m)" in lines[1]
+
+
+def test_todo_lines_report_an_empty_list_rather_than_nothing():
+    """A fresh boot has no list (`tools/todo.md` §State). Silence would read as a
+    render fault, so `/todo` says so in one line."""
+    assert todo_lines({"phases": []}) == ["no todos"]
+    assert todo_lines({}) == ["no todos"]
 
 
 def test_hints_are_derived_from_the_bindings_so_a_dead_key_cannot_be_named():

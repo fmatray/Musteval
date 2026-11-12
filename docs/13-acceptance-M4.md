@@ -377,6 +377,16 @@ need no provider. Recover from safe mode first if the board is in it.
       3 416 ms and `reconnect` in 3 428 ms, both back on the same IP. Both join forms
       returned after their own name, which is the point of the row: the reply name is
       the command asked, not a constant.
+- [X] `todo.apply` (`04` §4.27) as `/todo`'s frame, on the board over `/dev/ttyACM0`
+      as raw `command` frames: `view` on a fresh boot answered `{"phases":[]}`, which
+      is `tools/todo.md` §State's truth and not a fault; `init` created phase `auth`
+      with two tasks; `start` moved only the named task to `in_progress`, demoting
+      the one it replaced; `done` then `block` on the phase left the `completed` task
+      alone and set `blocker` on the other; `rm` deleted one task and kept the phase;
+      a target naming nothing answered `E_TOOL` "no task matches" with the list
+      untouched; and `init` with `items: []` cleared it. The command is the `todo`
+      tool's own apply path, so `/todo done 3` and the model's `{"op":"done","task":"3"}`
+      are one code path — asserted by construction, not by comparison.
 - [X] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field,
       and the region dropdown pre-selecting the stored zone's region. Driven on the
       board through a pty: `bin/bridge`, then `/onboard`, and step 1 drew with

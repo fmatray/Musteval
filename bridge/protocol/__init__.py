@@ -103,6 +103,8 @@ COMMAND_NAMES = frozenset(
         "sys.reset_counter",
         # `04-protocol.md` §4.24: the access points the radio can hear.
         "wifi.scan",
+        # `04-protocol.md` §4.27: the run's todo tree, read and steered.
+        "todo.apply",
         # `04-protocol.md` §4.26: the station's own state, and steering it.
         "wifi.status",
         "wifi.connect",

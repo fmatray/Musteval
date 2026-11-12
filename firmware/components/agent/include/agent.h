@@ -110,6 +110,18 @@ const char *agent_closeout_prompt(closeout_verdict_t verdict);
  * §4.1/§4.2: true means the budget ran out with the check still failing. */
 bool agent_todo_open_flag(closeout_verdict_t verdict, bool budget_spent);
 
+/* `/todo` (`04` §4.27): apply one `tools/todo.md` §Operations op to the run's list
+ * and render the result. This *is* the `todo` tool's apply path, not a copy of it —
+ * same op set, same bounds, same all-or-nothing rule, same lock — so the command and
+ * the model cannot end up with two opinions of what `start` means. `out` receives
+ * `tools/todo.md` §Result; `view` writes nothing.
+ *
+ * Returns ESP_OK, ESP_ERR_INVALID_ARG (schema or targeting), ESP_ERR_INVALID_SIZE
+ * (bound breach) or ESP_ERR_NO_MEM (the result could not be built). The two
+ * refusals are `E_TOOL` on the wire and `NO_MEM` is `E_INTERNAL`. */
+esp_err_t agent_todo_apply(const json_node_t *args, json_doc_t **out, char *why,
+                           size_t why_cap);
+
 /* --- History (`02-firmware.md` §4.1 step 6, `llm.max_history_messages`) ----- */
 
 /* A conversation is a JSON array of `{"role":…,"content":…}` messages, plus the

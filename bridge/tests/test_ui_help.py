@@ -34,8 +34,8 @@ from .test_ui import _reply
 def test_every_device_command_is_documented():
     documented = {command.name for command in COMMANDS if not command.local}
     for name in ("status", "reload", "reboot", "tasks", "run", "config", "secret",
-                 "templates", "template", "mqtt", "geo", "fs", "retry", "ping", "cancel",
-                 "model"):
+                 "templates", "template", "mqtt", "geo", "todo", "fs", "retry", "ping",
+                 "cancel", "model"):
         assert name in documented, name
 
 

@@ -1016,6 +1016,29 @@ static void answer_command(const json_node_t *frame)
         }
         json_add_bool(result, "truncated", scan_truncated);
         built = ESP_OK;
+    } else if (name && strcmp(name, "todo.apply") == 0) {
+        /* `04` §4.27: the `todo` tool's own apply path, so `/todo done 3` and the
+         * model's `{"op":"done","task":"3"}` cannot disagree about what the op means.
+         * The result is `tools/todo.md` §Result verbatim, spliced in rather than
+         * rebuilt here. Busy-safe: the port takes `agent`'s todo lock, so a view
+         * during a run reads a consistent list instead of a half-committed one. */
+        json_doc_t *todo = NULL;
+        char why[64] = {0};
+        esp_err_t terr = agent_todo_apply(args, &todo, why, sizeof why);
+        if (terr != ESP_OK) {
+            const char *code = terr == ESP_ERR_INVALID_ARG || terr == ESP_ERR_INVALID_SIZE
+                                   ? "E_TOOL" : "E_INTERNAL";
+            emit_failure(name, reply_to, code, why[0] != '\0' ? why : "todo refused");
+            json_free(body); return;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "todo.apply");
+        json_add_bool(root, "ok", true);
+        if (result != NULL && todo != NULL) {
+            json_add_node(result, "phases", json_get(json_root(todo), "phases"));
+        }
+        json_free(todo);
+        built = ESP_OK;
     } else if (name && (strcmp(name, "wifi.status") == 0 ||
                         strcmp(name, "wifi.connect") == 0 ||
                         strcmp(name, "wifi.disconnect") == 0 ||

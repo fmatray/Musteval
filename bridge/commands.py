@@ -30,7 +30,6 @@ LOCAL_COMMANDS = frozenset(
         "mcp",
         "usage",
         "context",
-        "todo",
         "settings",
         "export",
         "quit",
@@ -39,6 +38,20 @@ LOCAL_COMMANDS = frozenset(
         "files",
         "onboard",
     }
+)
+
+#: `tools/todo.md` §Operations, in the order that fence lists them. `/todo` accepts
+#: exactly these and nothing else: a verb the tool has no op for has no meaning.
+TODO_OPS = (
+    "init",
+    "start",
+    "done",
+    "drop",
+    "block",
+    "unblock",
+    "rm",
+    "append",
+    "view",
 )
 
 #: A skill may be 8 KiB, so `/fs put` splits it under the 4 KiB RX cap.
@@ -185,6 +198,8 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         return _fs_put(rest[1], state)
     if head == "sandbox":
         return _sandbox(rest)
+    if head == "todo":
+        return _todo(rest)
     if head == "tasks":
         return _tasks(rest, state)
     if head == "sys":
@@ -235,6 +250,30 @@ def _sandbox(rest: list[str]) -> list[Frame]:
         _require(args, 2, "/sandbox move <from> <to>")
         return [_command("sandbox.move", {"from": _sandbox_path(args[0]), "to": _sandbox_path(args[1])})]
     raise CommandError("usage: /sandbox list|read|mkdir|move|delete <path>")
+
+
+def _todo(rest: list[str]) -> list[Frame]:
+    """`05-bridge.md` §7: `/todo` is the `todo` tool's op set over the wire.
+
+    Every verb here is a `tools/todo.md` §Operations op with the same name, so the
+    command cannot drift from the tool the model calls. The one word that is not an
+    op is a target: it is sent as both `task` and `phase`, and `todo_apply`'s own
+    `task → phase` chain decides which one matched. A task name wins when one
+    exists; otherwise a phase matches every task in it. Sending only `task` would
+    make `/todo done auth` fail as an unknown task, and resolving it here would be
+    a second opinion of what a target means.
+    """
+    if not rest:
+        return [_command("todo.apply", {"op": "view"})]
+    op = rest[0]
+    if op not in TODO_OPS:
+        raise CommandError(f"usage: /todo [{'|'.join(TODO_OPS)}] [target]")
+    args: dict[str, Any] = {"op": op}
+    target = " ".join(rest[1:])
+    if target:
+        args["task"] = target
+        args["phase"] = target
+    return [_command("todo.apply", args)]
 
 
 def _tasks(rest: list[str], state: CommandState) -> list[Frame]:

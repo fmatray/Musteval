@@ -88,6 +88,47 @@ def wifi_scan_lines(result: dict[str, Any]) -> list[str]:
 
 
 
+#: `05` §7: the five states a `/todo` line distinguishes, and the mark each gets.
+_TODO_MARKS = {
+    "pending": "[ ]",
+    "in_progress": "[>]",
+    "completed": "[x]",
+    "abandoned": "[-]",
+    "blocked": "[!]",
+}
+
+
+def todo_lines(result: dict[str, Any]) -> list[str]:
+    """`04-protocol.md` §4.27's `phases` tree flattened to one line per task.
+
+    Content is model-written and a phase name is user-written, so both go through
+    `sanitize`. A `blocked` task carries its `blocker` (`tools/todo.md` §Result) and
+    printing it is the whole point of the state: without it the user cannot tell a
+    dependency from a failure.
+    """
+    phases = [p for p in result.get("phases") or [] if isinstance(p, dict)]
+    tasks = [t for p in phases for t in p.get("tasks") or [] if isinstance(t, dict)]
+    if not tasks:
+        return ["no todos"]
+
+    width = max(len(sanitize(str(t.get("content") or ""))) for t in tasks)
+    lines: list[str] = []
+    for phase in phases:
+        name = sanitize(str(phase.get("name") or ""))
+        lines.append(f"{name}")
+        for task in phase.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status") or "pending")
+            mark = _TODO_MARKS.get(status, "[?]")
+            content = sanitize(str(task.get("content") or ""))
+            line = f"  {mark} {content.ljust(width)}  {status}"
+            if task.get("blocker"):
+                line += f"  ({sanitize(str(task['blocker']))})"
+            lines.append(line)
+    return lines
+
+
 def render_tool_result(frame_body: dict[str, Any]) -> str:
     tool = frame_body.get("tool")
     duration = frame_body.get("duration_ms", 0)
