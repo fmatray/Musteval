@@ -24,19 +24,19 @@
 #define S_SKILL_READ     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}"
 #define S_TASK_LIST      "{\"type\":\"object\",\"properties\":{}}"
 #define S_EVENT_EMIT     "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\"},\"data\":{\"type\":\"string\"}},\"required\":[\"type\"]}"
-/* `tools/todo.md` §Schema, byte for byte: the gate validates the root `op` enum and
- * the declared argument names; the nested phase tree is checked by `todo_apply`,
- * which is where the normalization rules live. */
+/* `tools/todo.md` §Schema: the same document, serialised compactly. A doc test
+ * compares the two as parsed JSON, so a shape change here without the doc fails.
+ * The gate validates the root `op` enum and the declared argument names; the
+ * nested phase tree is checked by `todo_apply`, where the normalization lives. */
 #define S_TODO \
-    "{\"type\":\"object\",\"properties\":{" \
-    "\"op\":{\"type\":\"string\",\"enum\":[\"init\",\"start\",\"done\",\"drop\",\"block\"," \
-    "\"unblock\",\"rm\",\"append\",\"view\"]}," \
-    "\"list\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{" \
-    "\"phase\":{\"type\":\"string\"},\"items\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}," \
-    "\"minItems\":1}},\"required\":[\"phase\",\"items\"]}}," \
-    "\"phase\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"}," \
-    "\"items\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}," \
-    "\"reason\":{\"type\":\"string\"}},\"required\":[\"op\"]}"
+    "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"init\",\"start\",\"done\",\"drop\"," \
+    "\"block\",\"unblock\",\"rm\",\"append\",\"view\"]},\"list\":{\"type\":\"array\",\"items\":{\"type\":\"object\"," \
+    "\"properties\":{\"phase\":{\"type\":\"string\"},\"items\":{\"type\":\"array\",\"items\":{\"anyOf\":[{\"type\":\"string\"}," \
+    "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"," \
+    "\"enum\":[\"pending\",\"in_progress\",\"completed\",\"abandoned\",\"blocked\"]},\"blocker\":{\"type\":\"string\"}}," \
+    "\"required\":[\"content\"]}]}}},\"required\":[\"phase\",\"items\"]}},\"phase\":{\"type\":\"string\"}," \
+    "\"task\":{\"type\":\"string\"},\"items\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"reason\":{\"type\":\"string\"}}," \
+    "\"required\":[\"op\"]}"
 #define S_GEO            "{\"type\":\"object\",\"properties\":{}}"
 #define S_MQTT_LIST      "{\"type\":\"object\",\"properties\":{}}"
 /* `tools/mqtt.md`: the broker argument is `server_id`, the same name the config

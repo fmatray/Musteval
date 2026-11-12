@@ -275,6 +275,13 @@ def test_todo_lines_report_an_empty_list_rather_than_nothing():
     assert todo_lines({}) == ["no todos"]
 
 
+def test_todo_lines_show_a_phase_that_holds_no_tasks():
+    """`tools/todo.md` §Operations `init`: a phase may be empty, which is how the
+    editor adds a phase before it has anything in it. Printing nothing for it would
+    make a plan the reader just created look like a list that failed to load."""
+    assert todo_lines({"phases": [{"name": "Plan", "tasks": []}]}) == ["Plan"]
+
+
 def test_hints_are_derived_from_the_bindings_so_a_dead_key_cannot_be_named():
     # A stub, not `textual.binding.Binding`: `09` §the grep laws keeps `textual`
     # under `bridge/ui/`, and this is a pure function over two attributes.

@@ -1,204 +1,170 @@
 """`05-bridge.md` §7: `/todo edit` is a host modal and a pure plan.
 
-The device has no rename op, so a modify is `append` + `rm` in that order; the
-planner is testable without Textual, and the modal is driven through a pilot.
+The planner rewrites the tree locally and sends it as one nested `init` frame.
 """
 
 from __future__ import annotations
 
-import json
+import copy
 
 import pytest
 
-from bridge.client import Session
-from bridge.commands import CommandError, todo_edit_frames
-from bridge.link import FakeTransport
-from bridge.protocol import Frame, encode
-from bridge.ui import BridgeApp
-from bridge.ui.modals import TodoEditPrompt
-from .test_ui import _reply, chat_input
+from bridge.commands import CommandError, todo_edit
 
 
-def _args(transport: FakeTransport) -> list[dict]:
+def _phases() -> list[dict]:
     return [
-        json.loads(line)["args"]
-        for line in transport.written
-        if b'"todo.apply"' in line
+        {"name": "design", "tasks": [
+            {"content": "sketch", "status": "completed"},
+            {"content": "wire jwt", "status": "blocked", "blocker": "needs key"},
+        ]},
+        {"name": "ship", "tasks": [
+            {"content": "tag", "status": "in_progress"},
+        ]},
     ]
 
 
-def _todo_reply(line: bytes) -> list[bytes]:
-    frame = json.loads(line)
-    if frame["type"] == "command" and frame["name"] == "todo.apply":
-        result = {"phases": [{"name": "auth", "tasks": []}]}
-        return [encode(Frame(type="command.result", id="d-9", ts=0,
-                             body={"name": "todo.apply", "ok": True, "result": result,
-                                   "duration_ms": 1}, reply_to=frame["id"]))]
-    return _reply(line)
+def _tree(frames: list) -> list[dict]:
+    (frame,) = frames
+    assert frame.body["name"] == "todo.apply"
+    args = frame.body["args"]
+    assert args["op"] == "init"
+    return args["list"]
 
 
-async def _open(pilot) -> None:
-    app = pilot.app
-    for _ in range(50):
-        if app.session.state.value == "connected":
-            break
-        await pilot.pause(0.02)
-    field = chat_input(app)
-    field.focus()
-    field.value = "/todo edit"
-    await pilot.press("enter")
-    for _ in range(80):
-        if isinstance(app.screen, TodoEditPrompt):
-            return
-        await pilot.pause(0.02)
-    raise AssertionError("the edit modal did not open")
-
-
-async def _run_cmd(pilot, text: str) -> None:
-    field = chat_input(pilot.app)
-    field.focus()
-    field.value = text
-    await pilot.press("enter")
-
-
-def test_add_appends_the_content_to_the_phase():
-    (frame,) = todo_edit_frames("add", phase="auth", new="wire jwt")
-    assert frame.body["args"] == {"op": "append", "phase": "auth", "items": ["wire jwt"]}
-
-
-def test_modify_appends_before_it_removes_the_old_task():
-    frames = todo_edit_frames("modify", phase="auth", task="wire jwt", new="wire oauth")
-    assert [f.body["args"] for f in frames] == [
-        {"op": "append", "phase": "auth", "items": ["wire oauth"]},
-        {"op": "rm", "task": "wire jwt"},
+def test_a_reorder_keeps_every_status_and_blocker():
+    tree = _tree(todo_edit(_phases(), op="move-task", task="sketch", where="down"))
+    assert tree[0]["items"] == [
+        {"content": "wire jwt", "status": "blocked", "blocker": "needs key"},
+        {"content": "sketch", "status": "completed"},
     ]
 
-def test_delete_removes_the_task():
-    (frame,) = todo_edit_frames("delete", task="wire jwt")
-    assert frame.body["args"] == {"op": "rm", "task": "wire jwt"}
 
-@pytest.mark.parametrize("action, kwargs, match", [
-    ("", {"phase": "auth", "new": "x"}, "unknown todo edit action"),
-    ("add", {"phase": "  ", "new": "x"}, "add needs a phase"),
-    ("add", {"phase": "auth", "new": "  "}, "add needs a phase and a content"),
-    ("modify", {"task": "a", "new": "b"}, "modify needs a phase"),
-    ("modify", {"phase": "auth", "new": "b"}, "modify needs a phase, a task"),
-    ("modify", {"phase": "auth", "task": "a"}, "modify needs a phase, a task and a content"),
-    ("delete", {}, "delete needs a task"),
+def test_move_task_past_the_start_is_a_no_op():
+    tree = _tree(todo_edit(_phases(), op="move-task", task="sketch", where="up"))
+    assert [i["content"] for i in tree[0]["items"]] == ["sketch", "wire jwt"]
+
+
+def test_move_task_past_the_end_is_a_no_op():
+    tree = _tree(todo_edit(_phases(), op="move-task", task="tag", where="down"))
+    assert [i["content"] for i in tree[1]["items"]] == ["tag"]
+
+
+def test_move_task_down_swaps_inside_its_phase():
+    tree = _tree(todo_edit(_phases(), op="move-task", task="sketch", where="down"))
+    assert [i["content"] for i in tree[0]["items"]] == ["wire jwt", "sketch"]
+
+
+def test_move_phase_swaps_the_phases():
+    tree = _tree(todo_edit(_phases(), op="move-phase", phase="ship", where="up"))
+    assert [p["phase"] for p in tree] == ["ship", "design"]
+    assert [i["content"] for i in tree[1]["items"]] == ["sketch", "wire jwt"]
+
+
+def test_move_phase_past_either_end_is_a_no_op():
+    for where in ("up", "down"):
+        phase = "design" if where == "up" else "ship"
+        tree = _tree(todo_edit(_phases(), op="move-phase", phase=phase, where=where))
+        assert [p["phase"] for p in tree] == ["design", "ship"]
+
+
+def test_add_task_appends_pending_to_the_named_phase():
+    tree = _tree(todo_edit(_phases(), op="add-task", phase="design", value="mint"))
+    assert tree[0]["items"][-1] == {"content": "mint", "status": "pending"}
+
+
+def test_add_task_before_and_after_a_task():
+    before = _tree(todo_edit(
+        _phases(), op="add-task", phase="design", task="wire jwt",
+        value="mint", where="before",
+    ))
+    assert [i["content"] for i in before[0]["items"]] == ["sketch", "mint", "wire jwt"]
+    after = _tree(todo_edit(
+        _phases(), op="add-task", phase="design", task="wire jwt",
+        value="mint", where="after",
+    ))
+    assert [i["content"] for i in after[0]["items"]] == ["sketch", "wire jwt", "mint"]
+
+
+def test_add_phase_appends_an_empty_phase():
+    tree = _tree(todo_edit(_phases(), op="add-phase", value="ship later"))
+    assert tree[-1] == {"phase": "ship later", "items": []}
+
+
+def test_add_phase_before_and_after_a_phase():
+    before = _tree(todo_edit(
+        _phases(), op="add-phase", phase="design", value="setup", where="before",
+    ))
+    assert [p["phase"] for p in before] == ["setup", "design", "ship"]
+    after = _tree(todo_edit(
+        _phases(), op="add-phase", phase="design", value="setup", where="after",
+    ))
+    assert [p["phase"] for p in after] == ["design", "setup", "ship"]
+
+
+def test_modify_task_keeps_status_and_blocker():
+    tree = _tree(todo_edit(_phases(), op="modify-task", task="wire jwt", value="wire oauth"))
+    assert tree[0]["items"][1] == {
+        "content": "wire oauth", "status": "blocked", "blocker": "needs key",
+    }
+
+
+def test_modify_phase_keeps_the_tasks():
+    tree = _tree(todo_edit(_phases(), op="modify-phase", phase="design", value="blueprint"))
+    assert tree[0]["phase"] == "blueprint"
+    assert [i["content"] for i in tree[0]["items"]] == ["sketch", "wire jwt"]
+
+
+def test_delete_task_removes_only_it():
+    tree = _tree(todo_edit(_phases(), op="delete-task", task="sketch"))
+    assert [i["content"] for i in tree[0]["items"]] == ["wire jwt"]
+
+
+def test_delete_phase_drops_its_tasks():
+    tree = _tree(todo_edit(_phases(), op="delete-phase", phase="design"))
+    assert [p["phase"] for p in tree] == ["ship"]
+
+
+def test_deleting_the_last_phase_clears_the_list():
+    tree = _tree(todo_edit(
+        [{"name": "solo", "tasks": [{"content": "one", "status": "pending"}]}],
+        op="delete-phase", phase="solo",
+    ))
+    assert tree == []
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"op": "renumber"}, "unknown todo edit op: renumber"),
+    ({"op": ""}, r"unknown todo edit op: \(none\)"),
+    ({"op": "add-task", "phase": "nope", "value": "x"}, "unknown phase: nope"),
+    ({"op": "add-task", "value": "x"}, r"unknown phase: \(none\)"),
+    ({"op": "add-task", "phase": "design"}, "add-task needs a value"),
+    ({"op": "add-task", "phase": "design", "value": "sketch"}, "duplicate content: sketch"),
+    ({"op": "add-task", "phase": "design", "task": "ghost", "value": "x"}, "unknown task: ghost"),
+    ({"op": "add-task", "phase": "design", "value": "x", "where": "beside"}, "before|after"),
+    ({"op": "add-phase", "value": ""}, "add-phase needs a value"),
+    ({"op": "add-phase", "value": "design"}, "duplicate phase name: design"),
+    ({"op": "add-phase", "value": "x", "phase": "ghost"}, "unknown phase: ghost"),
+    ({"op": "modify-task", "value": "x"}, "modify-task needs a task"),
+    ({"op": "modify-task", "task": "sketch"}, "modify-task needs a value"),
+    ({"op": "modify-task", "task": "ghost", "value": "x"}, "unknown task: ghost"),
+    ({"op": "modify-task", "task": "sketch", "value": "tag"}, "duplicate content: tag"),
+    ({"op": "modify-phase", "phase": "design", "value": "ship"}, "duplicate phase name: ship"),
+    ({"op": "modify-phase", "value": "x"}, r"unknown phase: \(none\)"),
+    ({"op": "delete-task", "task": "ghost"}, "unknown task: ghost"),
+    ({"op": "delete-phase", "phase": "ghost"}, "unknown phase: ghost"),
+    ({"op": "move-task", "task": "sketch", "where": "left"}, "up|down"),
+    ({"op": "move-phase", "phase": "design", "where": "left"}, "up|down"),
 ])
-def test_planner_refusals(action, kwargs, match):
+def test_planner_refusals(kwargs, match):
     with pytest.raises(CommandError, match=match):
-        todo_edit_frames(action, **kwargs)
+        todo_edit(_phases(), **kwargs)
 
 
-def test_a_refused_modify_never_reaches_the_remove():
-    with pytest.raises(CommandError):
-        # No phase: the append cannot be built, so the rm must not be either
-        todo_edit_frames("modify", task="wire jwt", new="wire oauth")
-
-
-def test_the_phase_note_says_when_no_phase_is_known():
-    assert "type the phase" in TodoEditPrompt()._phase_note()
-    assert "auth" in TodoEditPrompt(["auth"])._phase_note()
-
-
-async def test_add_staged_and_sent():
-    transport = FakeTransport(on_write=_reply)
-    session = Session(transport, ack_timeout=1, ping_interval=99)
-    app = BridgeApp(session)
-    async with app.run_test() as pilot:
-        await _open(pilot)
-        modal = app.screen
-        modal.query_one("#todo-action").value = "add"
-        modal.query_one("#todo-phase").value = "auth"
-        modal.query_one("#todo-content").value = "wire jwt"
-        await pilot.press("enter")
-        await pilot.press("ctrl+s")
-        for _ in range(80):
-            if _args(transport):
-                break
-            await pilot.pause(0.02)
-        assert _args(transport) == [
-            {"op": "append", "phase": "auth", "items": ["wire jwt"]}
-        ]
-        await session.close()
-
-
-async def test_modify_staged_and_sent():
-    transport = FakeTransport(on_write=_reply)
-    session = Session(transport, ack_timeout=1, ping_interval=99)
-    app = BridgeApp(session)
-    async with app.run_test() as pilot:
-        await _open(pilot)
-        modal = app.screen
-        modal.query_one("#todo-action").value = "modify"
-        modal.query_one("#todo-phase").value = "auth"
-        modal.query_one("#todo-task").value = "wire jwt"
-        modal.query_one("#todo-content").value = "wire oauth"
-        await pilot.press("enter")
-        await pilot.press("ctrl+s")
-        for _ in range(80):
-            if _args(transport):
-                break
-            await pilot.pause(0.02)
-        assert _args(transport) == [
-            {"op": "append", "phase": "auth", "items": ["wire oauth"]},
-            {"op": "rm", "task": "wire jwt"},
-        ]
-        await session.close()
-
-
-async def test_delete_staged_and_sent():
-    transport = FakeTransport(on_write=_reply)
-    session = Session(transport, ack_timeout=1, ping_interval=99)
-    app = BridgeApp(session)
-    async with app.run_test() as pilot:
-        await _open(pilot)
-        modal = app.screen
-        modal.query_one("#todo-action").value = "delete"
-        modal.query_one("#todo-task").value = "wire jwt"
-        await pilot.press("enter")
-        await pilot.press("ctrl+s")
-        for _ in range(80):
-            if _args(transport):
-                break
-            await pilot.pause(0.02)
-        assert _args(transport) == [{"op": "rm", "task": "wire jwt"}]
-        await session.close()
-
-
-async def test_escape_drops_the_plan_and_sends_nothing():
-    transport = FakeTransport(on_write=_reply)
-    session = Session(transport, ack_timeout=1, ping_interval=99)
-    app = BridgeApp(session)
-    async with app.run_test() as pilot:
-        await _open(pilot)
-        modal = app.screen
-        modal.query_one("#todo-action").value = "add"
-        modal.query_one("#todo-phase").value = "auth"
-        modal.query_one("#todo-content").value = "wire jwt"
-        await pilot.press("enter")
-        await pilot.press("escape")
-        for _ in range(80):
-            if not isinstance(app.screen, TodoEditPrompt):
-                break
-            await pilot.pause(0.02)
-        assert not isinstance(app.screen, TodoEditPrompt)
-        assert _args(transport) == []
-        await session.close()
-
-
-async def test_the_modal_seeds_its_phases_from_the_last_todo_result():
-    transport = FakeTransport(on_write=_todo_reply)
-    session = Session(transport, ack_timeout=1, ping_interval=99)
-    app = BridgeApp(session)
-    async with app.run_test() as pilot:
-        await _run_cmd(pilot, "/todo")
-        for _ in range(80):
-            if app._todo_phases:
-                break
-            await pilot.pause(0.02)
-        await _open(pilot)
-        modal = app.screen
-        assert "auth" in str(modal.query_one("#todo-phases").render())
-        await session.close()
+def test_the_callers_tree_is_never_mutated():
+    phases = _phases()
+    snapshot = copy.deepcopy(phases)
+    todo_edit(phases, op="delete-phase", phase="design")
+    todo_edit(phases, op="modify-task", task="sketch", value="redraw")
+    todo_edit(phases, op="move-phase", phase="ship", where="up")
+    assert phases == snapshot

@@ -988,9 +988,12 @@ class BridgeApp(App):
         #: Set when `/files <path>` wants a specific directory; `action_show` is
         #: the one place that fetches, so the screen never lists twice.
         self._files_target: str = ""
-        #: Phase names from the last `todo.apply`, so `/todo edit` can suggest
-        #: them instead of asking the user to remember the tree.
-        self._todo_phases: list[str] = []
+        #: The `phases` tree from the last `todo.apply`, kept whole because the
+        #: editor rewrites the tree and a name list cannot carry status.
+        self._todo_tree: list[dict[str, Any]] = []
+        #: Set while `/todo edit` fetches the tree it is about to rewrite, so the
+        #: fetch does not print the plan twice.
+        self._todo_quiet = False
 
     async def _send_frames(self, frames: list[Frame]) -> None:
         """Send one plan the way every command does: one await per frame."""
@@ -1629,12 +1632,13 @@ class BridgeApp(App):
             self.run_worker(self._request("tasks.list"))
             return
         if name == "todo.apply" and isinstance(result, dict):
-            self._todo_phases = [
-                str(p.get("name") or "") for p in result.get("phases") or []
-                if isinstance(p, dict) and p.get("name")
+            self._todo_tree = [
+                phase for phase in result.get("phases") or [] if isinstance(phase, dict)
             ]
-            for line in todo_lines(result):
-                self._chat().write(line)
+            if not self._todo_quiet:
+                for line in todo_lines(result):
+                    self._chat().write(line)
+            self._todo_quiet = False
             return
         if name == "mqtt.status":
             servers = result if isinstance(result, list) else (result or {}).get("servers", [])
@@ -1803,11 +1807,8 @@ class BridgeApp(App):
         words = text[1:].split()
         if words[:2] == ["todo", "edit"]:
             # `05` §7: `edit` is a UI verb with no device op, so it never reaches
-            # `parse`; the modal plans the frames and they go out like any other.
-            from .modals import TodoEditPrompt
-            frames = await self.push_screen_wait(TodoEditPrompt(self._todo_phases))
-            if frames:
-                await self._send_frames(frames)
+            # `parse`; the editor rewrites the tree and sends one `init`.
+            await self._edit_todo()
             return
 
         # `05-bridge.md` §7: the bare form opens its screen; a sub-command such as
@@ -1880,6 +1881,66 @@ class BridgeApp(App):
             self._chat().write(f"{exc}", kind="error")
             return
         await self._send_frames(frames)
+
+    async def _edit_todo(self) -> None:
+        """Open the tree editor on the device's current list.
+
+        The editor sends one `init` that replaces the whole list, so it has to
+        start from what the device holds right now: a tree cached from an earlier
+        `/todo` would silently drop a task the run added since.
+        """
+        self._todo_quiet = True
+        try:
+            result = await self._request("todo.apply", {"op": "view"})
+        finally:
+            self._todo_quiet = False
+        if result is None:
+            return
+        from .modals import TodoEditor
+
+        opened = self._todo_signature(self._todo_tree)
+        frames = await self.push_screen_wait(TodoEditor(self._todo_tree))
+        if not frames:
+            return
+        # The frame replaces the whole list, so a task the run added while the
+        # editor was open would be dropped by an edit made without seeing it.
+        self._todo_quiet = True
+        try:
+            current = await self._request("todo.apply", {"op": "view"})
+        finally:
+            self._todo_quiet = False
+        if current is not None and self._todo_signature(self._todo_tree) != opened:
+            self._chat().write(
+                "the todo list changed while you were editing; nothing was sent — "
+                "run /todo edit again",
+                kind="error",
+            )
+            return
+        await self._send_frames(frames)
+
+    @staticmethod
+    def _todo_signature(tree: list[dict[str, Any]]) -> list[tuple]:
+        """The tree in the form a rewrite must preserve: name, status and blocker.
+
+        Compares what a reader saw against what the device holds, so an edit made
+        against a stale tree is refused instead of overwriting someone's work.
+        """
+        return [
+            (
+                str(phase.get("name") or ""),
+                [
+                    (
+                        str(task.get("content") or ""),
+                        str(task.get("status") or "pending"),
+                        str(task.get("blocker") or ""),
+                    )
+                    for task in phase.get("tasks") or []
+                    if isinstance(task, dict)
+                ],
+            )
+            for phase in tree
+            if isinstance(phase, dict)
+        ]
 
     async def _request_secret(self, frame: Frame) -> None:
         outgoing = Frame(

@@ -26,7 +26,7 @@ because the list was never written to flash.
 
 | Op | Targets | Effect |
 |----|---------|--------|
-| `init` | whole list | Replaces the list, from `list` or from flat `items` plus optional `phase`. `list: []` clears everything. |
+| `init` | whole list | Replaces the list, from `list` or from flat `items` plus optional `phase`. `list: []` clears everything. An item object carries its own `status` and `blocker`, so a full rewrite is lossless. |
 | `start` | one task (required) | Marks that task `in_progress`; any other `in_progress` task is demoted to `pending`, so exactly one task is ever active. |
 | `done` | task, phase, or all | Marks targets `completed`. |
 | `drop` | task, phase, or all | Marks targets `abandoned`. |
@@ -49,7 +49,7 @@ removed.
 | Name | Type | Required | Bounds |
 |------|------|----------|--------|
 | `op` | string | yes | One of the nine names above. |
-| `list` | array of `{phase, items}` | `init` only | At most 8 entries; `phase` at most 40 characters; each `items` holds at least 1 and each item at most 120 characters; at most 32 tasks in total. |
+| `list` | array of `{phase, items}` | `init` only | At most 8 entries; `phase` at most 40 characters; an item is a content string or `{content, status?, blocker?}`; `items: []` is a legal empty phase; at most 32 tasks in total. |
 | `phase` | string | `append`; `init` when using flat `items` | At most 40 characters. On `done`/`drop`/`rm`/`block`/`unblock` it selects every task of that phase; `start` never takes a phase. |
 | `task` | string | `start`; or `block`/`unblock` when no `phase`; optional elsewhere | At most 120 characters. Matched by exact content. |
 | `items` | array of strings | `append`; `init` when not using `list` | Each item at most 120 characters; total of 32 tasks across all phases. |
@@ -119,7 +119,10 @@ A `blocked` task carries its blocker as one more member:
   "type": "object",
   "properties": {
     "op": {"type": "string", "enum": ["init", "start", "done", "drop", "block", "unblock", "rm", "append", "view"]},
-    "list": {"type": "array", "items": {"type": "object", "properties": {"phase": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["phase", "items"]}},
+    "list": {"type": "array", "items": {"type": "object", "properties": {
+      "phase": {"type": "string"},
+      "items": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "abandoned", "blocked"]}, "blocker": {"type": "string"}}, "required": ["content"]}]}}},
+      "required": ["phase", "items"]}},
     "phase": {"type": "string"},
     "task": {"type": "string"},
     "items": {"type": "array", "items": {"type": "string"}},
@@ -176,8 +179,10 @@ phase`, `append needs items`, `start needs a task`, `block needs a task or a pha
 `item is longer than 120 characters`, `phase is longer than 40 characters`,
 `reason is over 120 characters`, `at most 32 tasks`, `too many phases`,
 `duplicate content`, `no task matches`, `op is required`, `unknown op`, `at most 8
-phases`, `a phase needs items`, `duplicate phase name` — the last three on nested
-`list` `init`, which reuses no name and stores no empty phase.
+phases`, `duplicate phase name`, `item needs content`, `unknown task status`,
+`blocker is over 120 characters`. The last five are nested `list` `init`'s own: an
+item is a bare content string or `{content, status?, blocker?}`, `items: []` is a
+legal empty phase, and a repeated phase name is refused.
 
 Every one of these leaves the list unchanged, including a failure in the middle of a
 multi-target op. The refusal travels as `ok:false` with `E_TOOL` in

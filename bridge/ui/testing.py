@@ -60,6 +60,21 @@ def chat_lines(app: Any) -> list[str]:
     return lines
 
 
+def option_rows(widget: Any) -> list[str]:
+    """Every row of an `OptionList` as plain text, so a test reads the screen.
+
+    `textual` stays under `bridge/ui/` (`09` §6), so the selector type lives here
+    rather than in the test that asks the question.
+    """
+    from textual.widgets import OptionList
+
+    tree = widget.query_one("#todo-tree", OptionList)
+    return [
+        str(tree.get_option_at_index(index).prompt)
+        for index in range(tree.option_count)
+    ]
+
+
 def chat_input(app: Any) -> Any:
     """The `#chat-input` widget, typed, without a test importing `textual`."""
     from textual.widgets import Input

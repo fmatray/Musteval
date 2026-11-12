@@ -10,6 +10,7 @@ already holds and send no frame, so they belong to `ui`.
 from __future__ import annotations
 
 import base64
+import copy
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
@@ -304,50 +305,180 @@ def _todo(rest: list[str]) -> list[Frame]:
     return [_command("todo.apply", args)]
 
 
-#: The verbs `/todo edit` offers. None is an op: the modal is a UI verb like
-#: `/files`, so `edit` stays out of `TODO_OPS` and out of the wire grammar.
-TODO_EDIT_ACTIONS = ("add", "modify", "delete")
+#: `/todo edit`'s verbs. Each is a local rewrite of the tree followed by one
+#: `init`, because no device op moves, renames or inserts at a position.
+TODO_EDIT_OPS = (
+    "add-task",
+    "modify-task",
+    "delete-task",
+    "move-task",
+    "add-phase",
+    "modify-phase",
+    "delete-phase",
+    "move-phase",
+)
 
 
-def todo_edit_frames(
-    action: str,
+def _todo_list(phases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The nested `init` form. `status` rides on every item, so a rewrite keeps it."""
+    out = []
+    for phase in phases:
+        items = []
+        # A phase the device renders always carries `tasks`, but a tree the caller
+        # built by hand may not, and an empty list is the meaning either way.
+        for task in phase.get("tasks") or []:
+            item: dict[str, Any] = {
+                "content": str(task.get("content") or ""),
+                "status": str(task.get("status") or "pending"),
+            }
+            if item["status"] == "blocked" and task.get("blocker"):
+                item["blocker"] = str(task["blocker"])
+            items.append(item)
+        out.append({"phase": str(phase.get("name") or ""), "items": items})
+    return out
+
+
+def _phase_at(phases: list[dict[str, Any]], name: str) -> int:
+    for i, phase in enumerate(phases):
+        if phase.get("name") == name:
+            return i
+    raise CommandError(f"unknown phase: {name or '(none)'}")
+
+
+def _task_at(phases: list[dict[str, Any]], content: str) -> tuple[int, int]:
+    for i, phase in enumerate(phases):
+        for j, task in enumerate(phase.get("tasks") or []):
+            if task.get("content") == content:
+                return i, j
+    raise CommandError(f"unknown task: {content or '(none)'}")
+
+
+def _contents(phases: list[dict[str, Any]]) -> list[str]:
+    return [
+        task["content"] for phase in phases for task in phase.get("tasks") or []
+    ]
+
+
+def _step(where: str, op: str) -> int:
+    if where == "up":
+        return -1
+    if where == "down":
+        return 1
+    raise CommandError(f"{op} needs where up|down, not {where or '(none)'}")
+
+
+def _insert_where(where: str, op: str) -> int:
+    if where == "before":
+        return 0
+    if where == "after":
+        return 1
+    raise CommandError(f"{op} needs where before|after, not {where or '(none)'}")
+
+
+def todo_edit_tree(
+    phases: list[dict[str, Any]],
     *,
+    op: str,
     phase: str = "",
     task: str = "",
-    new: str = "",
-) -> list[Frame]:
-    """`05-bridge.md` §7 `/todo edit`: the modal's plan, built here so it is pure.
+    value: str = "",
+    where: str = "after",
+) -> list[dict[str, Any]]:
+    """`05-bridge.md` §7 `/todo edit`: one verb applied to a copy of the tree.
 
-    The device has no rename op (`copy_text(t->content, ...)` runs only inside
-    `task_add`), so a modify is `append` then `rm`, in that order. The append comes
-    first, and a refused argument emits neither frame, so the old task survives.
-
-    shortcut: `rm` resolves a `task` by exact content across the whole list, so a
-    content that appears in two phases removes the first one found (`04` §4.27
-    targeting order); upgrade to a phase-scoped op when the tool grows one.
+    The editor calls this once per keystroke and keeps the result as what it shows,
+    so the rows on screen and the frame that ships come from the same function.
+    Refusals name the argument at fault and raise, leaving the caller's tree alone.
     """
-    phase, task, new = phase.strip(), task.strip(), new.strip()
-    if action == "add":
-        if not phase or not new:
-            raise CommandError(
-                "add needs a phase and a content: /todo edit add <phase> <content>"
-            )
-        return [_command("todo.apply", {"op": "append", "phase": phase, "items": [new]})]
-    if action == "modify":
-        if not phase or not task or not new:
-            raise CommandError(
-                "modify needs a phase, a task and a content: "
-                "/todo edit modify <phase> <task> <content>"
-            )
-        return [
-            _command("todo.apply", {"op": "append", "phase": phase, "items": [new]}),
-            _command("todo.apply", {"op": "rm", "task": task}),
-        ]
-    if action == "delete":
+    if op not in TODO_EDIT_OPS:
+        raise CommandError(f"unknown todo edit op: {op or '(none)'}")
+    tree = copy.deepcopy(phases)
+    value = value.strip()
+
+    if op == "add-task":
+        at = _phase_at(tree, phase)
+        bias = _insert_where(where, op)
+        if not value:
+            raise CommandError("add-task needs a value: the new content")
+        if value in _contents(tree):
+            raise CommandError(f"duplicate content: {value}")
+        tasks = tree[at].setdefault("tasks", [])
+        pos = len(tasks)
+        if task:
+            pos = next((k for k, t in enumerate(tasks) if t.get("content") == task), None)
+            if pos is None:
+                raise CommandError(f"unknown task: {task}")
+            pos += bias
+        tasks.insert(pos, {"content": value, "status": "pending"})
+    elif op == "add-phase":
+        bias = _insert_where(where, op)
+        if not value:
+            raise CommandError("add-phase needs a value: the new phase name")
+        if any(p.get("name") == value for p in tree):
+            raise CommandError(f"duplicate phase name: {value}")
+        pos = len(tree)
+        if phase:
+            pos = _phase_at(tree, phase) + bias
+        tree.insert(pos, {"name": value, "tasks": []})
+    elif op == "modify-task":
         if not task:
-            raise CommandError("delete needs a task: /todo edit delete <task>")
-        return [_command("todo.apply", {"op": "rm", "task": task})]
-    raise CommandError(f"unknown todo edit action: {action or '(none)'}")
+            raise CommandError("modify-task needs a task: the content to rewrite")
+        if not value:
+            raise CommandError("modify-task needs a value: the new content")
+        pi, ti = _task_at(tree, task)
+        if value != task and value in _contents(tree):
+            raise CommandError(f"duplicate content: {value}")
+        tree[pi]["tasks"][ti]["content"] = value
+    elif op == "modify-phase":
+        at = _phase_at(tree, phase)
+        if not value:
+            raise CommandError("modify-phase needs a value: the new name")
+        if value != phase and any(p.get("name") == value for p in tree):
+            raise CommandError(f"duplicate phase name: {value}")
+        tree[at]["name"] = value
+    elif op == "delete-task":
+        pi, ti = _task_at(tree, task)
+        del tree[pi]["tasks"][ti]
+    elif op == "delete-phase":
+        del tree[_phase_at(tree, phase)]
+    elif op == "move-task":
+        pi, ti = _task_at(tree, task)
+        tasks = tree[pi].setdefault("tasks", [])
+        tj = ti + _step(where, op)
+        if 0 <= tj < len(tasks):
+            tasks[ti], tasks[tj] = tasks[tj], tasks[ti]
+    elif op == "move-phase":
+        at = _phase_at(tree, phase)
+        to = at + _step(where, op)
+        if 0 <= to < len(tree):
+            tree[at], tree[to] = tree[to], tree[at]
+
+    return tree
+
+
+def todo_edit(
+    phases: list[dict[str, Any]],
+    *,
+    op: str,
+    phase: str = "",
+    task: str = "",
+    value: str = "",
+    where: str = "after",
+) -> list[Frame]:
+    """The same rewrite as one nested `init`, the only form that carries order."""
+    tree = todo_edit_tree(
+        phases, op=op, phase=phase, task=task, value=value, where=where
+    )
+    return todo_init(tree)
+
+
+def todo_init(phases: list[dict[str, Any]]) -> list[Frame]:
+    """One `init` that replaces the whole list with `phases`.
+
+    The editor sends the tree it has been showing, so it needs the frame for a tree
+    rather than a verb applied to one.
+    """
+    return [_command("todo.apply", {"op": "init", "list": _todo_list(phases)})]
 
 
 def _tasks(rest: list[str], state: CommandState) -> list[Frame]:

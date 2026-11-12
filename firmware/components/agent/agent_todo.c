@@ -83,6 +83,47 @@ const char *todo_status_name(todo_status_t status)
     return "pending";
 }
 
+/* The inverse of `todo_status_name`, derived from it so the two cannot drift: a name
+ * `tools/todo.md` §State model states is exactly a name this accepts. */
+static bool status_from_name(const char *name, todo_status_t *out)
+{
+    if (name == NULL) return false;
+    for (int s = TODO_PENDING; s <= TODO_BLOCKED; s++) {
+        if (strcmp(todo_status_name((todo_status_t)s), name) == 0) {
+            if (out != NULL) *out = (todo_status_t)s;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* One nested `init` item, which is a bare content string or the object form
+ * `{content, status?, blocker?}`. Returns false with `why` set on a bad shape. */
+static bool item_fields(const json_node_t *item, const char **content,
+                        todo_status_t *status, const char **blocker,
+                        char *why, size_t why_cap)
+{
+    *status = TODO_PENDING;
+    *blocker = NULL;
+    if (json_is_string(item)) {
+        *content = json_string(item);
+        return true;
+    }
+    *content = json_string(json_get(item, "content"));
+    if (*content == NULL) {
+        if (why != NULL) snprintf(why, why_cap, "item needs content");
+        return false;
+    }
+    const json_node_t *given = json_get(item, "status");
+    if (given != NULL &&
+        (!json_is_string(given) || !status_from_name(json_string(given), status))) {
+        if (why != NULL) snprintf(why, why_cap, "unknown task status");
+        return false;
+    }
+    *blocker = json_string(json_get(item, "blocker"));
+    return true;
+}
+
 /* Phase index by exact name, or -1. */
 static int phase_find(const todo_list_t *list, const char *name)
 {
@@ -241,10 +282,6 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
             why_phase_long(why, why_cap);
             return ESP_ERR_INVALID_ARG;
         }
-        if (inner == 0) {
-            if (why != NULL) snprintf(why, why_cap, "a phase needs items");
-            return ESP_ERR_INVALID_ARG;
-        }
         /* `phase_add` reuses an existing name, so two entries for one phase would
          * silently merge their items; §Errors names this a refusal instead. */
         for (size_t k = 0; k < i; k++) {
@@ -258,6 +295,22 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
         if (total > AGENT_TODO_MAX_TASKS) {
             why_too_many_tasks(why, why_cap);
             return ESP_ERR_INVALID_SIZE;
+        }
+        for (size_t j = 0; j < inner; j++) {
+            const char *content = NULL, *blocker = NULL;
+            todo_status_t status = TODO_PENDING;
+            if (!item_fields(json_array_at(items, j), &content, &status, &blocker, why, why_cap)) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            if (!arg_ok_len(content, AGENT_TODO_CONTENT_MAX)) {
+                why_item_long(why, why_cap);
+                return ESP_ERR_INVALID_ARG;
+            }
+            if (blocker != NULL && !arg_ok_len(blocker, AGENT_TODO_BLOCKER_MAX)) {
+                if (why != NULL) snprintf(why, why_cap, "blocker is over %d characters",
+                                          AGENT_TODO_BLOCKER_MAX);
+                return ESP_ERR_INVALID_ARG;
+            }
         }
     }
 
@@ -274,10 +327,24 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
             return ESP_ERR_INVALID_SIZE;
         }
         for (size_t j = 0; j < json_array_len(items); j++) {
-            const char *content = json_string(json_array_at(items, j));
+            const char *content = NULL, *blocker = NULL;
+            todo_status_t status = TODO_PENDING;
+            if (!item_fields(json_array_at(items, j), &content, &status, &blocker, NULL, 0)) {
+                return ESP_ERR_INVALID_ARG;
+            }
             if (!task_add(list, phase, content)) {
                 if (why != NULL) snprintf(why, why_cap, "duplicate content");
                 return ESP_ERR_INVALID_ARG;
+            }
+            int at = task_find(list, content);
+            if (at < 0) return ESP_ERR_INVALID_ARG;
+            todo_task_t *t = &list->tasks[(size_t)at];
+            t->status = status;
+            if (status == TODO_BLOCKED && blocker != NULL) {
+                if (!copy_text(t->blocker, sizeof t->blocker, blocker)) {
+                    return ESP_ERR_INVALID_ARG;
+                }
+                t->has_blocker = t->blocker[0] != '\0';
             }
         }
     }

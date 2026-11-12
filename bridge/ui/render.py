@@ -107,11 +107,12 @@ def todo_lines(result: dict[str, Any]) -> list[str]:
     dependency from a failure.
     """
     phases = [p for p in result.get("phases") or [] if isinstance(p, dict)]
-    tasks = [t for p in phases for t in p.get("tasks") or [] if isinstance(t, dict)]
-    if not tasks:
+    if not phases:
         return ["no todos"]
-
-    width = max(len(sanitize(str(t.get("content") or ""))) for t in tasks)
+    tasks = [t for p in phases for t in p.get("tasks") or [] if isinstance(t, dict)]
+    # A phase with no tasks is legal (`tools/todo.md` §Operations `init`), so the
+    # header is what proves it exists; a taskless tree must still print its phases.
+    width = max((len(sanitize(str(t.get("content") or ""))) for t in tasks), default=0)
     lines: list[str] = []
     for phase in phases:
         name = sanitize(str(phase.get("name") or ""))

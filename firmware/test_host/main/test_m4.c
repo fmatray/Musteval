@@ -315,13 +315,127 @@ TEST_CASE("todo refusal messages are helpful", "[m4]")
         "{\"phase\":\"a\",\"items\":[\"y\"]}]}", why, sizeof why));
     TEST_ASSERT_NOT_NULL(strstr(why, "duplicate phase name"));
 
-    /* nested `list` init: an empty phase is refused, not stored as an empty row. */
+    /* An object item with no `content` names the field, not the shape. */
     why[0] = '\0';
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
-        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[]}]}",
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[{\"status\":\"done\"}]}]}",
         why, sizeof why));
-    TEST_ASSERT_NOT_NULL(strstr(why, "a phase needs items"));
+    TEST_ASSERT_NOT_NULL(strstr(why, "item needs content"));
 
+    /* A misspelt status is refused rather than silently stored as `pending`. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\","
+        "\"items\":[{\"content\":\"x\",\"status\":\"finished\"}]}]}",
+        why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "unknown task status"));
+
+    /* Over-long content inside a nested `list` item is caught in the pre-validation
+     * pass, so a valid first phase is not left applied behind it. */
+    why[0] = '\0';
+    snprintf(call, sizeof call,
+             "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[\"ok\"]},"
+             "{\"phase\":\"b\",\"items\":[\"%s\"]}]}", long_item);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "item is longer than"));
+
+    /* An over-long blocker is refused before the list is cleared. */
+    why[0] = '\0';
+    char long_blocker[AGENT_TODO_BLOCKER_MAX + 2];
+    memset(long_blocker, 'x', sizeof long_blocker - 1);
+    long_blocker[sizeof long_blocker - 1] = '\0';
+    snprintf(call, sizeof call,
+             "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":["
+             "{\"content\":\"x\",\"status\":\"blocked\",\"blocker\":\"%s\"}]}]}",
+             long_blocker);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "blocker is over"));
+}
+/* `tools/todo.md` §Arguments: an empty `items` array is legal, so a phase can be
+ * added before its tasks. */
+TEST_CASE("todo init accepts an empty phase", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"Empty\",\"items\":[]}]}"));
+    TEST_ASSERT_EQUAL_size_t(1, list->phase_count);
+    TEST_ASSERT_EQUAL_STRING("Empty", list->phases[0]);
+    TEST_ASSERT_EQUAL_size_t(0, todo_task_total(list));
+
+    /* The phase survives an `append`. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"append\",\"phase\":\"Empty\",\"items\":[\"first\"]}"));
+    TEST_ASSERT_EQUAL_size_t(1, todo_task_total(list));
+}
+
+/* `tools/todo.md` §Arguments: a string item is `pending`, an object carries its
+ * own state. This is what makes a full-list rewrite non-destructive. */
+TEST_CASE("todo init carries object item state through a rewrite", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+
+    const char *tree =
+        "{\"op\":\"init\",\"list\":["
+        "{\"phase\":\"Ship\",\"items\":["
+        "{\"content\":\"write the driver\",\"status\":\"in_progress\"},"
+        "\"review the driver\","
+        "{\"content\":\"read the sheet\",\"status\":\"completed\"},"
+        "{\"content\":\"flash the board\",\"status\":\"blocked\","
+        "\"blocker\":\"no adapter\"}]}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, tree));
+    TEST_ASSERT_EQUAL_INT(TODO_IN_PROGRESS, status_of(list, "write the driver"));
+    /* "review the driver" is pending; normalization leaves it alone because an
+     * in_progress task already exists. */
+    TEST_ASSERT_EQUAL_INT(TODO_PENDING, status_of(list, "review the driver"));
+    TEST_ASSERT_EQUAL_INT(TODO_COMPLETED, status_of(list, "read the sheet"));
+    TEST_ASSERT_EQUAL_INT(TODO_BLOCKED, status_of(list, "flash the board"));
+
+    /* Check render output carries status and blocker. */
+    json_doc_t *out = json_new_object();
+    TEST_ASSERT_NOT_NULL(out);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_render(list, json_root(out)));
+    static char rendered[1024];
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_emit(out, rendered, sizeof rendered, &used));
+    json_free(out);
+    TEST_ASSERT_NOT_NULL(strstr(rendered, "\"blocker\":\"no adapter\""));
+    TEST_ASSERT_NOT_NULL(strstr(rendered, "\"status\":\"blocked\""));
+    TEST_ASSERT_NOT_NULL(strstr(rendered, "\"status\":\"completed\""));
+
+    /* A second init with the same items but swapped order: statuses follow content. */
+    const char *reorder =
+        "{\"op\":\"init\",\"list\":["
+        "{\"phase\":\"Ship\",\"items\":["
+        "\"review the driver\","
+        "{\"content\":\"write the driver\",\"status\":\"in_progress\"},"
+        "{\"content\":\"read the sheet\",\"status\":\"completed\"},"
+        "{\"content\":\"flash the board\",\"status\":\"blocked\","
+        "\"blocker\":\"no adapter\"}]}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, reorder));
+    TEST_ASSERT_EQUAL_INT(TODO_IN_PROGRESS, status_of(list, "write the driver"));
+    TEST_ASSERT_EQUAL_INT(TODO_PENDING, status_of(list, "review the driver"));
+    TEST_ASSERT_EQUAL_INT(TODO_COMPLETED, status_of(list, "read the sheet"));
+    TEST_ASSERT_EQUAL_INT(TODO_BLOCKED, status_of(list, "flash the board"));
+}
+
+/* A status name outside the five is refused before the list is touched, exactly
+ * as an over-long content is: a bad last entry must not apply the phases before it. */
+TEST_CASE("todo init refuses an unknown status without touching the list", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, "{\"op\":\"init\",\"items\":[\"keep me\"]}"));
+    todo_list_t before = *list;
+
+    char why[96] = "";
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"list\":["
+        "{\"phase\":\"P\",\"items\":[{\"content\":\"ok\",\"status\":\"completed\"}]},"
+        "{\"phase\":\"Q\",\"items\":[{\"content\":\"bad\",\"status\":\"started\"}]}]}",
+        why, sizeof why));
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
     /* nested `list` init: more than eight phases. */
     why[0] = '\0';
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list,
@@ -333,7 +447,6 @@ TEST_CASE("todo refusal messages are helpful", "[m4]")
         why, sizeof why));
     TEST_ASSERT_NOT_NULL(strstr(why, "at most 8 phases"));
 }
-
 /* `view` renders without writing, so a list whose active task was demoted by hand is
  * echoed as it is. */
 TEST_CASE("todo view echoes without normalizing", "[m4]")

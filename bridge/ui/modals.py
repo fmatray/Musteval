@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, TypeVar
 
 from textual.app import ComposeResult
@@ -11,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import (
     Input,
+    OptionList,
     LoadingIndicator,
     Select,
     Static,
@@ -18,13 +20,14 @@ from textual.widgets import (
     TabPane,
     TextArea,
 )
+from textual.widgets.option_list import Option
 from textual.widgets.text_area import Selection
 
 from .. import providers
-from ..commands import CommandError, TODO_EDIT_ACTIONS, todo_edit_frames
+from ..commands import CommandError, todo_edit_tree, todo_init
 from ..protocol import Frame
 from . import onboard
-from .render import sanitize
+from .render import _TODO_MARKS, sanitize
 
 _T = TypeVar("_T")
 
@@ -1063,82 +1066,271 @@ class HelpModal(ModalScreen[None]):
         first = next(iter(self.categories))
         self.query_one("#help-tabs", TabbedContent).active = f"help-tab-{first.lower()}"
 
-class TodoEditPrompt(PromptBox[list[Frame] | None]):
-    """`05` §7 `/todo edit`: add, modify and delete, staged then sent as one plan.
+class TodoEditor(PromptBox[list[Frame] | None]):
+    """`05` §6.2 `/todo edit`: the whole tree, edited in place and sent as one `init`.
 
-    The device has no rename op, so the planner turns a modify into `append` + `rm`
-    (`bridge.commands.todo_edit_frames`). Staging keeps the modal open for several
-    strokes; `Ctrl+S` sends the plan and Esc drops it.
+    The device has no op that moves, renames or inserts at a position, so every
+    verb here rewrites a local copy and `bridge.commands.todo_edit_tree` turns it into a
+    single `init` carrying each task's own status. That is why the editor must hold
+    the real tree, not just its names: a rewrite built from names would reset every
+    status to `pending`.
     """
 
     BINDINGS = [
-        Binding("enter", "stage", "Stage", show=False),
+        Binding("ctrl+e", "modify", "Modify", show=False),
+        Binding("ctrl+n", "add_after", "Add after", show=False),
+        Binding("ctrl+b", "add_before", "Add before", show=False),
+        Binding("ctrl+d", "drop", "Drop", show=False),
+        Binding("ctrl+up", "move_up", "Move up", show=False),
+        Binding("ctrl+down", "move_down", "Move down", show=False),
         Binding("ctrl+s", "send", "Send", show=False),
     ]
-    CSS = _CSS
-    AUTO_FOCUS = "#todo-phase"
+    CSS = _CSS + """
+#todo-tree {
+    height: 1fr;
+    max-height: 14;
+    min-height: 4;
+    border: none;
+}
+"""
+    AUTO_FOCUS = "#todo-tree"
 
-    def __init__(self, phases: list[str] | None = None) -> None:
+    def __init__(self, phases: list[dict[str, Any]] | None = None) -> None:
         super().__init__()
-        #: Phase names from the last `todo.apply` the UI saw; empty until one lands.
-        self.phases = phases or []
-        self._frames: list[Frame] = []
+        #: The working copy. The caller's tree is never touched: this is the only
+        #: thing the editor mutates, and only through `bridge.commands.todo_edit`.
+        self.phases: list[dict[str, Any]] = copy.deepcopy(phases or [])
+        #: What the modal opened with, so `Ctrl+S` on an untouched tree sends nothing.
+        self._opened = copy.deepcopy(self.phases)
+        #: The verb awaiting its value in the input, `(op, phase, task, where)`.
+        self._pending: tuple[str, str, str, str] | None = None
+        #: Set by the first `Ctrl+D`, naming what a second one would drop.
+        self._armed: str | None = None
+        #: `(kind, phase, task)` per rendered row, in the order the rows were added.
+        self._rows: list[tuple[str, str, str]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box"):
             yield Static("todo edit", classes="prompt-title")
-            yield Select(
-                [(action, action) for action in TODO_EDIT_ACTIONS],
-                value=TODO_EDIT_ACTIONS[0],
-                allow_blank=False,
-                id="todo-action",
-            )
-            yield Input(
-                placeholder="phase",
-                suggester=SuggestFromList(self.phases, case_sensitive=False)
-                if self.phases
-                else None,
-                id="todo-phase",
-            )
-            yield Input(placeholder="task (modify, delete)", id="todo-task")
-            yield Input(placeholder="new content (add, modify)", id="todo-content")
-            yield Static(sanitize(self._phase_note()), id="todo-phases",
-                         classes="prompt-hint")
+            yield OptionList(id="todo-tree")
+            yield Input(placeholder="type the new text, then Enter", id="todo-value")
             yield Static("", id="todo-status", markup=False)
-            yield Static("Enter: stage | Ctrl+S: send | Esc: cancel",
-                         classes="prompt-hint")
+            # `.prompt-box` is 60 columns wide (`05` §13.4), so the legend is two
+            # lines: one line would be clipped and drop the send key.
+            yield Static(
+                "Ctrl+E modify | Ctrl+N after | Ctrl+D drop\n"
+                "Ctrl+B before | Ctrl+Up/Down move | Ctrl+S send",
+                id="todo-hint",
+                classes="prompt-hint",
+                markup=False,
+            )
 
-    def _phase_note(self) -> str:
-        if not self.phases:
-            return "no todo observed yet; type the phase"
-        return "phases: " + ", ".join(self.phases)
+    def on_mount(self) -> None:
+        self._rebuild()
+        self._say_hint()
+
+    # -- selection ------------------------------------------------------
+
+    def _selected(self) -> tuple[str, str, str] | None:
+        """`(kind, phase, task)` of the highlighted row, or `None` for an empty tree."""
+        index = self.query_one("#todo-tree", OptionList).highlighted
+        if index is None or not 0 <= index < len(self._rows):
+            return None
+        return self._rows[index]
+
+    def _select(self, pred) -> None:
+        """Highlight the first row matching `pred`, keeping the cursor meaningful
+        after an edit moved or removed the row it was on."""
+        for index, row in enumerate(self._rows):
+            if pred(row):
+                self.query_one("#todo-tree", OptionList).highlighted = index
+                return
+
+    def _rebuild(self, keep: tuple[str, str, str] | None = None) -> None:
+        tree = self.query_one("#todo-tree", OptionList)
+        tree.clear_options()
+        self._rows = []
+        for phase in self.phases:
+            name = str(phase.get("name") or "")
+            self._rows.append(("phase", name, ""))
+            tree.add_option(Option(sanitize(name), id=f"p:{len(self._rows) - 1}"))
+            for task in phase.get("tasks") or []:
+                content = str(task.get("content") or "")
+                status = str(task.get("status") or "pending")
+                mark = _TODO_MARKS.get(status, "[?]")
+                self._rows.append(("task", name, content))
+                tree.add_option(
+                    Option(f"  {mark} {sanitize(content)}", id=f"t:{len(self._rows) - 1}")
+                )
+        if keep is not None:
+            self._select(lambda row: row == keep)
+        elif tree.highlighted is None and self._rows:
+            tree.highlighted = 0
+
+    # -- verbs ----------------------------------------------------------
+
+    def _begin(self, op: str, where: str, seed: str) -> None:
+        selected = self._selected()
+        if selected is None:
+            self._say("select a phase or a task first")
+            return
+        kind, phase, task = selected
+        field = self.query_one("#todo-value", Input)
+        self._armed = None
+        self._pending = (op, phase, task, where)
+        field.value = seed
+        field.focus()
+        self._say_hint()
+
+    def action_modify(self) -> None:
+        selected = self._selected()
+        if selected is None:
+            self._say("select a phase or a task first")
+            return
+        kind, phase, task = selected
+        op = "modify-phase" if kind == "phase" else "modify-task"
+        self._begin(op, "", phase if kind == "phase" else task)
+
+    def action_add_after(self) -> None:
+        self._begin(self._add_op(), "after", "")
+
+    def action_add_before(self) -> None:
+        self._begin(self._add_op(), "before", "")
+
+    def _add_op(self) -> str:
+        """A phase row adds a phase; a task row adds a task to that task's phase."""
+        selected = self._selected()
+        if selected is None:
+            return "add-phase" if not self.phases else "add-task"
+        return "add-phase" if selected[0] == "phase" else "add-task"
+
+    def action_drop(self) -> None:
+        selected = self._selected()
+        if selected is None:
+            self._say("select a phase or a task first")
+            return
+        kind, phase, task = selected
+        target = phase if kind == "phase" else task
+        if self._armed != target:
+            self._armed = target
+            self._say_hint()
+            return
+        self._armed = None
+        self._apply("delete-phase" if kind == "phase" else "delete-task",
+                    phase=phase if kind == "phase" else "", task=task)
+
+    def action_move_up(self) -> None:
+        self._move("up")
+
+    def action_move_down(self) -> None:
+        self._move("down")
+
+    def _move(self, where: str) -> None:
+        selected = self._selected()
+        if selected is None:
+            self._say("select a phase or a task first")
+            return
+        kind, phase, task = selected
+        if kind == "phase":
+            self._apply("move-phase", where=where, phase=phase, keep=("phase", phase, ""))
+            return
+        self._apply("move-task", where=where, task=task, keep=("task", phase, task))
+
+    # -- applying -------------------------------------------------------
+
+    def _apply(self, op: str, *, keep=None, **kwargs) -> bool:
+        """Run one verb against the working tree; a refusal leaves it untouched."""
+        try:
+            # `todo_edit_tree` is the one owner of the rewrite, so the rows on
+            # screen are what the frame will carry, by construction.
+            self.phases = todo_edit_tree(self.phases, op=op, **kwargs)
+        except CommandError as exc:
+            self._say(sanitize(str(exc)))
+            return False
+        self._rebuild(keep)
+        self._say_hint()
+        return True
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
-        self.action_stage()
-
-    def action_stage(self) -> None:
-        chosen = self.query_one("#todo-action", Select).value
-        action = chosen if isinstance(chosen, str) else TODO_EDIT_ACTIONS[0]
-        try:
-            frames = todo_edit_frames(
-                action,
-                phase=self.query_one("#todo-phase", Input).value,
-                task=self.query_one("#todo-task", Input).value,
-                new=self.query_one("#todo-content", Input).value,
-            )
-        except CommandError as exc:
-            self.query_one("#todo-status", Static).update(sanitize(str(exc)))
+        if self._pending is None:
             return
-        self._frames.extend(frames)
-        self.query_one("#todo-task", Input).value = ""
-        self.query_one("#todo-content", Input).value = ""
-        self.query_one("#todo-status", Static).update(
-            f"staged {len(self._frames)} frame(s)"
-        )
+        op, phase, task, where = self._pending
+        value = self.query_one("#todo-value", Input).value.strip()
+        if op == "modify-phase":
+            args = {"phase": phase, "value": value}
+            keep = ("phase", value, "")
+        elif op == "modify-task":
+            args = {"task": task, "value": value}
+            keep = ("task", phase, value)
+        elif op == "add-phase":
+            args = {"phase": phase, "value": value, "where": where}
+            keep = ("phase", value, "")
+        else:
+            # The anchor is the row the verb began on: a task row inserts beside
+            # it, a phase row appends to that phase.
+            args = {"phase": phase, "task": task, "value": value, "where": where}
+            keep = ("task", phase, value)
+        # A refusal leaves its message on screen: this is the only path that does
+        # not re-render the hint, and the reader needs the bound it names.
+        if self._apply(op, keep=keep, **args):
+            self._say_hint()
+        self._pending = None
+        self.query_one("#todo-value", Input).value = ""
+        self.query_one("#todo-tree", OptionList).focus()
+
+    def action_cancel(self) -> None:
+        # Esc unwinds one step at a time, then leaves: a modal that quits on the
+        # first Esc while a verb is open would throw the edit away by accident.
+        if self._pending is not None:
+            self._pending = None
+            self._armed = None
+            field = self.query_one("#todo-value", Input)
+            field.value = ""
+            self.query_one("#todo-tree", OptionList).focus()
+            self._say_hint()
+            return
+        if self._armed is not None:
+            self._armed = None
+            self._say_hint()
+            return
+        self.dismiss(None)
 
     def action_send(self) -> None:
-        if not self._frames:
-            self.query_one("#todo-status", Static).update("nothing staged")
+        if self._pending is not None:
+            self._say("finish the pending edit first, or Esc to drop it")
             return
-        self.dismiss(self._frames)
+        if self.phases == self._opened:
+            self._say("nothing to send; the tree is unchanged")
+            return
+        self.dismiss(todo_init(self.phases))
+
+    # -- lines ----------------------------------------------------------
+
+    def _say(self, text: str) -> None:
+        self.query_one("#todo-status", Static).update(text)
+
+    def _count(self, phase: str) -> int:
+        for entry in self.phases:
+            if str(entry.get("name") or "") == phase:
+                return len(entry.get("tasks") or [])
+        return 0
+
+    def _say_hint(self) -> None:
+        if self._armed is not None:
+            kind, phase, task = self._selected() or ("task", "", self._armed)
+            if kind == "phase":
+                count = self._count(self._armed)
+                self._say(
+                    f"Ctrl+D again drops phase {sanitize(self._armed)} "
+                    f"and its {count} task(s)"
+                )
+            else:
+                self._say(f"Ctrl+D again drops {sanitize(self._armed)}")
+            return
+        if self._pending is not None:
+            self._say(f"{self._pending[0]}: Enter applies, Esc steps back")
+            return
+        # Nothing transient to report: the legend lives in `#todo-hint`, so this
+        # line clears rather than restating it.
+        self._say("")

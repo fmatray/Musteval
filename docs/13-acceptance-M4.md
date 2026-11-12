@@ -391,7 +391,7 @@ need no provider. Recover from safe mode first if the board is in it.
       Every refusal names what is wrong rather than the old generic `todo refused`:
       `append needs a phase`, `append needs items`, `start needs a task`, `duplicate
       content`, `item is longer than 120 characters`, `phase is longer than 40
-      characters`, `at most 8 phases`, `a phase needs items`, `duplicate phase name`.
+      characters`, `at most 8 phases`, `duplicate phase name`, `unknown task status`.
       The command is the `todo` tool's own apply path, so `/todo done 3` and the
       model's `{"op":"done","task":"3"}` are one code path — asserted by
       construction, not by comparison.

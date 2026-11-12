@@ -199,7 +199,7 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "unblock": "clear a blocker",
         "rm": "remove a task",
         "append": "add items to a phase, creating it",
-        "edit": "open a modal to add, modify or delete",
+        "edit": "open the tree editor: modify, add, drop, reorder",
     },
 }
 
