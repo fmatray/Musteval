@@ -77,10 +77,15 @@ path. Pure prefix substitution, no filesystem access:
   no trailing slash: `esp_vfs_register` rejects one (`is_path_prefix_valid`), while
   the agent-path prefixes need it, so `store.h` derives `STORE_ROOT_*` from
   `STORE_VFS_*`.
-- `store_read_text(agent_path, buf, cap, len, total, truncated)`: read partial
-  text under `/workspace/`; UTF-8 validated, invalid sequences return `E_STORAGE`.
-  `total` is the file's whole length, which is what `04` §4.18 reports as `bytes`
-  even when the cap stopped the read short.
+- `store_read_text(agent_path, offset, buf, cap, len, total, truncated)`: read
+  a window of text under `/workspace/` starting at byte `offset`; UTF-8 validated,
+  invalid sequences return `E_STORAGE`. `offset` past the end of the file is
+  `E_STORAGE`, and a window that begins inside a codepoint skips its continuation
+  bytes, so a caller paging by `bytes` never splits one and never has to align
+  anything itself. `total` is the file's whole length, which is what `04` §4.18
+  reports as `bytes` even when the cap stopped the read short; `truncated` is
+  `offset + len < total`. Paging exists so `fs.read` can reach past its 2048-byte
+  window in a `/workspace/` that admits 64 KiB files.
 - `store_resolve_sandbox_path(in, out, out_len)`: the listing admission. Same
   canonicalisation as `store_resolve_write_path`, except that `/workspace` itself
   is admitted, because `04` §4.17 defaults `sandbox.list` to it. It exists so a
@@ -245,14 +250,33 @@ time, and as a platform service it needs no port.
   provider chain. Returns `E_LLM_UNAVAILABLE` on a transport or provider failure,
   which triggers provider failover; returns `E_LLM_RATE` when the budget check
   refuses first, which does **not** trigger failover — a different provider would
-  spend the same budget. `provider` receives the index that answered, or -1.
-- `llm_budget_charge()`: Called once per request *attempt*, before the socket is
-  opened. Refuses with `E_LLM_RATE` when either fixed UTC window
+  spend the same budget; returns `ESP_ERR_NOT_FINISHED` when `llm_abort()` cancelled
+  the call, which also stops the chain. `provider` receives the index that answered,
+  or -1.
+- `llm_budget_charge()`: Called once per request *attempt that opens a socket*,
+  before the exchange. A provider skipped for a cheap pre-check — no resolved
+  `api_key`, a `base_url` too long for the endpoint buffer, a body that does not fit
+  — is not an attempt and is not counted, so misconfiguration cannot consume the
+  day's calls. Refuses with `E_LLM_RATE` when either fixed UTC window
   (`llm.max_calls_per_hour`, `llm.max_calls_per_day`) is exhausted, so a fallback
   chain cannot multiply the spend. A refused call is not counted. Each window is
   stored as a counter plus its bucket index (`unix / 3600`, `unix / 86400`); a
   bucket mismatch resets the counter instead of trusting a stale value
   (`03-config.md` §`llm`).
+- `llm_retry_after(err, status, retry_after_s, attempt, &wait_ms)`: Whether a failed
+  attempt is repeated against the same provider, and the wait before it. Only a
+  transient failure retries: a transport error, or 408/429/5xx. A 400, 401, 403 or
+  404 is per-entry configuration and repeating it spends budget to learn nothing.
+  The provider's `Retry-After` is honoured in integer-seconds form and clamped to
+  `LLM_RETRY_MAX_MS`; the HTTP-date form is ignored in favour of
+  `LLM_RETRY_BASE_MS`. At most `LLM_RETRY_ATTEMPTS` (one) extra attempt per
+  provider, so a chain of N costs at most 2N requests. Each retry is another socket,
+  so it is charged. Pure and host-tested in `llm_body.c`.
+- `llm_abort()`: Cancels the request `llm_query` is blocked in, if any, so a `cancel`
+  frame reaches a call already on the wire instead of waiting out `timeout_ms`.
+  `agent_cancel()` calls it. An aborted call makes `llm_query` return
+  `ESP_ERR_NOT_FINISHED`, which the loop reports as `E_CANCELLED` — not as a
+  provider failure, and never as a reason to try the next provider.
 - `llm_budget_counters(hour, day)`: Reads the counters for `status`
   (`04-protocol.md` §3.9). Counters live in NVS and survive reboot.
 - `llm_assemble_prompt(&request, extra_body_json, out, cap)`: Merge system prompt,
@@ -344,7 +368,7 @@ Tool definitions are assembled at run start; the assembly rules and the
 per-tool schemas are in §7.1 and `docs/tools/`.
 
 **Capacity.** The assembled body — system prompt, tool array and history — must fit
-one fixed buffer. The tool array alone is about 5 KiB for the frozen 25-tool
+one fixed buffer. The tool array alone is about 5 KiB for the frozen 26-tool
 registry and the system prompt may be up to 8 KiB, so the body buffer is 16 KiB
 (`NET_BODY_MAX`, the largest reply the transport holds). The history has its own
 smaller cap, because a history allowed to fill the body would leave no room for the
@@ -352,16 +376,33 @@ tools and fail every later request. When the assembler still refuses, the run is
 `E_LLM_UNAVAILABLE` and the loop drops history until the body fits, rather than
 retrying a body that can never be built.
 
+The tool array is the budget that fails first, not the history. `TOOLS_MAX_TOTAL` is
+64, so the M5 surface — MCP servers plus declarative tools — can push the array past
+the 8 KiB the system prompt already leaves, at which point no amount of history
+dropping reclaims a body that cannot be assembled. Whatever adds tools at M5 must
+also add the rule that sends a subset (`07-roadmap.md` M5).
+
 ### `agent` — Core Loop
-- `agent_run_sync(user_input)`: The core serialized loop. Handles tool rounds
-  and history updates. Returns `E_BUSY` if a run is already in flight.
-- `agent_handle_tool_call(tool_name, args_json)`: Dispatch to built-in,
-  declarative, or MCP tools.
-- `agent_todo_phases()`: Returns the live todo phase/task tree. The list is heap
-  state owned by this module, not by the `tools` module, so it outlives a tool call
-  and survives across runs until `reload` or reboot. `tools/todo.md` is its only
-  consumer and the canonical description of the shape. The loop reads it for the
-  close-out check described in §4.1 step 5.
+- `agent_submit(text, len, reply_to, source)`: Queue one prompt for the loop. The
+  text is **copied** into the module's own buffer; the caller's pointer is not
+  retained (the link task's stack is 4 KiB and a borrowed 8 KiB prompt on it was a
+  stack overflow). Returns `E_BUSY` when the queue (`AGENT_MAX_QUEUE`, two deep) is
+  full — `04-protocol.md` §3.15. `source` records which trigger started the run, for
+  `status`.
+- `agent_cancel()`: Set the run's cancel flag and abort any request already on the
+  wire (`llm_abort()`). A `cancel` frame therefore ends a run that is inside
+  `esp_http_client_perform` instead of waiting out the provider's `timeout_ms`; when
+  no request is in flight it takes effect at the next round boundary.
+- `agent_status()`, `agent_start()`, `agent_todo_phases()`, `agent_todo_reset()`.
+  `agent_todo_phases()` returns the live todo phase/task tree. The list is state
+  owned by this module, not by the `tools` module, so it outlives a tool call and
+  survives across runs until `reload` or reboot. `tools/todo.md` is its only consumer
+  and the canonical description of the shape. The loop reads it for the close-out
+  check described in §4.1 step 5.
+
+The loop is entered only through `agent_submit`; there is no synchronous entry and
+no per-call tool entry point. Dispatch to built-in, declarative or MCP tools is
+`tools_call`, called from inside the loop's tool step.
 
 ### `skills`
 - `skills_build_index()`: Assembles the skill index at boot and on `reload` from
@@ -654,6 +695,23 @@ The agent process is **serialized**. Only one run is active at a time.
    must not reach the next run. A completed run keeps its question and its answer,
    which is what makes the buffer a conversation rather than a transcript of one
    request.
+
+   **The run's question is pinned.** `agent_history_append` trims oldest-first at
+   `llm.max_history_messages`, and one tool round can add five messages, so from the
+   second round on the question would be evicted by the rounds it is paying for —
+   leaving every later request a conversation whose premise it cannot see. While a
+   run is active the append pins message 0, so the bound applies to the messages
+   after it; the append is refused rather than allowed to drop the question.
+
+   **A reply cut by the output cap is handled, not assumed complete.** The provider's
+   `choices[0].finish_reason` is read on every reply. `length` means `content` is a
+   prefix of what the model was writing, and it reaches `agent.final` as
+   `truncated: true` with no `full_bytes` (`04-protocol.md` §3.14) — a sentence that
+   stops mid-word is never presented as a finished answer. `length` also explains a
+   tool call whose `arguments` is not valid JSON: the call is kept with
+   `args_truncated` set instead of failing the parse, and step 4 answers it with an
+   `E_TOOL` result naming the cause, so the run retries the call smaller rather than
+   dying. A malformed call under any other finish reason is still a provider fault.
 5. **Close-out check**: Before finalizing, inspect the todo tree via
    `agent_todo_phases()` and the rounds used. The check fails in two cases:
 
@@ -682,9 +740,13 @@ The agent process is **serialized**. Only one run is active at a time.
 | Failure | Response | Code |
 |---|---|---|
 | WiFi Lost | `net` attempts reconnect from the disconnect event; `agent` returns error | `E_WIFI` |
-| LLM Down | Try fallback providers; if all fail → error | `E_LLM_UNAVAILABLE` |
+| LLM Down | Try the next fallback provider; a transient failure against the current one is retried once first (`llm_retry_after`). If all fail → error | `E_LLM_UNAVAILABLE` |
 | LLM call cap reached | No provider is tried; the call is never sent, so the daily budget cannot be exceeded by a fallback chain | `E_LLM_RATE` |
 | Provider 400 (bad model, wrong `token_param`, rejected `extra_body`) | Not retried in place: the next provider is tried, since a 400 is per-entry config, not a transient fault | `E_LLM_UNAVAILABLE` after the chain is exhausted |
+| Provider 408/429/5xx | Retried once against the same provider after `Retry-After` (clamped to `LLM_RETRY_MAX_MS`), then the chain advances | `E_LLM_UNAVAILABLE` after the chain is exhausted |
+| Run cancelled by `cancel` | `llm_abort()` cancels the in-flight request; the turns the run added are dropped and the run ends | `E_CANCELLED` |
+| Tool call arguments truncated by the output cap | The call is answered with an `E_TOOL` result naming the cause and the run continues; the assistant turn never references an unanswered `tool_call_id` | `E_TOOL` result |
+| Tool result too large to render into its 4096-byte slot | Answered with an `E_TOOL` result naming the cause; a `role:"tool"` message always carries `content` | `E_TOOL` result |
 | MCP Timeout | Terminate specific tool call; return error to LLM | `E_MCP` / `E_TIMEOUT` |
 | Tool Crash | Isolate tool; return `E_TOOL` to LLM | `E_TOOL` |
 | Buffer Full | Truncate oldest history entry in PSRAM | — |

@@ -114,6 +114,24 @@ def test_an_example_with_an_unknown_type_is_rejected():
         decode_line(bad)
 
 
+def test_no_field_table_restates_an_envelope_member():
+    """`04` §3: "Field tables list message-specific members only; `v`, `type`, `id`,
+    `ts` and `reply_to` are governed by §2." A row for one of them invites an
+    implementation that writes it into the body as well, and a duplicate key at the
+    same JSON level is silently resolved by whichever value the parser keeps last."""
+    text = _read("04-protocol.md")
+    catalog = text[text.index("## 3. Message catalog"):]
+    envelope = {"v", "type", "id", "ts", "reply_to"}
+    offenders = []
+    for match in re.finditer(
+        r"^### 3\.\d+ (.*?)\n(.*?)(?=^### 3\.|^## )", catalog, re.M | re.S
+    ):
+        for row in _table_rows(match.group(2)):
+            if row and row[0].strip("`") in envelope:
+                offenders.append(f"§{match.group(1)}: {row[0]}")
+    assert not offenders, f"envelope members listed as body fields: {offenders}"
+
+
 def test_encode_round_trips_every_catalog_type():
     for kind in DEVICE_TO_BRIDGE:
         frame = decode_line(encode(Frame(type=kind, id="d-1", ts=0, body={})))

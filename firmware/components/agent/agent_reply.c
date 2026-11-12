@@ -79,6 +79,12 @@ esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
         out->content_len = n;
     }
 
+    /* `finish_reason` tells the loop whether `content` is a prefix and whether a cut
+     * `arguments` string is the output cap rather than a provider fault. A reason
+     * longer than the field is left empty: nothing branches on it. */
+    copy_bounded(out->finish_reason, sizeof out->finish_reason,
+                 json_string(json_get(first, "finish_reason")));
+
     const json_node_t *calls = json_get(message, "tool_calls");
     for (size_t i = 0; i < json_array_len(calls); i++) {
         if (out->call_count >= AGENT_MAX_TOOL_CALLS) {
@@ -104,8 +110,17 @@ esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
         const json_node_t *args = json_get(fn, "arguments");
         if (args != NULL) {
             if (!copy_arguments(slot->args, sizeof slot->args, args)) {
-                json_free(doc);
-                return ESP_ERR_INVALID_ARG;
+                /* The output limit cut the arguments: keep the call, empty, so the
+                 * loop answers its `tool_call_id` with the named error. Dropping it
+                 * would leave the assistant turn referencing a call that never gets
+                 * a result, which providers reject for the rest of the run. */
+                if (strcmp(out->finish_reason, AGENT_FINISH_LENGTH) == 0) {
+                    slot->args[0] = '\0';
+                    slot->args_truncated = true;
+                } else {
+                    json_free(doc);
+                    return ESP_ERR_INVALID_ARG;
+                }
             }
         } else {
             memcpy(slot->args, "{}", 3);

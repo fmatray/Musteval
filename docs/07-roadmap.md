@@ -98,7 +98,20 @@ Goal: implement the serialized agent run and the tool execution engine.
    re-prompted once per remaining round, and a one-round question is never blocked.
  - Close-out exhaustion: with `llm.max_tool_rounds` reached, the run finalizes anyway
    and `agent.final` reports `todo_open: true`; the run never hangs.
- - Control: `cancel` command interrupts current run → `E_CANCELLED`.
+ - Truncated reply: a provider reply with `finish_reason: "length"` reaches
+   `agent.final` with `truncated: true` and no `full_bytes`, so a reply cut at
+   `max_output_tokens` is never reported as complete; a tool call whose `arguments`
+   the cap cut is answered with an `E_TOOL` result and the run continues rather than
+   failing.
+ - Question retention: a run of two or more tool rounds still sends its own question
+   to the provider in its last round; the history bound drops older turns, never the
+   question the run is answering.
+ - Retry: a single-provider chain that answers 503 is retried once before the run
+   reports `E_LLM_UNAVAILABLE`, and a 400 is not retried at all; both attempts are
+   counted against `llm.max_calls_per_hour`.
+ - Control: `cancel` command interrupts current run → `E_CANCELLED`, including while
+   the run is inside a provider request: the in-flight exchange is aborted, so the
+   frame arrives without waiting out `llm.providers[].timeout_ms`.
  - Import: `fs.put` in 2 KiB chunks writes `/skills/<n>.md`, and after `reload` the
    skill appears; the same upload to a path shipped in the image returns `E_CONFIG`
    and the built-in is unchanged; an interrupted upload leaves the prior file

@@ -92,8 +92,9 @@ static bool message_has_role(const char *p, const char *role)
     return strncmp(key, role, len) == 0 && key[len] == '"';
 }
 
-esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages)
-{
+esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages,
+                             bool pin_head)
+ {
     if (history == NULL || used == NULL) return ESP_ERR_INVALID_ARG;
     if (max_messages < 0) max_messages = 0;
 
@@ -104,6 +105,12 @@ esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages)
     }
 
     size_t skip = count - (size_t)max_messages;
+    if (pin_head && max_messages > 0) {
+        /* Reserve one slot for the run's question (index 0). The kept suffix
+         * therefore has one fewer slot than the bound. */
+        skip = count - ((size_t)max_messages - 1);
+        if (skip < 1) skip = 1;
+    }
     const char *p = first_message(history);
     if (p == NULL) return ESP_ERR_INVALID_ARG;
 
@@ -133,13 +140,15 @@ esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages)
      * because the count exceeded the bound. */
     size_t at = 0;
     history[at++] = '[';
-    size_t index = 0;
+    size_t index_copy = 0;
     bool first = true;
     for (;;) {
         if (*p == ']' || *p == '\0') break;
         size_t n = value_end(p);
         if (n == 0) return ESP_ERR_INVALID_ARG;
-        if (index++ < skip) {
+        bool keep = index_copy >= skip || (pin_head && max_messages > 0 && index_copy == 0);
+        index_copy++;
+        if (!keep) {
             p += n;
             while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') {
                 p++;
@@ -211,7 +220,8 @@ esp_err_t agent_history_truncate(char *history, size_t *used, uint32_t keep)
 }
 
 esp_err_t agent_history_append(char *history, size_t cap, size_t *used,
-                               const char *message_json, int32_t max_messages)
+                               const char *message_json, int32_t max_messages,
+                               bool pin_head)
 {
     if (history == NULL || used == NULL || message_json == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -248,8 +258,7 @@ esp_err_t agent_history_append(char *history, size_t cap, size_t *used,
         if (count == 0 || have + msg_len + 3 <= cap) break;
         /* Drop one message by re-trimming to `count - 1`. The trim honours
          * call/result pairing and may drop more than one, which only helps. */
-        if (agent_history_trim(history, &have, (int32_t)(count - 1)) != ESP_OK) {
-            return ESP_ERR_INVALID_SIZE;
+        if (agent_history_trim(history, &have, (int32_t)(count - 1), pin_head) != ESP_OK) {
         }
         *used = have;
         /* Trimming is monotone, so an unchanged count means it cannot free a byte and
@@ -282,7 +291,7 @@ esp_err_t agent_history_append(char *history, size_t cap, size_t *used,
     /* Trim here rather than at the caller, so a history can never exceed the bound
      * even if a caller forgets to ask. */
     if (agent_history_count(history) > (size_t)max_messages) {
-        return agent_history_trim(history, used, max_messages);
+        return agent_history_trim(history, used, max_messages, pin_head);
     }
     return ESP_OK;
 }

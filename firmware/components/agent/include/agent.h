@@ -120,13 +120,25 @@ bool agent_todo_open_flag(closeout_verdict_t verdict, bool budget_spent);
  * `max_messages` is `llm.max_history_messages`. When appending would exceed it, the
  * oldest message is dropped first (`02-firmware.md` §4.2 "Buffer Full"). A value of
  * 0 keeps no history at all. Returns the new length, or 0 when the message does not
- * fit `cap`; a message that does not fit is dropped rather than written half. */
+ * fit `cap`; a message that does not fit is dropped rather than written half.
+ *
+ * `pin_head` is forwarded to every trim this call performs. The loop passes true
+ * while it is answering a question, so the question cannot be evicted by the rounds
+ * it is paying for; the append is refused instead when the buffer cannot hold it. */
 esp_err_t agent_history_append(char *history, size_t cap, size_t *used,
-                               const char *message_json, int32_t max_messages);
+                               const char *message_json, int32_t max_messages,
+                               bool pin_head);
 
 /* Drop the oldest messages until at most `max_messages` remain. Pure; `history` is
- * a JSON array of objects. */
-esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages);
+ * a JSON array of objects.
+ *
+ * `pin_head` keeps message 0 out of the drop set: while a run is answering it, the
+ * question is the only message whose loss makes every later round incoherent
+ * (`02-firmware.md` §4.1). The total stays at most `max_messages`, so a pinned head
+ * leaves `max_messages - 1` movable slots; with nothing but the head left the call is
+ * a no-op. */
+esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages,
+                             bool pin_head);
 
 /* How many messages the array holds. Pure. */
 size_t agent_history_count(const char *history);
@@ -138,11 +150,18 @@ esp_err_t agent_history_truncate(char *history, size_t *used, uint32_t keep);
 /* --- Provider reply (`llm_assemble_prompt`'s inverse) ---------------------- */
 
 /* One tool call the model asked for, with its arguments left as the provider's own
- * JSON text: `tools` validates them, so this layer never re-parses. */
+ * JSON text: `tools` validates them, so this layer never re-parses.
+ *
+ * `args_truncated` marks a call whose `arguments` string was cut by the provider's
+ * output limit: the call is kept, with `args` empty, so the loop can answer it with
+ * a `tool` message naming the cause. Dropping it instead would leave the assistant
+ * turn referencing a `tool_call_id` that never gets a result, which providers reject
+ * for the rest of the run. */
 typedef struct {
     char id[64];
     char name[65];
     char args[2048];
+    bool args_truncated;
 } agent_tool_call_t;
 
 #define AGENT_MAX_TOOL_CALLS 4
@@ -154,7 +173,16 @@ typedef struct {
     size_t call_count;
     int32_t prompt_tokens;
     int32_t completion_tokens;
+    /* `choices[0].finish_reason` (`02-firmware.md` §4.1). `AGENT_FINISH_LENGTH` means
+     * the provider stopped at the output token cap, so `content` is a prefix and any
+     * tool call it cut is incomplete. Empty when the provider sent no reason. */
+    char finish_reason[24];
 } agent_reply_t;
+
+/* The `finish_reason` that means "output cap reached". Frozen because the loop
+ * branches on it: a value read differently here and in the doc turns a truncated
+ * reply into a finished one. */
+#define AGENT_FINISH_LENGTH "length"
 
 /* Parse one provider response body into `out`. Accepts the `choices[0].message`
  * shape every provider in `03-config.md` §Provider compatibility returns.

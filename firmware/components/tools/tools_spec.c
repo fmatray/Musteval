@@ -17,7 +17,7 @@
 #define S_I2C_WRITE      "{\"type\":\"object\",\"properties\":{\"addr\":{\"type\":\"integer\"},\"hex\":{\"type\":\"string\"}},\"required\":[\"addr\",\"hex\"]}"
 #define S_TIME_NOW       "{\"type\":\"object\",\"properties\":{}}"
 #define S_FS_LIST        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"
-#define S_FS_READ        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"
+#define S_FS_READ "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
 #define S_FS_WRITE       "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}"
 #define S_FS_DELETE      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"recursive\":{\"type\":\"boolean\"}},\"required\":[\"path\"]}"
 #define S_HTTP_GET       "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"},\"headers\":{\"type\":\"object\"}},\"required\":[\"url\"]}"

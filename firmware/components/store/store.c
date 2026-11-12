@@ -145,36 +145,59 @@ esp_err_t store_list_image_dir(const char *agent_path, store_entry_t *out, size_
     return list_canonical(vfs, out, cap, count);
 }
 
-esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap, size_t *len,
-                          size_t *total, bool *truncated)
-{
-    if (agent_path == NULL || buf == NULL || len == NULL || total == NULL || truncated == NULL) return ESP_ERR_INVALID_ARG;
+esp_err_t store_read_text(const char *agent_path, size_t offset, char *buf, size_t cap,
+                          size_t *len, size_t *total, bool *truncated)
+ {
+    if (agent_path == NULL || buf == NULL || len == NULL || total == NULL || truncated == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     char vfs[STORE_PATH_MAX];
-    /* Reading is not a write, so the workspace confinement does not apply: the agent
-     * may read its own skills, prompts and the declarative tool files (`06` §6.1).
-     * The model's `/config.json` carve-out is the `fs.read` tool's, not this
-     * reader's. */
     esp_err_t err = image_vfs(agent_path, vfs, sizeof vfs);
     if (err != ESP_OK) return err;
-    
+
     struct stat st;
     if (stat(vfs, &st) != 0) return ESP_ERR_NOT_FOUND;
     if (S_ISDIR(st.st_mode)) return ESP_ERR_INVALID_ARG;
 
+    size_t total_bytes = (size_t)st.st_size;
+    *total = total_bytes;
+
+    /* `store.h`: an offset past the end is a caller error, not a silent clamp —
+     * clamping would make a page loop that overshoots look like a successful read of
+     * the last byte, forever. An offset exactly at the end is the empty tail. */
+    if (offset > total_bytes) return ESP_ERR_INVALID_SIZE;
+
     FILE *f = fopen(vfs, "rb");
     if (f == NULL) return ESP_FAIL;
+
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    /* A window that begins inside a codepoint skips its continuation bytes rather
+     * than refusing: `fs.read` pages by the returned length, and one bad boundary
+     * must not strand the rest of the file. */
+    while (offset < total_bytes) {
+        int lead = fgetc(f);
+        if (lead == EOF) break;
+        if (((unsigned char)lead & 0xC0) != 0x80) {
+            ungetc(lead, f);
+            break;
+        }
+        offset++;
+    }
+
     size_t read_n = fread(buf, 1, cap, f);
-    *len = read_n;
-    *total = (size_t)st.st_size;
-    *truncated = store_read_truncated(read_n, cap, (size_t)st.st_size);
     fclose(f);
 
     /* The text is cut at `cap`, so an incomplete trailing sequence is a truncation,
      * but bytes that are not UTF-8 at all are a refusal (§4.18). */
     size_t valid = store_utf8_prefix((const uint8_t *)buf, read_n);
     if (valid == 0 && read_n > 0) return ESP_ERR_INVALID_SIZE;
+
     *len = valid;
-    if (valid < read_n) *truncated = true;
+    *truncated = (valid < read_n) || (valid + offset < total_bytes);
     return ESP_OK;
 }
 

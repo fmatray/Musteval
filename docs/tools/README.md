@@ -4,10 +4,14 @@ This directory documents the tool surface available to the Musteval LLM.
 Tools are called via the `agent.tool` frame and return values via the `agent.tool_result`
 frame (`../04-protocol.md` §3.12 and §3.13).
 
-Declarative HTTP tool results are capped at 4 KiB before returning to the model; the
-rest is dropped and a `truncated: true` note is appended (`../03-config.md` §tools,
-step 4, where the cap carries an `[ASSUMPTION]` marker). Other tools are bounded per
-domain, documented in each file; no single cap applies to all of them.
+Every tool result that reaches the model is bounded at 4 KiB, `TOOLS_RESULT_MAX`. A
+built-in that can return more cuts it at a character boundary and says so in its own
+shape — `fs.read` and `http.get` both report `truncated: true` with `bytes` set to
+the source's real length (`filesystem.md`, `web.md`). A result that somehow arrives
+larger than the cap after rendering is answered with an `E_TOOL` result, never with a
+`role:"tool"` message missing its `content`. Declarative tools project with
+`http.response_path` rather than relying on the cut (`../03-config.md` §tools,
+step 4, where the cap carries an `[ASSUMPTION]` marker).
 
 The authoritative capability matrix for tool gating is found in `../06-security.md` §6,
 with workspace confinement detailed in §6.1.

@@ -1511,6 +1511,16 @@ class BridgeApp(App):
         self._refresh_bar()
         self._todo_open = bool(frame.body.get("todo_open"))
         self._chat().write(str(frame.body.get("text", "")), kind="assistant")
+        if frame.body.get("truncated"):
+            # `05-bridge.md` §5: a reply cut at the provider's token cap stops
+            # mid-sentence. Rendered as-is it reads as a finished answer.
+            full = frame.body.get("full_bytes")
+            detail = (
+                f"{len(str(frame.body.get('text', '')))} of {full} bytes"
+                if full
+                else "the provider stopped at its output token limit"
+            )
+            self._chat().write(f"answer truncated: {detail}", kind="warn")
 
     def _on_agent_error(self, frame: Frame) -> None:
         self._chat().write(f"{frame.body.get('code')}: {frame.body.get('message')}", kind="error")

@@ -9,9 +9,12 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "cfg.h"
 #include "clock.h"
+#include "net_internal.h"
 #include "store.h"
 
 static const char *TAG = "llm";
@@ -165,16 +168,6 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
     while (llm_provider_loop_ok(index, (int)s_provider_count)) {
         llm_provider_t *p = &s_providers[index];
 
-        /* Charged before the socket, once per attempt, across the whole chain
-         * (`02-firmware.md` §llm). A refusal stops here: another provider would spend
-         * the same budget. */
-        if (!llm_budget_charge(&s_budget, s_max_hour, s_max_day, clock_now())) {
-            budget_persist();
-            snprintf(s_last_error, sizeof s_last_error, "call budget exhausted");
-            return ESP_ERR_INVALID_STATE;
-        }
-        budget_persist();
-
         if (p->api_key[0] == '\0') {
             snprintf(s_last_error, sizeof s_last_error, "%s: api key not set", p->id);
             ESP_LOGW(TAG, "llm: %s", s_last_error);
@@ -203,45 +196,74 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
         }
         snprintf(s_auth, sizeof s_auth, "Bearer %s", p->api_key);
 
-        net_response_t resp;
-        esp_err_t err = net_post(s_endpoint, "application/json", s_auth, s_body,
-                                 strlen(s_body), p->timeout_ms, &resp);
-        if (err != ESP_OK) {
-            snprintf(s_last_error, sizeof s_last_error, "%s: %s", p->id,
-                     esp_err_to_name(err));
-            ESP_LOGW(TAG, "llm: %s", s_last_error);
-            index = llm_next_provider(index, (int)s_provider_count);
-            continue;
+        /* One bounded retry against the same provider. The three cheap pre-checks
+         * above are outside the loop, so they never spend budget twice. */
+        for (int retry = 0;; retry++) {
+            /* Charged per attempt that opens a socket, across the whole chain
+             * (`02-firmware.md` §llm). A refusal stops here: another provider would
+             * spend the same budget. */
+            if (!llm_budget_charge(&s_budget, s_max_hour, s_max_day, clock_now())) {
+                budget_persist();
+                snprintf(s_last_error, sizeof s_last_error, "call budget exhausted");
+                return ESP_ERR_INVALID_STATE;
+            }
+            budget_persist();
+
+            net_response_t resp;
+            esp_err_t err = net_post(s_endpoint, "application/json", s_auth, s_body,
+                                     strlen(s_body), p->timeout_ms, &resp);
+
+            /* Nobody is waiting for this answer any more: not a provider failure, so
+             * neither retried nor failed over. `run_once` reports it as `E_CANCELLED`
+             * through this value. */
+            if (err == ESP_ERR_NOT_FINISHED) {
+                snprintf(s_last_error, sizeof s_last_error, "%s: cancelled", p->id);
+                s_available = false;
+                return ESP_ERR_NOT_FINISHED;
+            }
+
+            bool retryable;
+            int32_t wait_ms = 0;
+
+            if (err != ESP_OK) {
+                snprintf(s_last_error, sizeof s_last_error, "%s: %s", p->id,
+                         esp_err_to_name(err));
+                ESP_LOGW(TAG, "llm: %s", s_last_error);
+                retryable = llm_retry_after(err, 0, -1, retry, &wait_ms);
+            } else if (resp.status >= 200 && resp.status < 300) {
+                size_t copy = resp.body_len < response_cap - 1 ? resp.body_len
+                                                              : response_cap - 1;
+                memcpy(response_buf, resp.body, copy);
+                response_buf[copy] = '\0';
+                free(resp.body);
+                if (provider_out != NULL) *provider_out = index;
+                s_available = true;
+                snprintf(s_answered_id, sizeof s_answered_id, "%s", p->id);
+                snprintf(s_answered_model, sizeof s_answered_model, "%s", p->model);
+                return ESP_OK;
+            } else {
+                /* The provider's own words are the only thing that names the offending
+                 * member: a 400 saying `model` points at the model dropdown, one saying
+                 * `reasoning_effort` at the thinking level. Clipped and flattened to
+                 * one line so it survives a JSON string in `agent.error`
+                 * unescaped-looking and readable in a log. */
+                llm_copy_error_detail(resp.body, resp.body_len, p->id, resp.status,
+                                      s_last_error, sizeof s_last_error);
+                /* A provider that echoes the request back prints the key into the
+                 * reader's scrollback; `06-security.md` §7 forbids that reaching
+                 * `agent.error`. */
+                llm_redact(s_last_error, p->api_key);
+                ESP_LOGW(TAG, "llm: %s", s_last_error);
+                retryable = llm_retry_after(ESP_OK, resp.status, resp.retry_after_s,
+                                            retry, &wait_ms);
+                free(resp.body);
+            }
+
+            if (!retryable) break;
+            vTaskDelay(pdMS_TO_TICKS(wait_ms));
         }
 
-        /* A 4xx/5xx is a provider failure, not a link failure: move to the next
-         * provider, which is what `E_LLM_UNAVAILABLE`'s failover means. */
-        if (resp.status < 200 || resp.status >= 300) {
-            /* The provider's own words are the only thing that names the offending
-             * member: a 400 saying `model` points at the model dropdown, one saying
-             * `reasoning_effort` at the thinking level. Clipped and flattened to one
-             * line so it survives a JSON string in `agent.error` unescaped-looking
-             * and readable in a log. */
-            llm_copy_error_detail(resp.body, resp.body_len, p->id, resp.status,
-                                  s_last_error, sizeof s_last_error);
-            /* A provider that echoes the request back prints the key into the reader's
-             * scrollback; `06-security.md` §7 forbids that reaching `agent.error`. */
-            llm_redact(s_last_error, p->api_key);
-            ESP_LOGW(TAG, "llm: %s", s_last_error);
-            free(resp.body);
-            index = llm_next_provider(index, (int)s_provider_count);
-            continue;
-        }
-
-        size_t copy = resp.body_len < response_cap - 1 ? resp.body_len : response_cap - 1;
-        memcpy(response_buf, resp.body, copy);
-        response_buf[copy] = '\0';
-        free(resp.body);
-        if (provider_out != NULL) *provider_out = index;
-        s_available = true;
-        snprintf(s_answered_id, sizeof s_answered_id, "%s", p->id);
-        snprintf(s_answered_model, sizeof s_answered_model, "%s", p->model);
-        return ESP_OK;
+        index = llm_next_provider(index, (int)s_provider_count);
     }
 
     if (s_last_error[0] == '\0') {
@@ -272,6 +294,13 @@ void llm_limits(int32_t *hour, int32_t *day)
 const char *llm_last_error(void)
 {
     return s_last_error;
+}
+
+void llm_abort(void)
+{
+    /* The handle belongs to `net`, which is the only module that calls
+     * `esp_http_client_perform`; this is the one line of the cancel path it exposes. */
+    net_abort_inflight();
 }
 
 

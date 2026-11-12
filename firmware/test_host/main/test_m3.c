@@ -2,6 +2,7 @@
  * and backoff, the call budget and the request body. Each asserts an observable
  * result of a rule a frozen document states, not that a function was called. */
 
+#include <stdint.h>
 #include <string.h>
 
 #include "unity.h"
@@ -404,6 +405,105 @@ TEST_CASE("a rejection echoing the key is redacted", "[m3]")
     llm_redact(out, "sk-live-abc123");
     TEST_ASSERT_NULL(strstr(out, "sk-live-abc123"));
     TEST_ASSERT_NOT_NULL(strstr(out, "***"));
+}
+
+/* `02-firmware.md` §llm "Retry": only a transient failure is repeated, and each
+ * decision carries the wait the caller must sleep, so the exact delay is asserted
+ * rather than inferred from the boolean. */
+TEST_CASE("a per-entry 4xx is not retried", "[m3]")
+{
+    int32_t wait = 1;
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_OK, 400, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_OK, 401, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_OK, 403, 5, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_OK, 404, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+}
+
+/* The provider's own `Retry-After` wins over the base wait, in seconds. */
+TEST_CASE("a 429 is retried after the delay the provider named", "[m3]")
+{
+    int32_t wait = 0;
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 429, 1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(1000, wait);
+}
+
+/* A server naming minutes must not put the device to sleep for them. */
+TEST_CASE("a Retry-After beyond the ceiling is clamped", "[m3]")
+{
+    int32_t wait = 0;
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 429, 90, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_MAX_MS, wait);
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 503, INT32_MAX, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_MAX_MS, wait);
+    /* A day in seconds overflows `int` when multiplied by 1000, so the comparison has
+     * to happen before the multiply. */
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 429, 2000000000, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_MAX_MS, wait);
+    /* Exactly the ceiling is the ceiling, not a wrap past it. */
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 429, 2, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_MAX_MS, wait);
+}
+
+/* 408 is the other status that names a delay rather than a per-entry mistake. */
+TEST_CASE("a 408 is retried", "[m3]")
+{
+    int32_t wait = 0;
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 408, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_BASE_MS, wait);
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_OK, 499, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+}
+
+/* 503 names no delay, so the short base wait applies rather than the ceiling. */
+TEST_CASE("a 503 is retried after the base wait", "[m3]")
+{
+    int32_t wait = 0;
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 503, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_BASE_MS, wait);
+}
+
+/* A reset or a TLS drop never produced a status; one more try is the whole point of
+ * the retry. A link that is down, or a call this module refused, cannot improve. */
+TEST_CASE("a transport error is retried but a link-down is not", "[m3]")
+{
+    int32_t wait = 0;
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_FAIL, 0, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_BASE_MS, wait);
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_ERR_INVALID_STATE, 0, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_ERR_INVALID_ARG, 0, -1, 0, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+}
+
+/* The bound that keeps a wrong provider from doubling the budget on every prompt. */
+TEST_CASE("the retry budget is exhausted after one extra attempt", "[m3]")
+{
+    int32_t wait = 7;
+    TEST_ASSERT_FALSE(llm_retry_after(ESP_OK, 503, -1, LLM_RETRY_ATTEMPTS, &wait));
+    TEST_ASSERT_EQUAL_INT32(0, wait);
+    TEST_ASSERT_TRUE(llm_retry_after(ESP_OK, 503, -1, LLM_RETRY_ATTEMPTS - 1, &wait));
+    TEST_ASSERT_EQUAL_INT32(LLM_RETRY_BASE_MS, wait);
+}
+
+/* `net_response_t.retry_after_s` is only as good as the header parse behind it: an
+ * HTTP-date is not honoured, and neither is a value with junk after it. */
+TEST_CASE("a Retry-After header is read as bare seconds only", "[m3]")
+{
+    TEST_ASSERT_EQUAL_INT32(1, net_retry_after_seconds("1"));
+    TEST_ASSERT_EQUAL_INT32(0, net_retry_after_seconds("0"));
+    TEST_ASSERT_EQUAL_INT32(120, net_retry_after_seconds("120"));
+    TEST_ASSERT_EQUAL_INT32(120, net_retry_after_seconds(" 120"));
+    TEST_ASSERT_EQUAL_INT32(-1, net_retry_after_seconds(NULL));
+    TEST_ASSERT_EQUAL_INT32(-1, net_retry_after_seconds(""));
+    TEST_ASSERT_EQUAL_INT32(-1, net_retry_after_seconds("Wed, 21 Oct 2015 07:28:00 GMT"));
+    TEST_ASSERT_EQUAL_INT32(-1, net_retry_after_seconds("12s"));
+    TEST_ASSERT_EQUAL_INT32(-1, net_retry_after_seconds("-5"));
+    /* Saturated rather than wrapped negative, which would read as "no delay named". */
+    TEST_ASSERT_EQUAL_INT32(INT32_MAX, net_retry_after_seconds("99999999999999999999"));
 }
 
 /* Every case here was observed on the board: the reasonless event arrives after the

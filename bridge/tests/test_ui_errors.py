@@ -355,6 +355,34 @@ async def test_a_protocol_event_reaches_the_logs_not_the_chat():
     await _run(_scripted(), body)
 
 
+async def test_a_token_limited_answer_is_not_shown_as_finished():
+    async def body(app, pilot):
+        app._on_frame(Frame(type="agent.final", id="d-9", ts=0, body={
+            "run_id": "r-1", "text": "The device clock", "usage": {}, "rounds": 1,
+            "provider": "openai", "model": "gpt", "duration_ms": 3,
+            "truncated": True, "todo_open": False,
+        }))
+        await pilot.pause(0.05)
+        # `04` §3.14: `truncated` without `full_bytes` means the provider stopped at
+        # its output cap. The text alone reads as a complete answer.
+        assert "truncated" in _text(app)
+
+    await _run(_scripted(), body)
+
+
+async def test_a_complete_answer_carries_no_truncation_note():
+    async def body(app, pilot):
+        app._on_frame(Frame(type="agent.final", id="d-9", ts=0, body={
+            "run_id": "r-1", "text": "Done.", "usage": {}, "rounds": 1,
+            "provider": "openai", "model": "gpt", "duration_ms": 3,
+            "truncated": False, "todo_open": False,
+        }))
+        await pilot.pause(0.05)
+        assert "truncated" not in _text(app)
+
+    await _run(_scripted(), body)
+
+
 # -- `/thinking` (`05` §7.2) ---------------------------------------------
 
 

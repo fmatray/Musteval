@@ -58,15 +58,25 @@ intentional (`../06-security.md` §6.1).
 `../06-security.md` §6.1), because the file names the provider's base URL and the
 shape of every secret reference.
 
-The whole file is returned up to the shared tool-result cap. A longer file is
-truncated and the result says so: `truncated` is `true` and `bytes` is the file's
-real size, so the model knows it is reading a prefix rather than the file.
+A window of the file is returned, at most `TOOLS_TEXT_MAX` (2048) bytes by default.
+A longer file is truncated and the result says so: `truncated` is `true` and `bytes`
+is the file's real size, so the model knows it is reading a prefix rather than the
+file. Passing `offset` reads the next window: paging lets a 64 KiB `/workspace/` file
+be read to the end, which a single 2048-byte window could not reach. An `offset` is a
+byte offset into the file and must be below `bytes`; the device starts the window at
+the next character boundary, so a caller may page by the returned content length
+without splitting a codepoint. An `offset` past `bytes` is refused with `E_TOOL`, not
+the `E_STORAGE` that `fs.*` overflow means: it is the call that is wrong, and the
+model has `bytes` in hand to correct it. A `limit` outside 1..2048 is refused the
+same way.
 
 **Arguments**
 
 | name | type | required | bounds |
 |---|---|---|---|
 | `path` | string | yes | agent-visible absolute path inside `/fs` or `/workspace` |
+| `offset` | integer | no | byte offset into the file; 0 when absent, below the file's size |
+| `limit` | integer | no | bytes to return; 2048 when absent, 1..2048 |
 
 **Result**
 
@@ -74,18 +84,20 @@ real size, so the model knows it is reading a prefix rather than the file.
 {
   "path": "/prompts/system.md",
   "content": "You are the agent.\n",
+  "offset": 0,
   "bytes": 20,
   "truncated": false
 }
 ```
 
-`bytes` is the file's size, not the returned length; `content` is at most the
-tool-result cap.
+`bytes` is the file's size, not the returned length; `content` is at most `limit`.
+`offset` echoes where the window began, which is the value to add `content`'s length
+to for the next call.
 
 **Schema sent to the model**
 
 ```json
-{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}
 ```
 
 ## `fs.write`

@@ -25,7 +25,7 @@ matrix is `../06-security.md` §6.
 
 ## `http.get`
 
-Fetches one URL and returns the status line, the response headers and the body. It is
+Fetches one URL and returns the status, the body and the exchange's timing. It is
 the escape hatch for a host the user has already allowlisted; it is not a general
 browser. The host of `url` MUST match an entry in `tools.http_allow_hosts` exactly --
 no wildcard, no subdomain match, no redirect following to a second host `[ASSUMPTION]`
@@ -33,12 +33,17 @@ no wildcard, no subdomain match, no redirect following to a second host `[ASSUMP
 (`../06-security.md` §6). Scheme is `https`; `http://` targets are refused
 (`../06-security.md` §4, T8, marked `[ASSUMPTION]` there).
 
-The body is returned as received; there is no projection. A caller that wants one
-field of a large JSON document should use a declarative tool with `http.response_path`
-instead of pulling the whole body through `http.get` and parsing it in the model.
-The 4 KiB result cap is stated explicitly for declarative tools
-(`../03-config.md` §tools, binding step 4); `[ASSUMPTION]` the same model-facing cap
-applies here.
+The body is returned as received, there is no projection, and it is **capped**: a
+response longer than `TOOLS_HTTP_BODY_MAX` (2048) bytes is cut at a character
+boundary and the result reports `truncated: true` with `bytes` set to the body's real
+length, so the model knows it holds a prefix rather than the document. A caller that
+wants one field of a large JSON document should use a declarative tool with
+`http.response_path` instead of pulling the whole body through `http.get` and parsing
+it in the model. The 4 KiB model-facing result cap is stated explicitly for
+declarative tools (`../03-config.md` §tools, binding step 4); the body cap above is
+what keeps `http.get` inside it, because JSON escaping of a body can nearly double
+its length. A response too large for the transport (`NET_BODY_MAX`, 16384) is
+`E_TOOL`, not a cut.
 
 Header values supplied in `headers` are sent as given. Do not pass a credential that
 way: `http.get` arguments are emitted verbatim in `agent.tool`
@@ -56,12 +61,16 @@ declarative tool's `nvs:` header ref is resolved out of the model's sight
 **Result**
 
 ```json
-{"status":200,"headers":{"content-type":"application/json"},"body":"{\"current\":{\"temperature_2m\":4.1}}"}
+{"status":200,"body":"{\"current\":{\"temperature_2m\":4.1}}","bytes":40,"truncated":false,"elapsed_ms":112}
 ```
 
-`status` is the HTTP status code as an integer, `headers` is the response header map,
-and `body` is the raw response text `[ASSUMPTION]`. A non-2xx status is a successful
-tool call, not an error: the model sees the code and decides what to do with it.
+`status` is the HTTP status code as an integer, `body` is the raw response text, and
+`bytes` is the body's real length before the cap, so a caller can tell a short body
+from a clipped one. `truncated` is `true` only when the cap cut it. `elapsed_ms` is
+the exchange's wall time. Response headers are **not** returned: `net` captures the
+status and body only, so a caller that needs a field of the response must parse
+`body` itself. A non-2xx status is a successful tool call, not an error: the model
+sees the code and decides what to do with it.
 
 **Schema sent to the model**
 

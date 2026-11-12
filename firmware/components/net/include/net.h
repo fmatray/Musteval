@@ -65,6 +65,10 @@ typedef struct {
     char    *body;          /* caller-owned, NUL-terminated */
     size_t   body_len;
     int64_t  elapsed_ms;
+    /* The response's `Retry-After` in seconds, or -1 when it sent none or the value
+     * is not an integer (an HTTP-date form is not honoured; the caller falls back to
+     * its own delay). Only meaningful for a 429/503. */
+    int32_t  retry_after_s;
 } net_response_t;
 
 /* `POST <url>` with `content_type`, `authorization` (may be NULL) and `body`.

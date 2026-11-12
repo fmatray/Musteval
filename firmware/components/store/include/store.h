@@ -263,11 +263,17 @@ esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
 bool store_is_staging_entry(const char *vfs_dir, const char *entry_name,
                             const char *stage_path);
 
-/* Read up to `cap` bytes of text. `*truncated` is true when the file was longer,
- * `*len` is what was read and `*total` is the file's whole length, so the wire can
- * report what the cap left behind (§4.18). Content that is not valid UTF-8 is
- * ESP_ERR_INVALID_SIZE, which the link maps to `E_STORAGE`. */
-esp_err_t store_read_text(const char *agent_path, char *buf, size_t cap,
+/* Read up to `cap` bytes of text starting at `offset`. `*len` is what was read,
+ * `*total` is the file's whole length, and `*truncated` is true when bytes remain
+ * after this window (`offset + *len < *total`), so the wire can report what the cap
+ * left behind (§4.18). Content that is not valid UTF-8 is ESP_ERR_INVALID_SIZE, which
+ * the link maps to `E_STORAGE`.
+ *
+ * `offset` is a byte offset into the file and must be 0 or below `*total`; a value
+ * past the end is ESP_ERR_INVALID_SIZE. A read that starts inside a codepoint skips
+ * its continuation bytes, so paging by `bytes` never splits one and never refuses a
+ * window that begins at a legal `offset`. */
+esp_err_t store_read_text(const char *agent_path, size_t offset, char *buf, size_t cap,
                           size_t *len, size_t *total, bool *truncated);
 
 /* Read one whole file from anywhere the image ships (`/config.json`,

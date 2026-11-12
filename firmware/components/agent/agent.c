@@ -265,11 +265,8 @@ static void emit_agent_error(const char *run_id, const char *reply_to,
     json_add_string(root, "code", code);
     json_add_string(root, "message", message);
     if (run_id != NULL && run_id[0] != '\0') json_add_string(root, "run_id", run_id);
-    if (reply_to != NULL && reply_to[0] != '\0') {
-        json_add_string(root, "reply_to", reply_to);
-    }
     json_add_bool(root, "retryable", retryable);
-    link_emit_body("agent.error", agent_frame_id(), now_s(), NULL, body);
+    link_emit_body("agent.error", agent_frame_id(), now_s(), reply_to, body);
     json_free(body);
 }
 
@@ -330,7 +327,6 @@ static void emit_agent_start(const char *run_id, const char *reply_to,
     json_doc_t *body = json_new_object();
     if (body == NULL) return;
     json_node_t *root = json_root(body);
-    json_add_string(root, "reply_to", reply_to);
     json_add_string(root, "run_id", run_id);
     json_add_string(root, "trigger", "manual");
     json_add_string(root, "source", agent_source_name(source));
@@ -338,7 +334,7 @@ static void emit_agent_start(const char *run_id, const char *reply_to,
     json_add_string(root, "model", model != NULL ? model : "");
     json_add_int(root, "input_bytes", (int64_t)input_bytes);
     json_add_int(root, "queue_depth", queue_depth);
-    link_emit_body("agent.start", agent_frame_id(), now_s(), NULL, body);
+    link_emit_body("agent.start", agent_frame_id(), now_s(), reply_to, body);
     json_free(body);
 }
 
@@ -346,23 +342,18 @@ static void emit_agent_final(const char *run_id, const char *reply_to,
                              const char *text, size_t text_bytes,
                              int32_t prompt_tokens, int32_t completion_tokens,
                              int rounds, bool todo_open, int64_t duration_ms,
-                             size_t full_bytes)
-{
+                             size_t full_bytes, bool reply_truncated)
+ {
     const char *provider = NULL;
     const char *model = NULL;
     llm_last_answer(&provider, &model);
 
-    bool truncated = text_bytes > AGENT_TEXT_MAX;
+    bool truncated = text_bytes > AGENT_TEXT_MAX || reply_truncated;
     size_t emit_len = truncated ? AGENT_TEXT_MAX : text_bytes;
-
     json_doc_t *body = json_new_object();
     if (body == NULL) return;
     json_node_t *root = json_root(body);
     json_add_string(root, "run_id", run_id);
-    if (reply_to != NULL && reply_to[0] != '\0') {
-        json_add_string(root, "reply_to", reply_to);
-    }
-    /* Copy rather than borrow: `json_add_string` needs a terminator at `emit_len`. */
     memcpy(s_final_text, text, emit_len);
     s_final_text[emit_len] = '\0';
     json_add_string(root, "text", s_final_text);
@@ -406,10 +397,15 @@ static void history_push_tool_result(const agent_tool_call_t *call, bool ok,
     json_add_string(root, "role", "tool");
     json_add_string(root, "tool_call_id", call->id);
 
-    if (ok && result != NULL) {
+    if (ok) {
         size_t rendered = 0;
         if (json_emit(result, s_result_text, sizeof s_result_text, &rendered) == ESP_OK) {
             json_add_string(root, "content", s_result_text);
+        } else {
+            /* A `role:"tool"` message without `content` is refused by providers; an
+             * oversize result is reported as an error the model can act on. */
+            json_add_string(root, "content",
+                            "{\"error\":{\"code\":\"E_TOOL\",\"message\":\"tool result too large\"}}");
         }
     } else {
         char text[TOOLS_ERR_MAX + 64];
@@ -422,7 +418,7 @@ static void history_push_tool_result(const agent_tool_call_t *call, bool ok,
     size_t written = 0;
     if (json_emit(doc, s_message, sizeof s_message, &written) == ESP_OK) {
         agent_history_append(s_history, AGENT_HISTORY_MAX, &s_history_used, s_message,
-                             s_history_max);
+                             s_history_max, true);
     }
     json_free(doc);
 }
@@ -447,7 +443,7 @@ static bool history_push(const char *role, const char *content,
     esp_err_t err = ESP_FAIL;
     if (json_emit(doc, s_message, sizeof s_message, &written) == ESP_OK) {
         err = agent_history_append(s_history, AGENT_HISTORY_MAX, &s_history_used, s_message,
-                                   s_history_max);
+                                   s_history_max, true);
     }
     json_free(doc);
     return err == ESP_OK;
@@ -479,7 +475,7 @@ static void history_push_assistant(const agent_reply_t *reply)
     size_t written = 0;
     if (json_emit(doc, s_message, sizeof s_message, &written) == ESP_OK) {
         agent_history_append(s_history, AGENT_HISTORY_MAX, &s_history_used, s_message,
-                             s_history_max);
+                             s_history_max, true);
     }
     json_free(doc);
 }
@@ -665,6 +661,15 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
             last_err = llm_query(&request, s_response, LLM_BODY_MAX + 1, NULL);
         }
         if (last_err != ESP_OK) {
+            /* An abort is `llm_abort`'s own return code and shares
+             * `ESP_ERR_INVALID_STATE` with the budget refusal; only `s_cancel` tells
+             * them apart. Reporting `E_LLM_RATE` for a cancelled run would blame the
+             * budget for the operator's own Esc. */
+            if (s_cancel) {
+                emit_agent_error(s_run_id, job->reply_to, "E_CANCELLED",
+                                 "run cancelled", false);
+                goto done;
+            }
             const char *code = last_err == ESP_ERR_INVALID_STATE ? "E_LLM_RATE"
                                                                 : "E_LLM_UNAVAILABLE";
             emit_agent_error(s_run_id, job->reply_to, code, llm_last_error(), true);
@@ -720,6 +725,16 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
                                  "run cancelled", false);
                 goto done;
             }
+            /* Truncated arguments must never reach a tool: the JSON that did arrive
+             * is a prefix, and executing it would act on a half-written path or pin. */
+            if (s_reply->calls[i].args_truncated) {
+                const char *err_msg = "tool call arguments were truncated by the output limit";
+                emit_agent_tool_result(s_run_id, rounds, &s_reply->calls[i], false, NULL,
+                                       "E_TOOL", err_msg, 0);
+                history_push_tool_result(&s_reply->calls[i], false, NULL, "E_TOOL",
+                                         err_msg);
+                continue;
+            }
             bool ok = run_one_tool(&ctx, s_run_id, rounds, &s_reply->calls[i]);
             (void)ok;
             if (strcmp(s_reply->calls[i].name, "todo") == 0) {
@@ -745,7 +760,8 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
     emit_agent_final(s_run_id, job->reply_to, s_reply->content, s_reply->content_len,
                      prompt_tokens, completion_tokens, rounds, todo_open,
                      (esp_timer_get_time() - started_ms) / 1000,
-                     s_reply->content_len);
+                     s_reply->content_len,
+                     strcmp(s_reply->finish_reason, AGENT_FINISH_LENGTH) == 0);
     finalized = true;
 
 done:
@@ -851,6 +867,7 @@ bool agent_cancel(void)
 {
     if (!s_busy) return false;
     s_cancel = true;
+    llm_abort();
     return true;
 }
 

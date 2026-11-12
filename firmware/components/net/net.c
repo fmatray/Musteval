@@ -3,11 +3,11 @@
  * applies live in `net_select.c` and are covered on the host. */
 
 #include "net.h"
-#include "net_internal.h"
 
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
@@ -28,6 +28,7 @@
 #include "ping/ping_sock.h"
 
 #include "cfg.h"
+#include "net_internal.h"
 
 static const char *TAG = "net";
 
@@ -47,6 +48,11 @@ static size_t s_ap_count;
 static int32_t s_backoff[NET_MAX_BACKOFF];
 static size_t s_backoff_count;
 static int32_t s_connect_timeout_ms = NET_DEFAULT_CONNECT_TIMEOUT_MS;
+/* The exchange `esp_http_client_perform` is blocked in, so `net_abort_inflight` can
+ * cancel it; see the helper for why it needs a lock. */
+static esp_http_client_handle_t s_inflight;
+static bool s_aborted;
+static SemaphoreHandle_t s_inflight_lock;
 static int32_t s_failovers;
 
 static net_state_t s_state = NET_STATE_OFF;
@@ -82,9 +88,11 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         const wifi_event_sta_disconnected_t *gone = data;
         int reason = gone != NULL ? gone->reason : NET_WIFI_REASON_UNSPECIFIED;
         if (net_disconnect_ignored(s_leaving, s_attempting, reason)) {
-            ESP_LOGD(TAG, "wifi: ignoring disconnect, reason %d", reason);
+            ESP_LOGW(TAG, "wifi: ignoring disconnect, reason %d", reason);
             return;
         }
+        ESP_LOGW(TAG, "wifi: scored disconnect, reason %d, attempting %d", reason,
+                 (int)s_attempting);
         /* A drop must downgrade the state, not just raise the flag: otherwise
          * `net_connected()` keeps answering true and `status` reports the SSID and IP
          * of a link that is gone (`04-protocol.md` §3.9 types them as the *active*
@@ -144,6 +152,10 @@ esp_err_t net_init(void)
     s_ap_count = 0;
     s_failovers = 0;
     s_state = NET_STATE_OFF;
+    /* Created here, before any exchange can publish a handle: `net_abort_inflight` is
+     * callable from another task the moment a run is live, and a lazily created mutex
+     * would race two callers. */
+    if (s_inflight_lock == NULL) s_inflight_lock = xSemaphoreCreateMutex();
     /* Reset before reading: `reload` calls this again, and a timeout left over from
      * the previous config would apply to a document that no longer sets it. */
     s_connect_timeout_ms = NET_DEFAULT_CONNECT_TIMEOUT_MS;
@@ -437,12 +449,25 @@ typedef struct {
     size_t cap;
     size_t len;
     bool overflow;
+    int32_t retry_after_s;
 } net_capture_t;
 
 static esp_err_t net_capture_event(esp_http_client_event_t *evt)
 {
     net_capture_t *cap = evt->user_data;
-    if (evt->event_id != HTTP_EVENT_ON_DATA || cap == NULL) return ESP_OK;
+    if (cap == NULL) return ESP_OK;
+
+    /* The response's own headers only reach a caller through this event:
+     * `esp_http_client_get_header` reads the *request* header table. */
+    if (evt->event_id == HTTP_EVENT_ON_HEADER) {
+        if (evt->header_key != NULL && evt->header_value != NULL &&
+            strcasecmp(evt->header_key, "Retry-After") == 0) {
+            cap->retry_after_s = net_retry_after_seconds(evt->header_value);
+        }
+        return ESP_OK;
+    }
+
+    if (evt->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
     if (evt->data_len <= 0) return ESP_OK;
     size_t room = cap->cap - cap->len;
     if ((size_t)evt->data_len > room) {
@@ -454,6 +479,24 @@ static esp_err_t net_capture_event(esp_http_client_event_t *evt)
     memcpy(cap->out + cap->len, evt->data, (size_t)evt->data_len);
     cap->len += (size_t)evt->data_len;
     return ESP_OK;
+}
+
+/* The exchange `esp_http_client_perform` is blocked in, so `net_abort_inflight` can
+ * cancel it. Guarded by a mutex rather than a bare `volatile`: the aborting task
+ * dereferences the handle, and the exchange task frees it in `esp_http_client_cleanup`
+ * the moment `perform` returns, so an unlocked read could cancel freed memory. A
+ * spinlock would be wrong here — `esp_http_client_cancel_request` blocks. `s_aborted`
+ * tells the returning exchange that its error was a cancel, not a transport failure. */
+void net_abort_inflight(void)
+{
+    if (s_inflight_lock == NULL) return;
+    if (xSemaphoreTake(s_inflight_lock, portMAX_DELAY) != pdTRUE) return;
+    if (s_inflight != NULL) {
+        /* Set before the cancel: it can unblock the exchange, which reads this. */
+        s_aborted = true;
+        esp_http_client_cancel_request(s_inflight);
+    }
+    xSemaphoreGive(s_inflight_lock);
 }
 
 /* One exchange, shared by every caller that reaches the wire. The method, the extra
@@ -468,9 +511,17 @@ static esp_err_t net_exchange(esp_http_client_method_t method, const char *url,
                               net_response_t *resp)
 {
     if (url == NULL || resp == NULL) return ESP_ERR_INVALID_ARG;
-    if (!net_connected()) return ESP_ERR_INVALID_STATE;
+    if (!net_connected()) {
+        /* Still stamped: the caller must never read an uninitialised field, even
+         * though this return is an error it discards the response for. */
+        resp->retry_after_s = -1;
+        return ESP_ERR_INVALID_STATE;
+    }
 
     memset(resp, 0, sizeof *resp);
+    /* Not `memset` then 0: -1 is the "the response named no delay" value, and the
+     * error paths below return before any header is parsed. */
+    resp->retry_after_s = -1;
 
     esp_http_client_config_t config = {
         .url = url,
@@ -508,17 +559,41 @@ static esp_err_t net_exchange(esp_http_client_method_t method, const char *url,
         esp_http_client_cleanup(client);
         return ESP_ERR_NO_MEM;
     }
-    net_capture_t capture = { .out = resp->body, .cap = NET_BODY_MAX };
+    net_capture_t capture = { .out = resp->body, .cap = NET_BODY_MAX, .retry_after_s = -1 };
     esp_http_client_set_user_data(client, &capture);
+
+    /* Cleared here rather than only at the end: an abort that arrived between two
+     * exchanges belongs to none of them, and would otherwise be charged to this one.
+     * The handle is published *before* the flag is cleared, so a cancel that lands
+     * after this point always finds a handle to cancel; publishing the handle after
+     * clearing the flag leaves a window where `net_abort_inflight` sees neither and
+     * the exchange runs to its full timeout with the operator waiting.
+     *
+     * The lock is what makes the handle safe to dereference from another task: it is
+     * unpublish-then-cleanup below, so an abort either cancels a live client or finds
+     * NULL, never a freed one. */
+    if (s_inflight_lock != NULL) xSemaphoreTake(s_inflight_lock, portMAX_DELAY);
+    s_inflight = client;
+    s_aborted = false;
+    if (s_inflight_lock != NULL) xSemaphoreGive(s_inflight_lock);
 
     int64_t start = esp_timer_get_time() / 1000;
     esp_err_t err = esp_http_client_perform(client);
+
+    if (s_inflight_lock != NULL) xSemaphoreTake(s_inflight_lock, portMAX_DELAY);
+    s_inflight = NULL;
+    bool aborted = s_aborted;
+    s_aborted = false;
+    if (s_inflight_lock != NULL) xSemaphoreGive(s_inflight_lock);
+
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "http: %s: %s", url, esp_err_to_name(err));
         free(resp->body);
         resp->body = NULL;
         esp_http_client_cleanup(client);
-        return err;
+        /* Distinct from every transport failure: the caller neither retries nor
+         * fails over, because nobody is waiting for the answer any more. */
+        return aborted ? ESP_ERR_NOT_FINISHED : err;
     }
 
     resp->status = esp_http_client_get_status_code(client);
@@ -535,6 +610,9 @@ static esp_err_t net_exchange(esp_http_client_method_t method, const char *url,
     resp->body[capture.len] = '\0';
     resp->body_len = capture.len;
     resp->elapsed_ms = esp_timer_get_time() / 1000 - start;
+    /* A 2xx that raced the cancel is still a completed exchange; the caller reports it
+     * and its own cancel check ends the run. */
+    resp->retry_after_s = capture.retry_after_s;
 
     esp_http_client_cleanup(client);
     return ESP_OK;

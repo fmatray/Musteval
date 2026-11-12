@@ -213,6 +213,11 @@ rejected with `E_BUSY`; it is never silently dropped.
 `agent.error` with `code:"E_CANCELLED"` and the run's `run_id`. Cancelling when
 nothing is in flight emits `event{kind:"cancel.noop"}`.
 
+A run is cancellable at any point, including while it is inside a provider request:
+the device aborts the in-flight HTTP exchange rather than waiting out the provider's
+`llm.providers[].timeout_ms` (default 120000), so the `E_CANCELLED` frame arrives in
+seconds rather than minutes. Cancellation is not a failure and is never retried.
+
 ### 3.5 `command` (bridge → device)
 
 | Field | Type | Required | Meaning |
@@ -344,7 +349,6 @@ the device redacts any NVS value from log output before framing.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `reply_to` | string | yes | `prompt` or `tasks.run` id that began the run |
 | `run_id` | string | yes | Run identity used by every subsequent event |
 | `trigger` | string | yes | Frozen trigger enum value (`manual` for prompts) |
 | `source` | string | yes | `prompt`, `task`, `template` |
@@ -398,21 +402,27 @@ spinner here and stops it on `agent.final` or `agent.error`.
 Refused tools surface as `ok:false` with `E_TOOL`; they never abort the run. The
 model sees the refusal text and may choose another tool.
 
+The same `ok:false` / `E_TOOL` shape carries two engine-level failures that are not
+the tool's fault: a call whose `arguments` the provider cut off at its output limit,
+and a result too large to render into its 4096-byte slot. Both are reported to the
+model as a tool error naming the cause, and the run continues — the alternative, an
+assistant turn referencing a `tool_call_id` that never receives a result, is a
+request every provider rejects.
+
 ### 3.14 `agent.final` (device → bridge)
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `run_id` | string | yes | Finished run |
-| `reply_to` | string | no | Originating `prompt`/`command` id when the run came from the link |
 | `text` | string | yes | Assistant answer, plain text |
 | `usage` | object | yes | `{prompt_tokens, completion_tokens, total_tokens}` |
 | `rounds` | integer | yes | Tool rounds used |
 | `provider` | string | yes | Provider that produced the answer |
 | `model` | string | yes | Model name |
 | `duration_ms` | integer | yes | Wall time of the run |
-| `truncated` | boolean | yes | Whether `text` was shortened to fit 16384 bytes |
+| `truncated` | boolean | yes | `true` when `text` is not the whole answer: it was shortened to fit 16384 bytes, or the provider stopped at `max_output_tokens` (`finish_reason: "length"`), in which case `text` is a prefix of what the model was writing. `full_bytes` is absent for the second case, which has no longer version to report |
 | `todo_open` | boolean | yes | `true` when the close-out check failed at budget end: a task was still `pending`, `in_progress` or `blocked`, or the run took two or more tool rounds without ever opening a list. `false` otherwise |
-| `full_bytes` | integer | when `truncated` | Pre-truncation text length |
+| `full_bytes` | integer | when `truncated` and the 16384-byte cap caused it | Pre-truncation text length |
 
 The agent loop refuses to finalize while the close-out check fails: it appends a
 synthetic system message and takes another LLM round, repeating until the check
@@ -434,7 +444,6 @@ change `E_TOOL`. Tasks are closed with the `done` and `drop` operations of the
 | `code` | string | yes | Any code from §5 |
 | `message` | string | yes | Human-readable, English, no secret material |
 | `run_id` | string | when a run existed | Owning run |
-| `reply_to` | string | when rejecting a request | Rejected request id |
 | `retryable` | boolean | yes | Whether an identical retry may succeed |
 | `detail` | object | no | Structured context, e.g. `{queue_depth, max_queue}` |
 

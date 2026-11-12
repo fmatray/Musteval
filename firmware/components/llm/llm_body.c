@@ -273,3 +273,37 @@ bool llm_provider_loop_ok(int index, int count)
      * loop that never returns. */
     return index >= 0 && index < count;
 }
+
+bool llm_retry_after(esp_err_t err, int status, int retry_after_s, int attempt,
+                     int32_t *wait_ms)
+{
+    bool retry;
+    if (status == 0) {
+        /* No response at all: a reset or a TLS drop is worth one more try, but a link
+         * that is down or a call cancelled by this module cannot succeed on a retry. */
+        retry = err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_ERR_INVALID_ARG;
+    } else {
+        /* 408 and 429 are the two client-side statuses that name a delay rather than a
+         * per-entry mistake; every other 4xx, a 3xx and a 2xx are not repeated. */
+        retry = status == 408 || status == 429 || status >= 500;
+    }
+
+    if (wait_ms != NULL) *wait_ms = 0;
+    if (!retry || attempt >= LLM_RETRY_ATTEMPTS) return false;
+
+    if (wait_ms != NULL) {
+        /* A named `Retry-After` wins over the base wait, clamped: a server that names
+         * minutes must not put the device to sleep for them. The comparison happens
+         * before the multiply, because `retry_after_s * 1000` overflows an int once a
+         * server names a day. */
+        int32_t ceiling_s = (LLM_RETRY_MAX_MS + 999) / 1000;
+        if (retry_after_s < 0) {
+            *wait_ms = LLM_RETRY_BASE_MS;
+        } else if (retry_after_s >= ceiling_s) {
+            *wait_ms = LLM_RETRY_MAX_MS;
+        } else {
+            *wait_ms = retry_after_s * 1000;
+        }
+    }
+    return true;
+}

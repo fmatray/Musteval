@@ -34,6 +34,13 @@
  * model is capped here and the excess is reported, never silently dropped. */
 #define TOOLS_RESULT_MAX 4096
 
+/* What `http.get` returns before cutting a response. The same number as the file
+ * reader's cap (`TOOLS_TEXT_MAX`), which leaves over half of `TOOLS_RESULT_MAX` for
+ * JSON escaping and the rest of the result object; a body reaching this is cut at a
+ * character boundary and reported with `truncated: true` and its real `bytes`
+ * (`tools/web.md`). A response too large for `net_get` is `E_TOOL`. */
+#define TOOLS_HTTP_BODY_MAX 2048
+
 /* `fs.list`'s entry cap: the same workspace file count `03-config.md` §Storage limits
  * bounds, so a listing can never be refused for a directory the quota allows. */
 #define TOOLS_LIST_MAX 64

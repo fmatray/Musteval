@@ -288,17 +288,51 @@ static esp_err_t call_fs(const char *tool, const json_node_t *args, json_doc_t *
          * `store_read_text` exists rather than `store_read_file`. */
         size_t len = 0, total = 0;
         bool truncated = false;
-        esp_err_t err = store_read_text(path, s_read_buf, TOOLS_TEXT_MAX, &len, &total,
+        int64_t offset_val = 0;
+        const json_node_t *off_node = json_get(args, "offset");
+        if (off_node && !json_int(off_node, &offset_val)) {
+            set_why(why, why_cap, "fs.read: invalid offset");
+            return ESP_ERR_INVALID_ARG;
+        }
+        size_t offset = (offset_val < 0) ? 0 : (size_t)offset_val;
+
+        /* `limit` narrows the window inside the fixed 2048-byte page; it can never
+         * widen it, so the result stays inside its render slot (`filesystem.md`). */
+        size_t window = TOOLS_TEXT_MAX;
+        int64_t limit_val = 0;
+        const json_node_t *limit_node = json_get(args, "limit");
+        if (limit_node) {
+            if (!json_int(limit_node, &limit_val) || limit_val < 1) {
+                set_why(why, why_cap, "fs.read: invalid limit");
+                return ESP_ERR_INVALID_ARG;
+            }
+            if ((size_t)limit_val < window) window = (size_t)limit_val;
+        }
+
+        esp_err_t err = store_read_text(path, offset, s_read_buf, window, &len, &total,
                                         &truncated);
+        if (err == ESP_ERR_INVALID_SIZE && offset > total) {
+            /* `*total` is filled before the offset is validated, so this is exact
+             * rather than a guess: the model passed an offset past the end, which it
+             * can fix from `bytes`. Returning `INVALID_ARG` keeps it an `E_TOOL`
+             * instead of the quota `E_STORAGE` this code otherwise means for `fs.*`. */
+            set_why(why, why_cap, "fs.read: offset is past the end of the file");
+            return ESP_ERR_INVALID_ARG;
+        }
         if (err != ESP_OK) {
             set_why(why, why_cap, "fs.read: no such readable text file");
             return err;
         }
+        /* `store_read_text` reports a length, it does not terminate; without this the
+         * `content` string runs on into whatever the previous tool left in this
+         * shared buffer. `window` is at most `TOOLS_TEXT_MAX`, so there is always room. */
+        s_read_buf[len] = '\0';
         *out = json_new_object();
         if (*out == NULL) return ESP_ERR_NO_MEM;
         json_node_t *root = json_root(*out);
         json_add_string(root, "path", path);
         json_add_string(root, "content", s_read_buf);
+        add_int(root, "offset", (int64_t)offset);
         add_int(root, "bytes", (int64_t)total);
         json_add_bool(root, "truncated", truncated);
         return ESP_OK;
@@ -384,7 +418,25 @@ static esp_err_t call_http_get(const json_node_t *args, json_doc_t **out,
     }
     json_node_t *root = json_root(*out);
     add_int(root, "status", resp.status);
-    json_add_string(root, "body", resp.body != NULL ? resp.body : "");
+    /* `docs/tools/web.md`: the body is cut at `TOOLS_HTTP_BODY_MAX` before it can
+     * crowd the 4096-byte render slot, and the cut is reported with the source's
+     * real length so the model can tell a short body from a clipped one. */
+    size_t body_len = resp.body != NULL ? strlen(resp.body) : 0;
+    size_t kept = body_len > TOOLS_HTTP_BODY_MAX ? TOOLS_HTTP_BODY_MAX : body_len;
+    if (kept < body_len) {
+        /* Never cut a UTF-8 sequence in half: the result is re-encoded as JSON and
+         * an invalid byte would poison the whole envelope. */
+        while (kept > 0 && ((unsigned char)resp.body[kept] & 0xC0) == 0x80) kept--;
+    }
+    if (resp.body != NULL) {
+        memcpy(s_read_buf, resp.body, kept);
+        s_read_buf[kept] = '\0';
+        json_add_string(root, "body", s_read_buf);
+    } else {
+        json_add_string(root, "body", "");
+    }
+    add_int(root, "bytes", (int64_t)body_len);
+    json_add_bool(root, "truncated", kept < body_len);
     add_int(root, "elapsed_ms", resp.elapsed_ms);
     free(resp.body);
     return ESP_OK;

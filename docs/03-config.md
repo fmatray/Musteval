@@ -106,9 +106,9 @@ Single JSON object, UTF-8, no comments, no trailing commas.
 | `llm.providers[].token_param` | string enum | no | `max_tokens` | `max_tokens` or `max_completion_tokens`; see §Provider compatibility |
 | `llm.providers[].extra_body` | object | no | `{}` | merged into the request body; max 4 members, flat scalars only, and must not contain `model`, `messages`, `tools` or `stream` (`E_CONFIG`) |
 | `llm.max_tool_rounds` | int | no | `8` | 1..16; also bounds the close-out round described in `02-firmware.md` §4.1, so a value of 1 can leave a task open and set `todo_open` |
-| `llm.max_history_messages` | int | no | `8` | 0..32 |
-| `llm.max_calls_per_hour` | int | no | `100` | 0..100000; `0` disables the window. Bounds `llm.providers[]` attempts per UTC hour, across the whole chain (`E_LLM_RATE`) |
-| `llm.max_calls_per_day` | int | no | `1000` | 0..1000000; `0` disables the window. Bounds attempts per UTC day |
+| `llm.max_history_messages` | int | no | `8` | 0..32; while a run is active the run's own question is pinned and the bound applies to the messages after it (`02-firmware.md` §4.1). `0` keeps no completed turns, so only the current run's messages survive |
+| `llm.max_calls_per_hour` | int | no | `100` | 0..100000; `0` disables the window. Bounds `llm.providers[]` attempts per UTC hour, across the whole chain (`E_LLM_RATE`). A retry of the same provider is another attempt and is counted, so one provider refusing transiently costs at most 2 of this budget per prompt |
+| `llm.max_calls_per_day` | int | no | `1000` | 0..1000000; `0` disables the window. Bounds attempts per UTC day, on the same rule |
 | `mcp.servers[]` | object[] | no | `[]` | 0..4 entries |
 | `mcp.servers[].id` | string | yes | none | `[a-z0-9_-]{1,16}`, unique |
 | `mcp.servers[].url` | string | yes | none | `https://` |

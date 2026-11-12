@@ -227,7 +227,7 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
         static char s_text[SANDBOX_READ_CAP + 1];
         size_t len = 0, total = 0;
         bool truncated = false;
-        esp_err_t rerr = store_read_text(s_sandbox_path, s_text, SANDBOX_READ_CAP,
+        esp_err_t rerr = store_read_text(s_sandbox_path, 0, s_text, SANDBOX_READ_CAP,
                                          &len, &total, &truncated);
         if (rerr != ESP_OK) {
             emit_failure("sandbox.read", reply_to, wire_code(rerr), "Read failed");
@@ -1272,7 +1272,9 @@ static void on_link_frame(const json_node_t *frame)
                 json_add_int(detail, "max_queue", AGENT_MAX_QUEUE);
             }
         }
-        json_add_string(root, "reply_to", reply_to);
+        /* `reply_to` is the envelope's field (`04` §3.4), not the body's: adding it to
+         * both emits the key twice at the same JSON level, and a parser that keeps the
+         * last value silently decides which one wins. */
         link_emit_body("agent.error", frame_id(), 0, reply_to, body);
         json_free(body);
         return;

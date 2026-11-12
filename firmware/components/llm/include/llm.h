@@ -125,6 +125,34 @@ int llm_next_provider(int current, int count);
  * and would read `providers[-1]` forever. */
 bool llm_provider_loop_ok(int index, int count);
 
+/* At most this many extra attempts per provider: one. A chain of N providers
+ * therefore costs at most 2N requests, which keeps a wrong provider from doubling the
+ * budget on every prompt (`02-firmware.md` §llm). */
+#define LLM_RETRY_ATTEMPTS 1
+
+/* The ceiling on a `Retry-After`-directed wait. */
+#define LLM_RETRY_MAX_MS 2000
+
+/* The wait before the first retry when the provider named no delay. Short, because
+ * the failure being retried is usually a reset rather than a rate limit. */
+#define LLM_RETRY_BASE_MS 250
+
+/* Whether a failed attempt is worth repeating against the same provider, and how long
+ * to wait first (`02-firmware.md` §llm "Retry").
+ *
+ * `err` is the transport result, `status` the HTTP status when one arrived (0 when the
+ * exchange never completed). Only a transient failure retries: a transport error or a
+ * 408/429/5xx. A 400, 401, 403 or 404 is per-entry configuration and repeating it
+ * spends the budget to learn nothing. `retry_after_s` is the provider's own
+ * `Retry-After` in seconds, or negative when it sent none; the wait is clamped to
+ * `LLM_RETRY_MAX_MS`, because a device that sleeps for the server's full request is
+ * indistinguishable from a hung one.
+ *
+ * `attempt` is 0 for the first retry. Pure, so the decision the chain makes is
+ * host-tested. */
+bool llm_retry_after(esp_err_t err, int status, int retry_after_s, int attempt,
+                     int32_t *wait_ms);
+
 /* --- Board-only ----------------------------------------------------------- */
 
 /* Load `llm.providers[]`, resolve each `api_key_ref`, and restore the persisted
@@ -143,6 +171,15 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
 
 /* The budget as of now. */
 void llm_counters(int32_t *hour, int32_t *day);
+
+/* Abort the request `llm_query` is blocked in, if any, so `agent_cancel` reaches a
+ * call that is already on the wire (`02-firmware.md` §4.1). Safe to call from another
+ * task and with no request in flight: the handle is published only while
+ * `esp_http_client_perform` is running, and the caller's own thread cleans it up.
+ * The aborted call returns `ESP_ERR_NOT_FINISHED` from `llm_query`, which is
+ * distinct from the budget refusal so the run reports `E_CANCELLED` rather than
+ * `E_LLM_RATE`. */
+void llm_abort(void);
 
 /* The provider that answered most recently — `id` and `model`, both borrowed and
  * stable — and whether that call succeeded. `status` reports all three

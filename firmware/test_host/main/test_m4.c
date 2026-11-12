@@ -922,11 +922,11 @@ TEST_CASE("history keeps at most max_messages messages", "[m4]")
 {
     char history[8192];
     size_t used = 0;
-    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\",\"content\":\"0\"}", 2);
+    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\",\"content\":\"0\"}", 2, false);
     TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
 
-    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\",\"content\":\"1\"}", 2);
-    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\",\"content\":\"2\"}", 2);
+    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\",\"content\":\"1\"}", 2, false);
+    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\",\"content\":\"2\"}", 2, false);
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
     /* The oldest was trimmed, not the newest. */
     TEST_ASSERT_NULL(strstr(history, "\"0\""));
@@ -944,12 +944,12 @@ TEST_CASE("history with a zero bound stays an empty array", "[m4]")
 {
     char history[256] = "[]";
     size_t used = 2;
-    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\"}", 0);
+    agent_history_append(history, sizeof history, &used, "{\"role\":\"user\"}", 0, false);
     TEST_ASSERT_EQUAL_STRING("[]", history);
     TEST_ASSERT_EQUAL_size_t(0, agent_history_count(history));
 
     used = 2;
-    agent_history_trim(history, &used, 0);
+    agent_history_trim(history, &used, 0, false);
     TEST_ASSERT_EQUAL_STRING("[]", history);
 }
 
@@ -962,7 +962,7 @@ TEST_CASE("an append into an emptied history stays a valid array", "[m4]")
     size_t used = 2;
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"say pong\"}", 8));
+        "{\"role\":\"user\",\"content\":\"say pong\"}", 8, false));
 
     TEST_ASSERT_EQUAL_STRING("[{\"role\":\"user\",\"content\":\"say pong\"}]", history);
     TEST_ASSERT_EQUAL_size_t(strlen(history), used);
@@ -979,11 +979,11 @@ TEST_CASE("history counts through escaped and bracketed strings", "[m4]")
     char history[512];
     size_t used = 0;
     agent_history_append(history, sizeof history, &used,
-                         "{\"role\":\"user\",\"content\":\"a ] \\\" b [ c\"}", 8);
+                         "{\"role\":\"user\",\"content\":\"a ] \\\" b [ c\"}", 8, false);
     TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
 
     agent_history_append(history, sizeof history, &used,
-                         "{\"role\":\"assistant\",\"content\":\"ok\"}", 8);
+                         "{\"role\":\"assistant\",\"content\":\"ok\"}", 8, false);
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
 }
 
@@ -998,14 +998,14 @@ TEST_CASE("history_append truncates the oldest entry when the buffer is full", "
     char history[128];
     size_t used = 0;
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"aaaaaaaaaaaaaaaaaaaa\"}", 32));
+        "{\"role\":\"user\",\"content\":\"aaaaaaaaaaaaaaaaaaaa\"}", 32, false));
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"assistant\",\"content\":\"bbbbbbbbbbbbbbbbbbbb\"}", 32));
+        "{\"role\":\"assistant\",\"content\":\"bbbbbbbbbbbbbbbbbbbb\"}", 32, false));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
 
     /* This message does not fit beside both, so the oldest goes rather than it. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"cccccccccccccccccccc\"}", 32));
+        "{\"role\":\"user\",\"content\":\"cccccccccccccccccccc\"}", 32, false));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
     TEST_ASSERT_NULL(strstr(history, "aaaa"));
     TEST_ASSERT_NOT_NULL(strstr(history, "bbbb"));
@@ -1025,13 +1025,13 @@ TEST_CASE("history_append reports a message that cannot fit at all", "[m4]")
     char history[64];
     size_t used = 0;
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"a\"}", 32));
+        "{\"role\":\"user\",\"content\":\"a\"}", 32, false));
     char big[300];
     memset(big, 'x', sizeof big - 1);
     big[0] = '{'; big[1] = '"'; big[2] = 'r'; big[3] = '"'; big[4] = ':';
     big[sizeof big - 1] = '\0';
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE,
-        agent_history_append(history, sizeof history, &used, big, 32));
+        agent_history_append(history, sizeof history, &used, big, 32, false));
     /* The history it could not extend is untouched, not corrupted. */
     TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
     TEST_ASSERT_NOT_NULL(strstr(history, "user"));
@@ -1266,7 +1266,7 @@ TEST_CASE("history_trim never leaves an orphan tool message", "[m4]")
            "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
     size_t used = strlen(buf);
 
-    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 1));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 1, false));
     TEST_ASSERT_EQUAL_size_t(0, agent_history_count(buf));
     TEST_ASSERT_EQUAL_STRING("[]", buf);
     TEST_ASSERT_EQUAL_size_t(strlen(buf), used);
@@ -1278,7 +1278,7 @@ TEST_CASE("history_trim never leaves an orphan tool message", "[m4]")
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]},"
            "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
     used = strlen(buf);
-    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2, false));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
     TEST_ASSERT_NULL(strstr(buf, "\"user\""));
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"tool\""));
@@ -1302,7 +1302,7 @@ TEST_CASE("history_trim keeps a whole pair rather than half of one", "[m4]")
            "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}");
     size_t used = strlen(buf);
 
-    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 3));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 3, false));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
     TEST_ASSERT_EQUAL_INT(0, strncmp(buf, "[{\"role\":\"assistant\"", 18));
     TEST_ASSERT_NOT_NULL(strstr(buf, "c2"));
@@ -1316,7 +1316,7 @@ TEST_CASE("history_trim keeps a whole pair rather than half of one", "[m4]")
            "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c2\"}]},"
            "{\"role\":\"tool\",\"content\":\"r2\",\"tool_call_id\":\"c2\"}");
     used = strlen(buf);
-    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2, false));
     TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
     TEST_ASSERT_EQUAL_INT(0, strncmp(buf, "[{\"role\":\"assistant\"", 18));
     TEST_ASSERT_NULL(strstr(buf, "r1"));
@@ -1404,7 +1404,7 @@ TEST_CASE("a tool round keeps the question in the request body", "[m4]")
 
     /* Round 0: the prompt is pushed, then the request carries history only. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"what time is it\"}", bound));
+        "{\"role\":\"user\",\"content\":\"what time is it\"}", bound, false));
 
     llm_request_t first = {
         .model = "m",
@@ -1418,9 +1418,9 @@ TEST_CASE("a tool round keeps the question in the request body", "[m4]")
     /* Round 1: the assistant turn and its result join the same history, and the
      * question is still there. This is the assertion the old code failed. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]}", bound));
+        "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\"}]}", bound, false));
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"12:00\"}", bound));
+        "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"12:00\"}", bound, false));
 
     llm_request_t later = {.model = "m", .history_json = history, .user_prompt = NULL};
     TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&later, NULL, body, sizeof body));
@@ -1439,14 +1439,14 @@ TEST_CASE("a finished run leaves the question and its answer for the next turn",
     int32_t bound = 16;
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"first question\"}", bound));
+        "{\"role\":\"user\",\"content\":\"first question\"}", bound, false));
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"assistant\",\"content\":\"first answer\"}", bound));
+        "{\"role\":\"assistant\",\"content\":\"first answer\"}", bound, false));
 
     /* Run two pushes its own prompt onto the same buffer, which is what `run_once`
      * does before its first round. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"second question\"}", bound));
+        "{\"role\":\"user\",\"content\":\"second question\"}", bound, false));
 
     llm_request_t r = {.model = "m", .history_json = history, .user_prompt = NULL};
     char body[1024];
@@ -1479,12 +1479,69 @@ TEST_CASE("a history without the prompt assembles no user message", "[m4]")
     char history[512];
     size_t used = 0;
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"q\"}", 16));
+        "{\"role\":\"user\",\"content\":\"q\"}", 16, false));
     llm_request_t fixed = {.model = "m", .history_json = history};
     TEST_ASSERT_GREATER_THAN(0, llm_assemble_prompt(&fixed, NULL, body, sizeof body));
     TEST_ASSERT_NOT_NULL(strstr(body, "\"role\":\"user\""));
 }
 
+
+/* The pinned head is preserved even when the bound is 1. */
+TEST_CASE("history_trim preserves pinned head", "[m4]")
+ {
+    char buf[512];
+    snprintf(buf, sizeof buf,
+             "[{\"role\":\"user\",\"content\":\"pinned\"},"
+             "{\"role\":\"assistant\",\"content\":\"a1\"},"
+             "{\"role\":\"user\",\"content\":\"q2\"}]");
+    size_t used = strlen(buf);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 1, true));
+    TEST_ASSERT_EQUAL_size_t(1, agent_history_count(buf));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "pinned"));
+    TEST_ASSERT_NULL(strstr(buf, "q2"));
+
+    /* With a bound of 2, it keeps the pinned head and the latest message. */
+    snprintf(buf, sizeof buf,
+             "[{\"role\":\"user\",\"content\":\"pinned\"},"
+             "{\"role\":\"assistant\",\"content\":\"a1\"},"
+             "{\"role\":\"user\",\"content\":\"q2\"}]");
+    used = strlen(buf);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2, true));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(buf));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "pinned"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "q2"));
+    TEST_ASSERT_NULL(strstr(buf, "a1"));
+
+    /* Pinning does not license an orphan: the suffix the bound allows begins at the
+     * `tool` result whose assistant turn the trim dropped, so that result is skipped
+     * too and the pinned question stands alone rather than poisoning the next
+     * request (`02-firmware.md` §4.1 step 4). */
+    snprintf(buf, sizeof buf,
+             "[{\"role\":\"user\",\"content\":\"pinned\"},"
+             "{\"role\":\"assistant\",\"content\":null,"
+             "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+             "\"function\":{\"name\":\"time.now\",\"arguments\":\"{}\"}}]},"
+             "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{}\"}]");
+    used = strlen(buf);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_trim(buf, &used, 2, true));
+    TEST_ASSERT_EQUAL_size_t(1, agent_history_count(buf));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "pinned"));
+    TEST_ASSERT_NULL(strstr(buf, "\"tool\""));
+}
+
+/* `agent_parse_reply` distinguishes between length and stop reasons. */
+TEST_CASE("agent_parse_reply handles finish reasons", "[m4]")
+ {
+    agent_reply_t reply;
+    const char *body_stop = "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body_stop, strlen(body_stop), &reply));
+    TEST_ASSERT_EQUAL_STRING("stop", reply.finish_reason);
+
+    const char *body_len = "{\"choices\":[{\"message\":{\"content\":\"cut\"},\"finish_reason\":\"length\"}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body_len, strlen(body_len), &reply));
+    TEST_ASSERT_EQUAL_STRING("length", reply.finish_reason);
+}
 /* Capacity is a property of the shipped constants, so it is asserted rather than
  * measured on a board: the body has to hold the tool array and an 8 KiB system prompt
  * at once, or every request is refused before any provider is reached. The board
@@ -1549,12 +1606,12 @@ TEST_CASE("a full history does not send the prompt twice", "[m4]")
     /* Fill to the bound, then push the run's prompt: the oldest is evicted, the count
      * stays 2, and the prompt is nonetheless the last message. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"older\"}", bound));
+        "{\"role\":\"user\",\"content\":\"older\"}", bound, false));
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"assistant\",\"content\":\"older answer\"}", bound));
+        "{\"role\":\"assistant\",\"content\":\"older answer\"}", bound, false));
     size_t floor = agent_history_count(history);
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
-        "{\"role\":\"user\",\"content\":\"newest\"}", bound));
+        "{\"role\":\"user\",\"content\":\"newest\"}", bound, false));
 
     /* The count is back at the bound, so a `count > floor` test says false here even
      * though the prompt is the last message — the predicate the fix replaced. */

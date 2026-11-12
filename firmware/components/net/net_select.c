@@ -117,6 +117,24 @@ void net_scan_condense(net_scan_entry_t *entries, size_t *count, size_t cap,
 
 /* --- Reachability (`04-protocol.md` §4.25) -------------------------------- */
 
+int32_t net_retry_after_seconds(const char *value)
+{
+    if (value == NULL) return -1;
+    /* Leading SP is legal in a field value and servers send it; nothing else is. */
+    while (*value == ' ' || *value == '\t') value++;
+    if (*value < '0' || *value > '9') return -1;
+
+    int64_t seconds = 0;
+    while (*value >= '0' && *value <= '9') {
+        /* Saturate rather than wrap: the only consumer compares against a ceiling of
+         * seconds, so an absurd value means "at least the ceiling". */
+        if (seconds < INT32_MAX) seconds = seconds * 10 + (*value - '0');
+        value++;
+    }
+    if (*value != '\0') return -1; /* an HTTP-date, or a bare integer with junk */
+    return seconds > INT32_MAX ? INT32_MAX : (int32_t)seconds;
+}
+
 bool net_disconnect_ignored(bool leaving, bool attempting, int reason)
 {
     /* A deliberate leave is not an attempt that failed. So is `UNSPECIFIED` while an

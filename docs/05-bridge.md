@@ -193,7 +193,12 @@ The primary interaction pane.
     word is never dropped: an empty bar would say less than a short one.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
-  - `agent.final` stops the spinner and renders the assistant's answer.
+  - `agent.final` stops the spinner and renders the assistant's answer. When the
+    frame carries `truncated: true` the answer is followed by one `warn` line, so a
+    paragraph that stops mid-word is never read as the whole reply: the provider
+    stopped at `max_output_tokens` and asked for more is the only way to continue. A
+    `full_bytes`-caused truncation names the byte counts it already carries; the
+    token-cap case has no longer version to name.
   - `agent.error` stops the spinner and renders a red error box with the `code` and `message`.
 **Message kinds.** Every line in the pane has one of seven kinds, and the kind is
 what tells the reader whose words they are. It is a parameter of the one write
@@ -988,10 +993,11 @@ and `agent.max_input_bytes` are not on the wire, so the bridge cannot show them
 without a `/config get` round trip.
 
 Deliberately absent, because the device has no surface for them: `/compact` (the
-device keeps `llm.max_history_messages` messages and truncates oldest-first with
-no summarisation step to invoke), `/clear` (history lives on the device in PSRAM
-and has no reset command), and `/mcp add|remove|test` (MCP servers are config-file
-entries; changing them means `config.set` and `reload`).
+device keeps `llm.max_history_messages` messages, trims oldest-first, pins the
+running question so it cannot evict itself, and has no summarisation step to
+invoke), `/clear` (history lives on the device in PSRAM and has no reset command),
+and `/mcp add|remove|test` (MCP servers are config-file entries; changing them
+means `config.set` and `reload`).
 
 ### 7.3 `/model`
 
