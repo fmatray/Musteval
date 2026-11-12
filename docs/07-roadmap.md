@@ -74,8 +74,7 @@ Goal: implement the serialized agent run and the tool execution engine.
    the pre-write usage.
  - HTTP Allowlist: Declarative tool to host not in `tools.http_allow_hosts` returns `E_TOOL`.
  - Response Projection: a tool with `response_path` returns only that subtree; an unresolvable path is `E_TOOL` and no partial body is returned.
- - Shipped tools: `weather_now` (Open-Meteo, keyless) and `web_search` (Brave, `nvs:brave_key`) both return results with no secret in any emitted frame; `web_search` with `brave_key` absent fails to load with `E_CONFIG`. Both are ordinary `/tools/*.json` files in the `userfs` image, so this criterion cannot be met until M5's `bridge/tools/build_userfs.py` puts them there: at M4 the device advertises the built-ins only, and this row is carried to M5 with the image.
- - Peripherals: `adc.read` on D0/D1/D3 returns raw and millivolts; `i2c.scan` finds a device on the configured bus; `i2c.read` caps at 64 bytes.
+ - Shipped tools: `weather_now` (Open-Meteo, keyless) and `web_search` (Brave, `nvs:brave_key`) both return results with no secret in any emitted frame; `web_search` with `brave_key` absent fails to load with `E_CONFIG`. Both are ordinary `/tools/*.json` files in the `userfs` image, so this criterion can now be met by flashing the image produced by `bridge/tools/build_userfs.py`: at M4 the device advertises the built-ins only, and this row is carried to M5 for board evidence.
  - Bus write: `i2c.write` to a connected device succeeds and a subsequent `i2c.read` observes the change; with `tools.allow_dangerous: false` the same call returns `E_TOOL`; a NACK surfaces `E_TOOL` with the address in `detail`.
  - Memory: `memory.set` then `memory.get` round-trips a value across a reboot; `memory.delete` removes it and a second `memory.get` returns `E_TOOL`; a write past `tools.memory_max_bytes` returns `E_TOOL` and leaves the previous value intact.
  - Memory isolation: no `memory.*` key is reachable by `fs.read`, and a key using a reserved prefix returns `E_TOOL`.
@@ -157,7 +156,7 @@ unproven here: the board this was built on joins no network and resolves no key.
 ### M5: Scheduler, MCP & Hardening
 Goal: Full automation, remote capabilities, and final security audit.
 - **Scope**: Trigger engine, `tasks.json` execution, MCP servers, redaction audit, NVS encryption (`nvs_keys` partition).
-- **Deliverables**: `sched`, `mcp` modules, plus `bridge/tools/build_userfs.py` (Python script that builds the `userfs` image from a source directory and flashes it).
+- **Deliverables**: `sched`, `mcp` modules, plus `bridge/tools/build_userfs.py` (shipped).
 - **Acceptance Tests**:
   - Triggers: `boot`, `wifi_connected`, `gpio`, `event`, `schedule` (at/every) all fire associated tasks.
   - Missed-fire: `missed: "skip"` skips late tasks; `run_once` fires them on next sync.

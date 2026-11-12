@@ -18,4 +18,9 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
     # test binary runs from `build/`.
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PROTOCOL_DOC_PATH="${CMAKE_CURRENT_LIST_DIR}/../../../docs/04-protocol.md")
+    # The seed `userfs` image is what a fresh device boots on, so a seed that the
+    # schema refuses is a device that never leaves safe mode. Read from the repo
+    # for the same reason as the doc above.
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        USERFS_SEED_CONFIG_PATH="${CMAKE_CURRENT_LIST_DIR}/../../userfs/config.json")
 endif()

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "wifi": {
+    "networks": [
+      {
+        "ssid": "musteval-setup",
+        "password_ref": "nvs:wifi_psk",
+        "priority": 100
+      }
+    ]
+  },
+  "llm": {
+    "providers": [
+      {
+        "id": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "openai/gpt-4o-mini",
+        "api_key_ref": "nvs:llm_api_key"
+      }
+    ]
+  },
+  "agent": {
+    "system_prompt": "/prompts/system.md"
+  },
+  "tools": {
+    "http_allow_hosts": [
+      "api.open-meteo.com",
+      "api.search.brave.com"
+    ]
+  }
+}

@@ -920,7 +920,7 @@ the one write carve-out that touches storage internals.
 `tools_json` is built at run start from three sources, in this order: built-ins,
 declarative `/tools/*.json`, and MCP tools discovered at `tools/list`. At M4 only the
 first exists: `tools_json_build` is called with an empty declarative set, because the
-image that carries `/tools/*.json` is M5's `bridge/tools/build_userfs.py`. Each entry is
+image that carries `/tools/*.json` is `bridge/tools/build_userfs.py`. Each entry is
 one `{"type":"function","function":{...}}`. The value `llm` receives is the bare
 array — `[{"type":"function",...}]` — with no enclosing object, because `llm` splices
 it into a member of its own request. A slice that carries the wrapper's closing brace
@@ -1042,9 +1042,10 @@ What the simulator proves and what it does not:
 | `userfs` and `wsfs` mounts, including the once-only `wsfs` reformat | LittleFS wear behaviour, brownout, WiFi failover |
 | `app_main()` reaching `store_mount()` and the fit assertions in §3.1 | `ping` latency, and any code path that needs a real radio |
 
-The seeded `userfs` is a throwaway: three directories and a placeholder
-`config.json`. The real image builder is M5's `bridge/tools/build_userfs.py`
-(`07-roadmap.md` §M5); until it lands, a freshly flashed board halts on
-a `userfs` that is blank and cannot be formatted (§3.1), and the two declarative
-tools `00-overview.md` §7 ships — `weather_now` and `web_search` — are absent
-because nothing puts them in the image.
+The seeded `userfs` QEMU runs on is a throwaway: three directories and a
+placeholder `config.json`. The real image is built by
+`bridge/tools/build_userfs.py` from `firmware/userfs/` (`../05-bridge.md` §11),
+which is flashed at the partition offset rather than formatted by the firmware; a
+freshly flashed board halts on a `userfs` that is blank and cannot be formatted
+(§3.1), and the two declarative tools `00-overview.md` §7 ships — `weather_now`
+and `web_search` — are absent unless that image was flashed.

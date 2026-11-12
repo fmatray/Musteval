@@ -324,8 +324,8 @@ Legacy command spellings (`write_flash`, `merge_bin`, `erase_flash`) still work 
 working unchanged.
 
 A virgin board also needs a seeded `userfs`: it is never formatted by the firmware,
-and a blank one halts with `E_STORAGE` (§4). `build/qemu/userfs.bin` from
-`02-firmware.md` §8 serves until `bridge/tools/build_userfs.py` exists.
+and a blank one halts with `E_STORAGE` (§4). `bridge/tools/build_userfs.py` builds that
+image from `firmware/userfs/` and flashes it at the partition offset.
 
 The working sequence, and the two traps in it:
 

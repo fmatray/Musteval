@@ -1,3 +1,8 @@
+# AGENTS
+.omp/
+skills-lock.json
+.agents/
+
 # Python (bridge)
 __pycache__/
 *.py[cod]

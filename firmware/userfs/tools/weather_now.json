@@ -1,0 +1,25 @@
+{
+  "name": "weather_now",
+  "description": "Current weather for a latitude/longitude via Open-Meteo.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "latitude": { "type": "number", "description": "Latitude in decimal degrees." },
+      "longitude": { "type": "number", "description": "Longitude in decimal degrees." }
+    },
+    "required": ["latitude", "longitude"]
+  },
+  "http": {
+    "method": "GET",
+    "url": "https://api.open-meteo.com/v1/forecast",
+    "query": {
+      "latitude": "{{latitude}}",
+      "longitude": "{{longitude}}",
+      "current": "temperature_2m"
+    },
+    "headers": {
+      "Accept": "application/json"
+    },
+    "timeout_ms": 10000
+  }
+}

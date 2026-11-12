@@ -193,8 +193,7 @@ command (`../04-protocol.md` §4.16) or reflashing a `userfs` image; `reload` on
 re-reads what is already on flash. A path that ships in the image refuses the import
 with `E_CONFIG`, so a built-in declarative tool is replaceable only by reflash. The
 image is produced by `bridge/tools/build_userfs.py`, which builds and flashes it from
-a source directory; the script is an M5 deliverable and does not exist yet
-(`../05-bridge.md` §11, `../07-roadmap.md` §M5).
+a source directory (`../05-bridge.md` §11).
 
 ## Errors
 

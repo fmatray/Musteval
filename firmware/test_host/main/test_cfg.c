@@ -3,6 +3,7 @@
  * steps 3-9, `04-protocol.md` §4.10, `06-security.md` §secret handling. Pure
  * functions, so no board and no filesystem. */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "unity.h"
@@ -476,4 +477,21 @@ TEST_CASE("a mask that cannot fit leaves the buffer terminated", "[cfg]")
     TEST_ASSERT_TRUE(cfg_redact(line, sizeof line, secrets, 1));
     TEST_ASSERT_EQUAL(strlen(line), strnlen(line, sizeof line));
     TEST_ASSERT_NULL(strstr(line, "s3cret"));
+}
+
+TEST_CASE("the shipped userfs seed config passes the schema", "[cfg][docs]")
+{
+    /* A fresh device boots on the seed image, so a seed the schema refuses is a
+     * device that never leaves safe mode. Read from the repo rather than copied
+     * here: a copy would keep passing after the real seed drifted. */
+    const char *path = USERFS_SEED_CONFIG_PATH;
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) TEST_IGNORE_MESSAGE("seed config not reachable");
+    static char src[8192];
+    size_t n = fread(src, 1, sizeof src - 1, f);
+    fclose(f);
+    src[n] = '\0';
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_OK, validate(src, why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("", why);
 }

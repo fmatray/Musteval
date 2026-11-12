@@ -1,0 +1,26 @@
+{
+  "name": "web_search",
+  "description": "Search the web through the Brave Search API and return up to five web results. Each result includes a title, url and description; other fields are provider-specific.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "Search query, 1..200 chars." }
+    },
+    "required": ["query"]
+  },
+  "http": {
+    "method": "GET",
+    "url": "https://api.search.brave.com/res/v1/web/search",
+    "query": {
+      "q": "{{query}}",
+      "count": "5",
+      "safesearch": "moderate"
+    },
+    "headers": {
+      "Accept": "application/json",
+      "X-Subscription-Token": "nvs:brave_key"
+    },
+    "response_path": "web.results",
+    "timeout_ms": 15000
+  }
+}
