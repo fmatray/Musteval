@@ -131,7 +131,7 @@ wear. Namespace `memory` holds the model's key/value store (`memory.*` tools),
 bounded by `tools.memory_max_bytes`. Every other config key, including
 `sys.safe_mode_after`, lives in `config.json`.
 `tasks.json` is written only by
-`store_task_write()`: the `task.set` tool, and the host's `tasks.set` and
+`store_write_image_chunk()`: the `task.set` tool, and the host's `tasks.set` and
 `tasks.delete` commands. Never by the scheduler or by trigger bookkeeping.
 
 ## 4. Frozen config keys
@@ -258,7 +258,7 @@ Shipped-by-default declarative tools, user-editable files rather than built-ins:
 
 The one structural rule worth stating here because it bounds everything else: among
 model-reachable tools, only `task.set` writes `userfs`, and it goes through
-`store_task_write()`, which serialises the whole `tasks.json` atomically under a
+`store_write_image_chunk()`, which serialises the whole `tasks.json` atomically under a
 mutex. That lifts the old "agent never writes tasks.json" non-goal; the bound is
 `tools.task_max` plus schema validation, not trust, and the tool can only add or
 update - delete is the host-only `tasks.delete` command. Every other `userfs` write

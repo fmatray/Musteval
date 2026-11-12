@@ -60,6 +60,10 @@ typedef struct {
     size_t len;
     agent_source_t source;
     char reply_to[32];
+    /* Assigned at submit, not at run: `tasks.run` (`04` §4.5) and `task.fired`
+     * (`04` §3.16) both have to name the run in the reply that starts it, and a run
+     * id minted inside `run_once` is not knowable to the caller that asked. */
+    char run_id[24];
 } agent_job_t;
 
 static QueueHandle_t s_queue;
@@ -599,7 +603,7 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
     ctx.todo.apply = todo_port_apply;
     build_tools_json(&ctx);
 
-    snprintf(s_run_id, sizeof s_run_id, "r-%" PRIu32, s_run_counter++);
+    snprintf(s_run_id, sizeof s_run_id, "%s", job->run_id);
     int64_t started_ms = esp_timer_get_time();
 
     emit_agent_start(s_run_id, job->reply_to, job->source, job->len, queue_depth);
@@ -826,8 +830,11 @@ esp_err_t agent_start(void)
 }
 
 esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
-                       const char *reply_to)
+                       const char *reply_to, char *run_id_out, size_t run_id_cap)
 {
+    /* Cleared up front so a refusal never leaves the caller reading a stale id from
+     * a previous run of its own buffer. */
+    if (run_id_out != NULL && run_id_cap > 0) run_id_out[0] = '\0';
     if (prompt == NULL || reply_to == NULL) return ESP_ERR_INVALID_ARG;
     /* Its own code: sharing `ESP_ERR_INVALID_STATE` with the full queue told the
      * bridge to retry a boot-time allocation failure (`04` §3.3 E_BUSY is
@@ -855,10 +862,17 @@ esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
     job.len = len;
     job.source = source;
     snprintf(job.reply_to, sizeof job.reply_to, "%s", reply_to);
+    /* Minted before the enqueue and under the same single producer the queue
+     * already serialises: two submits cannot be handed the same id, and the id is
+     * fixed before any task can start the run. */
+    snprintf(job.run_id, sizeof job.run_id, "r-%" PRIu32, s_run_counter++);
 
     if (xQueueSend(s_queue, &job, 0) != pdTRUE) {
         heap_caps_free(copy);
         return ESP_ERR_INVALID_STATE;
+    }
+    if (run_id_out != NULL && run_id_cap > 0) {
+        snprintf(run_id_out, run_id_cap, "%s", job.run_id);
     }
     return ESP_OK;
 }

@@ -165,9 +165,10 @@ copies its host and `reply_to`, emits one `command.result`, and deletes itself. 
 second `net.ping` while one is in flight is `E_BUSY` (`04-protocol.md` §4.25).
 
 - Exactly three APIs write `userfs`: `config.set`, which targets `/fs/config.json`
-  and is not reachable through any tool path; `store_task_write()`, which targets
-  `/fs/tasks.json` and is reachable from the `task.set` tool and the
-  `tasks.set`/`tasks.delete` commands (§7.2); and the host-only `fs.put` command,
+  and is not reachable through any tool path; `store_write_image_chunk()`, which
+  targets `/fs/tasks.json` through the staged-write protocol (§4.20) and is reachable
+  from the `task.set` tool and the `tasks.set`/`tasks.delete` commands (§7.2); and
+  the host-only `fs.put` command,
   which targets any allowlisted path not shipped in the image (`04-protocol.md`
   §4.16). Every other write target is `wsfs`, and only `task.set` is model-reachable.
 
@@ -960,7 +961,7 @@ The per-tool schemas are canonical in each domain file, not here:
 A tool call whose arguments fail schema validation is rejected as `E_TOOL` without
 executing, and no partial effect is applied.
 
-### 7.2 `task.set` and `store_task_write()`
+### 7.2 `task.set` and the `tasks.json` write
 
 This is the only **tool** allowed to write to `userfs`. It validates the input
 against the task schema in `docs/03-config.md` §tasks and refuses if the resulting
@@ -973,8 +974,13 @@ entry. Deletion is host-only through the `tasks.delete` command (§4.7 of
 `04-protocol.md`), so a compromised model cannot remove a user's scheduled task.
 Authority split and argument semantics: `tools/tasks.md`.
 
- `store_task_write()` writes the whole `/fs/tasks.json` atomically by writing to a
- temp file then renaming; this is held under a mutex and refused during `reload`.
+`store_write_image_chunk("/tasks.json", ...)` writes the whole `/fs/tasks.json`
+atomically: the same staged-write protocol `fs.put` uses, which renames over the
+target only on the `final` chunk, so a refused or abandoned transfer leaves the
+previous file intact. `sched` is its only caller. There is no separate
+`store_write_image_chunk()` — the generic image writer already has the semantics the task
+file needs, and a second entry point would be a second place to keep the atomicity
+right.
  A write refused during `reload` returns `E_BUSY`; this is the only failure of
  `task.set` that is neither `E_TOOL` nor `E_STORAGE`. Its callers are exactly
  three: the `task.set` tool, and the `tasks.set` / `tasks.delete` commands.

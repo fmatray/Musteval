@@ -259,9 +259,16 @@ void agent_run_settings_resolve(const agent_raw_settings_t *raw,
  * retryable busy queue. `reply_to` is the frame id the run answers.
  *
  * Asynchronous by construction: the caller is the link reader task, which must not
- * block for a whole run (`02-firmware.md` §3.3). */
+ * block for a whole run (`02-firmware.md` §3.3).
+ *
+ * `run_id_out` is optional. When non-NULL and the prompt was accepted it holds the
+ * run's identity, `r-<n>`, NUL-terminated and never longer than 23 characters; on a
+ * refusal it holds `""`. The id is minted here rather than in the run because two
+ * callers have to name the run in the reply that starts it — `tasks.run`
+ * (`04` §4.5) and the `fired` frame (`04` §3.16) — and neither can observe an id
+ * allocated after the enqueue. */
 esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
-                       const char *reply_to);
+                       const char *reply_to, char *run_id_out, size_t run_id_cap);
 
 /* `cancel` (`04` §3.5, §4.14). Returns true when a run was live and has been
  * signalled, false when nothing was running (`cancel.noop`, `04` §3.19). */

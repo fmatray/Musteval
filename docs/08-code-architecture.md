@@ -144,13 +144,20 @@ one function pointer and `app` passes it to the two L2 modules at boot.
 /* agent exports; app installs into sched and tools */
 typedef void (*agent_run_done_cb)(esp_err_t err, void *user);
 typedef esp_err_t (*agent_submit_fn)(const char *source, const char *prompt,
-                                     agent_run_done_cb on_done, void *user);
+                                     agent_run_done_cb on_done, void *user,
+                                     char *run_id_out, size_t run_id_cap);
 
 esp_err_t agent_submit(const char *source, const char *prompt,
-                       agent_run_done_cb on_done, void *user);
+                       agent_run_done_cb on_done, void *user,
+                       char *run_id_out, size_t run_id_cap);
 esp_err_t sched_set_submit(agent_submit_fn fn);
 esp_err_t tools_set_submit(agent_submit_fn fn);
 ```
+
+`run_id_out` is on the port, not an afterthought: `tasks.run` (`04` §4.5) and the
+`fired` frame (`04` §3.16) both have to name the run in the reply that starts it,
+and no caller can observe an id the loop mints after the enqueue. It is optional —
+NULL is accepted — and holds `""` on a refusal.
 
 The dependency still points downward at call time — `agent` is not included by `sched`
 or `tools`, only a function signature is — but the *edge* is installed by `app`, so no

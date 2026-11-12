@@ -50,7 +50,7 @@ count would exceed `tools.task_max`. Result returns the task id.
 The tool is add/update only. A task object carrying any key outside the schema is
 rejected whole as `E_TOOL` and the file is never partially updated.
 
-`store_task_write()` writes the whole `/fs/tasks.json` atomically by writing to
+`store_write_image_chunk("/tasks.json", ...)` writes the whole file atomically by writing to
 a temp file then renaming; this is held under a mutex and refused during `reload`
 (`../02-firmware.md` §7.2).
 
@@ -125,7 +125,7 @@ without it re-enables a disabled task (`../04-protocol.md` §4.6).
    bad trigger).
  - `E_STORAGE` — `[ASSUMPTION]` the atomic write to `/fs/tasks.json` failed; file
    left as before.
- - `E_BUSY` — `store_task_write()` is refused when `reload` is in progress.
+ - `E_BUSY` — the `tasks.json` write is refused when `reload` is in progress.
    This is the only failure of `task.set` that is neither `E_TOOL` nor `E_STORAGE`.
 ## See also
 
@@ -134,7 +134,7 @@ without it re-enables a disabled task (`../04-protocol.md` §4.6).
 - [Schedule sub-schema](../03-config.md#schedule-sub-schema)
 - [Action schema](../03-config.md#action-schema)
 - [tools config: task_max](../03-config.md#tools)
-- [`task.set` and `store_task_write()`](../02-firmware.md) §7.2
-- [`store_task_write()` carve-out](../06-security.md) §6.3
+- [`task.set` and the `tasks.json` write](../02-firmware.md) §7.2
+- [`tasks.json` carve-out](../06-security.md) §6.3
 - [Command catalog: `tasks.set` and `tasks.delete`](../04-protocol.md) §4.6, §4.7
 - [Tool surface index](README.md)

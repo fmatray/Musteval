@@ -1395,7 +1395,7 @@ static void on_link_frame(const json_node_t *frame)
         }
 
         esp_err_t err = agent_submit(text, text != NULL ? strlen(text) : 0,
-                                     AGENT_SOURCE_PROMPT, reply_to);
+                                     AGENT_SOURCE_PROMPT, reply_to, NULL, 0);
         if (err == ESP_OK) return;   /* the run answers with its own frames */
 
         /* The codes and wording are `agent_prompt_rejection`'s, so a rejected prompt

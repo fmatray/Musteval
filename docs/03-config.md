@@ -576,8 +576,8 @@ with deliberately different authority:
 | User, via the bridge | `tasks.set` | `tasks.set` with an existing `id` | `tasks.set` with `enabled` | `tasks.delete` |
 | Agent, via `task.set` | yes | yes | yes | **no** |
 
-Both go through `store_task_write()`, which rewrites the whole file atomically, so
-only one writer's view ever lands on flash. Delete is host-only so a compromised
+Both go through `store_write_image_chunk("/tasks.json", ...)`, which rewrites the
+whole file atomically, so only one writer's view ever lands on flash. Delete is host-only so a compromised
 model cannot remove a task out from under the user (`06-security.md` §6.3). Setting
 `enabled: false` is the agent-reachable way to stop a task firing without removing
 it.
@@ -1098,7 +1098,7 @@ Default / reject matrix:
 | Duplicate id | reject the whole file |
 | `nvs:` reference unresolvable | `E_CONFIG`, never substitute empty string |
 | `secret_ref` written in plain text instead of `nvs:` | `E_CONFIG` (format is frozen) |
-| `tasks.json` written by the agent | only via `task.set` (`store_task_write()`), capped by `tools.task_max`; host writes via `tasks.set`/`tasks.delete` are capped by the 16-entry schema limit instead |
+| `tasks.json` written by the agent | only via `task.set` (`store_write_image_chunk`), capped by `tools.task_max`; host writes via `tasks.set`/`tasks.delete` are capped by the 16-entry schema limit instead |
 | Write attempt outside `/workspace/` via `fs.write` | `E_TOOL` |
 | `gpio.write` / `fs.write` with `tools.allow_dangerous: false` | `E_TOOL`, refusal is explicit |
 
@@ -1147,7 +1147,7 @@ levelling, so the quota, not the partition, is what bounds the model.
 4. Resolved: `geo.locate` does not auto-refresh on RSSI change; the cache is TTL-bounded only.
 5. Resolved: QoS 2 is never supported; `qos` accepts `0` and `1` only, permanently.
 6. Resolved: `task.set` is add/update only; the host deletes with `tasks.delete`. Both
-   write through `store_task_write()`, so the file keeps a single atomic writer, and
+   write through `store_write_image_chunk()`, so the file keeps a single atomic writer, and
    destructive task changes stay outside the agent's reach.
 7. Resolved: `/prompts/`, `/skills/` and `/tools/*.json` reach the device two ways.
    A subset ships baked into the `userfs` image built at flash time — the built-in

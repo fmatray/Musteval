@@ -160,7 +160,7 @@ job — none of them is sufficient alone:
    - the `config.set` command (for `/fs/config.json`),
    - the host-only `fs.put` command (for `/fs/skills/`, `/fs/prompts/` and
      `/fs/tools/`, path-allowlisted in `04-protocol.md` §4.16),
-   - the `task.set` tool (for `/fs/tasks.json` via `store_task_write()`), the only
+   - the `task.set` tool (for `/fs/tasks.json` via `store_write_image_chunk()`), the only
      model-reachable writer, gated by `tools.allow_dangerous`.
 
    No generic filesystem entry point exists for either mount, so an absolute
@@ -211,7 +211,7 @@ blast-radius bound when a resolver bug admits a path relative to `wsfs`. It does
 **not** make a fully bypassed resolver safe: an absolute `/fs/config.json` opened
 `O_WRONLY` succeeds. That case rests on API discipline
 (`02-firmware.md` §`store`: no entry point writes `userfs` except `config.set`
-`fs.put` and `store_task_write()`), and `S6d` is the test that keeps it true.
+`fs.put` and `store_write_image_chunk()`), and `S6d` is the test that keeps it true.
 
 ### 6.2 Workspace quota
 
@@ -238,11 +238,11 @@ not strictly monotonic. The only other ways space is reclaimed are a `wsfs` refo
 or a full reflash, both of which require the user to act outside the session. `S17`
 pins the recompute.
 
-### 6.3 The `store_task_write()` carve-out
+### 6.3 The `tasks.json` carve-out
 
 `userfs` accepts writes from three host-visible callers (barrier 3 in §6.1):
 `config.set` touching `/fs/config.json`, `fs.put` touching a path-allowlisted file,
-and `store_task_write()` touching `/fs/tasks.json`. The third is the only one with a
+and `store_write_image_chunk()` touching `/fs/tasks.json`. The third is the only one with a
 model-facing entry point, and it has three callers with unequal authority:
 
 | Caller | Gate | Add | Update | Delete |
@@ -460,7 +460,7 @@ Each item is exercised by a roadmap milestone; failures are release blockers.
 | S6 | `gpio.write`, `i2c.write` and `fs.write` refused with `tools.allow_dangerous: false`; `fs.write` outside `/workspace/` refused when enabled, including `..` traversal that resolves outside it | M4 |
 | S6b | `fs.write` that would exceed the `/workspace/` quota returns `E_STORAGE` without modifying the target file | M4 |
 | S6c | Deleting `wsfs` and rebooting reformats only `wsfs`; `/fs/config.json` survives, proving the mounts are independent filesystems | M0 |
-| S6d | A source audit of every `open(..., O_WRONLY/O_RDWR/O_CREAT)` site finds exactly three `userfs`-reachable callers, all sanctioned: `config.set` writing `/fs/config.json`, `fs.put` writing a path-allowlisted file under `/fs`, and `store_task_write()` writing `/fs/tasks.json`. Of the three only `task.set` is model-reachable. Every other write target is `/workspace/*`, and `fs.write` or `fs.delete` against `/fs/config.json` returns `E_TOOL`. NVS writes are not filesystem writes and are enumerated separately: the `memory` namespace is written only by `memory.set` / `memory.delete`, `secrets` only by `secret.set`, and `runtime` by the boot guard (`boot_failures`), task bookkeeping (`last_fired`, `fired_count`), the clock sync timestamp, and the LLM budget counters. None of these is reachable as a path by any tool | M4 |
+| S6d | A source audit of every `open(..., O_WRONLY/O_RDWR/O_CREAT)` site finds exactly three `userfs`-reachable callers, all sanctioned: `config.set` writing `/fs/config.json`, `fs.put` writing a path-allowlisted file under `/fs`, and `store_write_image_chunk()` writing `/fs/tasks.json`. Of the three only `task.set` is model-reachable. Every other write target is `/workspace/*`, and `fs.write` or `fs.delete` against `/fs/config.json` returns `E_TOOL`. NVS writes are not filesystem writes and are enumerated separately: the `memory` namespace is written only by `memory.set` / `memory.delete`, `secrets` only by `secret.set`, and `runtime` by the boot guard (`boot_failures`), task bookkeeping (`last_fired`, `fired_count`), the clock sync timestamp, and the LLM budget counters. None of these is reachable as a path by any tool | M4 |
 | S6e | `task.set` cannot remove an entry: a task object carrying any key outside the `03-config.md` task schema is refused with `E_TOOL` and `tasks.json` is unchanged; `enabled: false` leaves the entry present in `tasks.list` | M6 |
 | S7 | Declarative tool to a host absent from `tools.http_allow_hosts` is refused with `E_TOOL` | M4 |
 | S8 | Disabled or unreachable MCP server yields `E_MCP` and the agent run still completes | M5 |
