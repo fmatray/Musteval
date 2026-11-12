@@ -256,12 +256,17 @@ def _todo(rest: list[str]) -> list[Frame]:
     """`05-bridge.md` §7: `/todo` is the `todo` tool's op set over the wire.
 
     Every verb here is a `tools/todo.md` §Operations op with the same name, so the
-    command cannot drift from the tool the model calls. The one word that is not an
-    op is a target: it is sent as both `task` and `phase`, and `todo_apply`'s own
+    command cannot drift from the tool the model calls. On the verbs that take one
+    target, that target is sent as both `task` and `phase`, and `todo_apply`'s own
     `task → phase` chain decides which one matched. A task name wins when one
     exists; otherwise a phase matches every task in it. Sending only `task` would
     make `/todo done auth` fail as an unknown task, and resolving it here would be
     a second opinion of what a target means.
+
+    `append` takes a phase then its items, and flat `init` takes items (none clears).
+    The nested `list[]` `init` form stays model-only: flat `init` plus `append`
+    reaches any multi-phase tree, so the command needs no second spelling for it.
+    A required argument is refused here, so a malformed op costs no round trip.
     """
     if not rest:
         return [_command("todo.apply", {"op": "view"})]
@@ -269,10 +274,33 @@ def _todo(rest: list[str]) -> list[Frame]:
     if op not in TODO_OPS:
         raise CommandError(f"usage: /todo [{'|'.join(TODO_OPS)}] [target]")
     args: dict[str, Any] = {"op": op}
-    target = " ".join(rest[1:])
-    if target:
-        args["task"] = target
-        args["phase"] = target
+    tail = rest[1:]
+    if op == "view":
+        # A trailing word on a read-only op would be dropped silently, and a dropped
+        # argument is how `/todo append auth` looked correct while sending nothing.
+        if tail:
+            raise CommandError("view takes no target: /todo [view]")
+        return [_command("todo.apply", args)]
+    if op == "append":
+        if not tail:
+            raise CommandError("append needs a phase: /todo append <phase> <item> [item...]")
+        if len(tail) < 2:
+            raise CommandError(
+                "append needs at least one item: /todo append <phase> <item> [item...]"
+            )
+        args["phase"] = tail[0]
+        args["items"] = tail[1:]
+    elif op == "init":
+        if tail:
+            args["items"] = tail
+    elif op == "start":
+        _require(tail, 1, "/todo start <task>")
+        args["task"] = " ".join(tail)
+    else:
+        target = " ".join(tail)
+        if target:
+            args["task"] = target
+            args["phase"] = target
     return [_command("todo.apply", args)]
 
 

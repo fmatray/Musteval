@@ -36,6 +36,16 @@ static esp_err_t todo_op(todo_list_t *list, const char *json)
     return err;
 }
 
+/* Apply one op described by `json`, returning its result code and filling `why`. */
+static esp_err_t todo_op_why(todo_list_t *list, const char *json, char *why, size_t why_cap)
+{
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse(json, strlen(json), &doc));
+    esp_err_t err = todo_apply(list, json_root(doc), why, why_cap);
+    json_free(doc);
+    return err;
+}
+
 /* The status of the task whose content is `content`, or -1 when absent. */
 static int status_of(const todo_list_t *list, const char *content)
 {
@@ -254,6 +264,74 @@ TEST_CASE("todo requires an op and rejects an unknown one", "[m4]")
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
         todo_op(list, "{\"op\":\"infer\",\"items\":[\"a\"]}"));
     TEST_ASSERT_EQUAL_size_t(0, todo_task_total(list));
+}
+
+TEST_CASE("todo refusal messages are helpful", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    char why[96];
+
+    /* append missing phase. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"append\",\"items\":[\"a\"]}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "append needs a phase"));
+
+    /* append missing items. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"append\",\"phase\":\"Tasks\"}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "append needs items"));
+
+    /* append over-long item. */
+    why[0] = '\0';
+    char long_item[AGENT_TODO_CONTENT_MAX + 2];
+    memset(long_item, 'x', sizeof long_item - 1);
+    long_item[sizeof long_item - 1] = '\0';
+    char call[256];
+    snprintf(call, sizeof call,
+             "{\"op\":\"append\",\"phase\":\"Tasks\",\"items\":[\"%s\"]}",
+             long_item);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "item is longer than"));
+
+    /* init over-long phase. */
+    why[0] = '\0';
+    char long_phase[AGENT_TODO_PHASE_MAX + 2];
+    memset(long_phase, 'x', sizeof long_phase - 1);
+    long_phase[sizeof long_phase - 1] = '\0';
+    snprintf(call, sizeof call,
+             "{\"op\":\"init\",\"phase\":\"%s\",\"items\":[\"a\"]}",
+             long_phase);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "phase is longer than"));
+
+    /* nested `list` init: a duplicate phase name is the model's most likely mistake,
+     * and its refusal used to be the generic fallback rather than naming the clash. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[\"x\"]},"
+        "{\"phase\":\"a\",\"items\":[\"y\"]}]}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "duplicate phase name"));
+
+    /* nested `list` init: an empty phase is refused, not stored as an empty row. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[]}]}",
+        why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "a phase needs items"));
+
+    /* nested `list` init: more than eight phases. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[\"x\"]},"
+        "{\"phase\":\"b\",\"items\":[\"y\"]},{\"phase\":\"c\",\"items\":[\"z\"]},"
+        "{\"phase\":\"d\",\"items\":[\"p\"]},{\"phase\":\"e\",\"items\":[\"q\"]},"
+        "{\"phase\":\"f\",\"items\":[\"r\"]},{\"phase\":\"g\",\"items\":[\"s\"]},"
+        "{\"phase\":\"h\",\"items\":[\"t\"]},{\"phase\":\"i\",\"items\":[\"u\"]}]}",
+        why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "at most 8 phases"));
 }
 
 /* `view` renders without writing, so a list whose active task was demoted by hand is

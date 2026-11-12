@@ -383,10 +383,18 @@ need no provider. Recover from safe mode first if the board is in it.
       with two tasks; `start` moved only the named task to `in_progress`, demoting
       the one it replaced; `done` then `block` on the phase left the `completed` task
       alone and set `blocker` on the other; `rm` deleted one task and kept the phase;
-      a target naming nothing answered `E_TOOL` "no task matches" with the list
-      untouched; and `init` with `items: []` cleared it. The command is the `todo`
-      tool's own apply path, so `/todo done 3` and the model's `{"op":"done","task":"3"}`
-      are one code path — asserted by construction, not by comparison.
+      a target naming nothing answered `E_TOOL` with the list untouched; and bare
+      `init` cleared it. Re-driven through `bin/bridge --send`, the real command path:
+      `/todo init auth`, `/todo append auth "wire jwt" "rotate key"`, and `/todo start
+      wire jwt` each built the tree they name, while `/todo append` and `/todo append
+      auth` were both refused host-side with the usage string instead of a frame.
+      Every refusal names what is wrong rather than the old generic `todo refused`:
+      `append needs a phase`, `append needs items`, `start needs a task`, `duplicate
+      content`, `item is longer than 120 characters`, `phase is longer than 40
+      characters`, `at most 8 phases`, `a phase needs items`, `duplicate phase name`.
+      The command is the `todo` tool's own apply path, so `/todo done 3` and the
+      model's `{"op":"done","task":"3"}` are one code path — asserted by
+      construction, not by comparison.
 - [X] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field,
       and the region dropdown pre-selecting the stored zone's region. Driven on the
       board through a pty: `bin/bridge`, then `/onboard`, and step 1 drew with

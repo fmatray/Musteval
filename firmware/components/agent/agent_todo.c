@@ -35,6 +35,31 @@ static bool arg_ok_len(const char *value, size_t max)
     return value != NULL && strlen(value) <= max;
 }
 
+/* Refusal texts live here because the same bound is stated by several ops, and
+ * §Errors requires the message to name what is wrong. */
+static void why_item_long(char *why, size_t why_cap)
+{
+    if (why != NULL) {
+        snprintf(why, why_cap, "item is longer than %d characters",
+                 AGENT_TODO_CONTENT_MAX);
+    }
+}
+
+static void why_phase_long(char *why, size_t why_cap)
+{
+    if (why != NULL) {
+        snprintf(why, why_cap, "phase is longer than %d characters",
+                 AGENT_TODO_PHASE_MAX);
+    }
+}
+
+static void why_too_many_tasks(char *why, size_t why_cap)
+{
+    if (why != NULL) {
+        snprintf(why, why_cap, "at most %d tasks", AGENT_TODO_MAX_TASKS);
+    }
+}
+
 size_t todo_task_total(const todo_list_t *list)
 {
     return list != NULL ? list->task_count : 0;
@@ -196,11 +221,15 @@ static void normalize(todo_list_t *list)
 }
 
 /* `init` from the nested `list` form: `[{phase, items:[...]}]`. */
-static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args)
+static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
+                                char *why, size_t why_cap)
 {
     const json_node_t *phases = json_get(args, "list");
     size_t n = json_array_len(phases);
-    if (n > AGENT_TODO_MAX_PHASES) return ESP_ERR_INVALID_SIZE;
+    if (n > AGENT_TODO_MAX_PHASES) {
+        if (why != NULL) snprintf(why, why_cap, "at most %d phases", AGENT_TODO_MAX_PHASES);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     size_t total = 0;
     for (size_t i = 0; i < n; i++) {
@@ -208,10 +237,28 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args)
         const char *name = json_string(json_get(entry, "phase"));
         const json_node_t *items = json_get(entry, "items");
         size_t inner = json_array_len(items);
-        if (!arg_ok_len(name, AGENT_TODO_PHASE_MAX)) return ESP_ERR_INVALID_ARG;
-        if (inner == 0) return ESP_ERR_INVALID_ARG;
+        if (!arg_ok_len(name, AGENT_TODO_PHASE_MAX)) {
+            why_phase_long(why, why_cap);
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (inner == 0) {
+            if (why != NULL) snprintf(why, why_cap, "a phase needs items");
+            return ESP_ERR_INVALID_ARG;
+        }
+        /* `phase_add` reuses an existing name, so two entries for one phase would
+         * silently merge their items; §Errors names this a refusal instead. */
+        for (size_t k = 0; k < i; k++) {
+            const char *seen = json_string(json_get(json_array_at(phases, k), "phase"));
+            if (seen != NULL && strcmp(seen, name) == 0) {
+                if (why != NULL) snprintf(why, why_cap, "duplicate phase name");
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
         total += inner;
-        if (total > AGENT_TODO_MAX_TASKS) return ESP_ERR_INVALID_SIZE;
+        if (total > AGENT_TODO_MAX_TASKS) {
+            why_too_many_tasks(why, why_cap);
+            return ESP_ERR_INVALID_SIZE;
+        }
     }
 
     /* Validated in full before the first insert, so a bad entry in the last phase
@@ -222,35 +269,55 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args)
         const char *name = json_string(json_get(entry, "phase"));
         const json_node_t *items = json_get(entry, "items");
         uint8_t phase = 0;
-        if (!phase_add(list, name, &phase)) return ESP_ERR_INVALID_SIZE;
+        if (!phase_add(list, name, &phase)) {
+            if (why != NULL) snprintf(why, why_cap, "too many phases");
+            return ESP_ERR_INVALID_SIZE;
+        }
         for (size_t j = 0; j < json_array_len(items); j++) {
             const char *content = json_string(json_array_at(items, j));
-            if (!task_add(list, phase, content)) return ESP_ERR_INVALID_ARG;
+            if (!task_add(list, phase, content)) {
+                if (why != NULL) snprintf(why, why_cap, "duplicate content");
+                return ESP_ERR_INVALID_ARG;
+            }
         }
     }
     return ESP_OK;
 }
 
 /* `init` from flat `items` plus an optional `phase`, defaulting to "Tasks". */
-static esp_err_t op_init_flat(todo_list_t *list, const json_node_t *args)
+static esp_err_t op_init_flat(todo_list_t *list, const json_node_t *args,
+                              char *why, size_t why_cap)
 {
     const char *phase_name = arg_string(args, "phase");
     if (phase_name == NULL) phase_name = "Tasks";
-    if (!arg_ok_len(phase_name, AGENT_TODO_PHASE_MAX)) return ESP_ERR_INVALID_ARG;
+    if (!arg_ok_len(phase_name, AGENT_TODO_PHASE_MAX)) {
+        why_phase_long(why, why_cap);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     const json_node_t *items = json_get(args, "items");
     size_t n = json_array_len(items);
-    if (n > AGENT_TODO_MAX_TASKS) return ESP_ERR_INVALID_SIZE;
+    if (n > AGENT_TODO_MAX_TASKS) {
+        why_too_many_tasks(why, why_cap);
+        return ESP_ERR_INVALID_SIZE;
+    }
     for (size_t i = 0; i < n; i++) {
         const char *content = json_string(json_array_at(items, i));
-        if (!arg_ok_len(content, AGENT_TODO_CONTENT_MAX)) return ESP_ERR_INVALID_ARG;
+        if (!arg_ok_len(content, AGENT_TODO_CONTENT_MAX)) {
+            why_item_long(why, why_cap);
+            return ESP_ERR_INVALID_ARG;
+        }
     }
 
     todo_list_clear(list);
     uint8_t phase = 0;
-    if (!phase_add(list, phase_name, &phase)) return ESP_ERR_INVALID_SIZE;
+    if (!phase_add(list, phase_name, &phase)) {
+        if (why != NULL) snprintf(why, why_cap, "too many phases");
+        return ESP_ERR_INVALID_SIZE;
+    }
     for (size_t i = 0; i < n; i++) {
         if (!task_add(list, phase, json_string(json_array_at(items, i)))) {
+            if (why != NULL) snprintf(why, why_cap, "duplicate content");
             return ESP_ERR_INVALID_ARG;
         }
     }
@@ -258,30 +325,54 @@ static esp_err_t op_init_flat(todo_list_t *list, const json_node_t *args)
 }
 
 /* `append`: adds `pending` tasks to a phase, creating it when missing. */
-static esp_err_t op_append(todo_list_t *list, const json_node_t *args)
+static esp_err_t op_append(todo_list_t *list, const json_node_t *args,
+                           char *why, size_t why_cap)
 {
     const char *phase_name = arg_string(args, "phase");
-    if (!arg_ok_len(phase_name, AGENT_TODO_PHASE_MAX)) return ESP_ERR_INVALID_ARG;
+    if (phase_name == NULL) {
+        if (why != NULL) snprintf(why, why_cap, "append needs a phase");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!arg_ok_len(phase_name, AGENT_TODO_PHASE_MAX)) {
+        why_phase_long(why, why_cap);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     const json_node_t *items = json_get(args, "items");
     size_t n = json_array_len(items);
-    if (n == 0) return ESP_ERR_INVALID_ARG;
-    if (list->task_count + n > AGENT_TODO_MAX_TASKS) return ESP_ERR_INVALID_SIZE;
+    if (n == 0) {
+        if (why != NULL) snprintf(why, why_cap, "append needs items");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (list->task_count + n > AGENT_TODO_MAX_TASKS) {
+        why_too_many_tasks(why, why_cap);
+        return ESP_ERR_INVALID_SIZE;
+    }
     for (size_t i = 0; i < n; i++) {
         const char *content = json_string(json_array_at(items, i));
-        if (!arg_ok_len(content, AGENT_TODO_CONTENT_MAX)) return ESP_ERR_INVALID_SIZE;
-        if (task_find(list, content) >= 0) return ESP_ERR_INVALID_ARG;
+        if (!arg_ok_len(content, AGENT_TODO_CONTENT_MAX)) {
+            why_item_long(why, why_cap);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (task_find(list, content) >= 0) {
+            if (why != NULL) snprintf(why, why_cap, "duplicate content");
+            return ESP_ERR_INVALID_ARG;
+        }
     }
 
     uint8_t phase = 0;
     bool existed = phase_find(list, phase_name) >= 0;
-    if (!phase_add(list, phase_name, &phase)) return ESP_ERR_INVALID_SIZE;
+    if (!phase_add(list, phase_name, &phase)) {
+        if (why != NULL) snprintf(why, why_cap, "too many phases");
+        return ESP_ERR_INVALID_SIZE;
+    }
     for (size_t i = 0; i < n; i++) {
         if (!task_add(list, phase, json_string(json_array_at(items, i)))) {
             if (!existed) {
                 /* Roll the phase back: it was created by this op. */
                 list->phase_count--;
             }
+            if (why != NULL) snprintf(why, why_cap, "duplicate content");
             return ESP_ERR_INVALID_ARG;
         }
     }
@@ -296,9 +387,11 @@ static esp_err_t op_targeted(todo_list_t *list, const json_node_t *args,
     const char *phase = arg_string(args, "phase");
     const char *task = arg_string(args, "task");
     if (phase != NULL && !arg_ok_len(phase, AGENT_TODO_PHASE_MAX)) {
+        why_phase_long(why, why_cap);
         return ESP_ERR_INVALID_ARG;
     }
     if (task != NULL && !arg_ok_len(task, AGENT_TODO_CONTENT_MAX)) {
+        why_item_long(why, why_cap);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -362,6 +455,10 @@ static esp_err_t op_targeted(todo_list_t *list, const json_node_t *args,
             t->status = TODO_BLOCKED;
             if (reason != NULL) {
                 if (!copy_text(t->blocker, sizeof t->blocker, reason)) {
+                    if (why != NULL) {
+                        snprintf(why, why_cap, "reason is over %d characters",
+                                 AGENT_TODO_BLOCKER_MAX);
+                    }
                     return ESP_ERR_INVALID_ARG;
                 }
             }
@@ -397,9 +494,9 @@ esp_err_t todo_apply(todo_list_t *list, const json_node_t *args, char *why,
     esp_err_t err;
     if (strcmp(op, "init") == 0) {
         if (json_get(args, "list") != NULL) {
-            err = op_init_nested(&s_scratch, args);
+            err = op_init_nested(&s_scratch, args, why, why_cap);
         } else if (json_get(args, "items") != NULL) {
-            err = op_init_flat(&s_scratch, args);
+            err = op_init_flat(&s_scratch, args, why, why_cap);
         } else {
             /* `list: []` clears everything; so does no argument at all being an
              * explicit empty init. Both are the documented clear. */
@@ -407,7 +504,7 @@ esp_err_t todo_apply(todo_list_t *list, const json_node_t *args, char *why,
             err = ESP_OK;
         }
     } else if (strcmp(op, "append") == 0) {
-        err = op_append(&s_scratch, args);
+        err = op_append(&s_scratch, args, why, why_cap);
     } else if (strcmp(op, "start") == 0 || strcmp(op, "done") == 0 ||
                strcmp(op, "drop") == 0 || strcmp(op, "rm") == 0 ||
                strcmp(op, "block") == 0 || strcmp(op, "unblock") == 0) {

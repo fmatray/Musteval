@@ -155,12 +155,21 @@ nothing discards every mutation it made, and `view` never writes.
 - A required field missing for the op: `list`/`items` for `init`, `task` for
   `start`, `phase` and `items` for `append`, `task` or `phase` for `block` and
   `unblock`.
-- A task or phase name that matches nothing. The message says tasks are addressed by
-  exact content, not by an id or an index, so the model re-reads the list and passes
-  the text it saw.
+- A task or phase name that matches nothing: the message is `no task matches`. Tasks
+  are addressed by exact content, not by an id or an index, so the model re-reads the
+  list and passes the text it saw.
 - Duplicate content anywhere in the list on `append`.
 - A duplicate phase name on `init`.
 - Any of the four bound breaches above.
+
+Missing arguments and bound breaches name what is wrong rather than falling back to a
+generic line, because the fallback hides which of four bounds was hit: `append needs a
+phase`, `append needs items`, `start needs a task`, `block needs a task or a phase`,
+`item is longer than 120 characters`, `phase is longer than 40 characters`,
+`reason is over 120 characters`, `at most 32 tasks`, `too many phases`,
+`duplicate content`, `no task matches`, `op is required`, `unknown op`, `at most 8
+phases`, `a phase needs items`, `duplicate phase name` — the last three on nested
+`list` `init`, which reuses no name and stores no empty phase.
 
 Every one of these leaves the list unchanged, including a failure in the middle of a
 multi-target op. The refusal travels as `ok:false` with `E_TOOL` in
@@ -171,5 +180,5 @@ can call `view` and retry.
 
 - `../00-overview.md` §7 -- frozen list of built-in tool names.
 - `../06-security.md` §6 -- authorization model; `todo` has no gate.
-- `../05-bridge.md` §7 -- `/todo` re-renders the last observed result.
+- `../05-bridge.md` §7 -- `/todo` and the verbs it accepts.
 - `../02-firmware.md` §2 `agent` -- heap ownership and the agent loop.

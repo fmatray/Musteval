@@ -225,31 +225,78 @@ def test_wifi_refuses_an_unknown_verb():
 def test_todo_is_the_tools_op_set_over_the_wire():
     """`05` §7: every `/todo` verb is a `tools/todo.md` op of the same name, so the
     command cannot drift from the tool the model calls. The op set is the doc's."""
-    for op in TODO_OPS:
-        (frame,) = parse(f"/todo {op}")
-        assert frame.body == {"name": "todo.apply", "args": {"op": op}}
     assert TODO_OPS == (
         "init", "start", "done", "drop", "block", "unblock", "rm", "append", "view"
     )
+    # Ops that can be sent bare
+    for op in ("init", "done", "drop", "rm", "view"):
+        (frame,) = parse(f"/todo {op}")
+        assert frame.body["args"] == {"op": op}
 
 
-def test_todo_bare_views_and_a_verb_it_lacks_is_refused():
+def test_todo_bare_and_view_send_view():
     (frame,) = parse("/todo")
-    assert frame.body == {"name": "todo.apply", "args": {"op": "view"}}
+    assert frame.body["args"] == {"op": "view"}
+    (frame,) = parse("/todo view")
+    assert frame.body["args"] == {"op": "view"}
+
+
+def test_todo_init_takes_flat_items():
+    (frame,) = parse("/todo init")
+    assert frame.body["args"] == {"op": "init"}
+    (frame,) = parse('/todo init "wire jwt" "rotate key"')
+    assert frame.body["args"] == {"op": "init", "items": ["wire jwt", "rotate key"]}
+
+
+def test_todo_append_takes_a_phase_then_its_items():
+    (frame,) = parse('/todo append auth "wire jwt" "rotate key"')
+    assert frame.body["args"] == {
+        "op": "append",
+        "phase": "auth",
+        "items": ["wire jwt", "rotate key"],
+    }
+
+
+def test_todo_append_refuses_missing_phase_or_items():
+    with pytest.raises(CommandError, match="phase"):
+        parse("/todo append")
+    with pytest.raises(CommandError, match="item"):
+        parse("/todo append auth")
+
+
+def test_todo_start_takes_a_task_and_refuses_none():
+    (frame,) = parse("/todo start auth")
+    assert frame.body["args"] == {"op": "start", "task": "auth"}
+    (frame,) = parse("/todo start wire jwt")
+    assert frame.body["args"] == {"op": "start", "task": "wire jwt"}
+    with pytest.raises(CommandError, match="task"):
+        parse("/todo start")
+
+
+def test_todo_target_reaches_both_task_and_phase():
+    """A target is not resolved here: `todo_apply`'s own `task → phase` chain decides,
+    so `/todo done auth` finishes every task in phase `auth` with no bridge guessing."""
+    for op in ("done", "drop", "rm", "block", "unblock"):
+        (frame,) = parse(f"/todo {op} auth")
+        assert frame.body["args"] == {"op": op, "task": "auth", "phase": "auth"}
+
+        (frame,) = parse(f"/todo {op} wire jwt")
+        assert frame.body["args"] == {"op": op, "task": "wire jwt", "phase": "wire jwt"}
+
+
+def test_todo_verb_it_lacks_is_refused():
     # `expand` is a bridge-side verb the tool has no op for: sending it would be a
     # frame the device refuses, so the bridge refuses it first with a usage line.
     with pytest.raises(CommandError, match=r"usage: /todo \["):
         parse("/todo expand")
 
 
-def test_todo_target_reaches_both_task_and_phase():
-    """A target is not resolved here: `todo_apply`'s own `task → phase` chain decides,
-    so `/todo done auth` finishes every task in phase `auth` with no bridge guessing."""
-    (frame,) = parse("/todo done auth")
-    assert frame.body["args"] == {"op": "done", "task": "auth", "phase": "auth"}
-
-    (frame,) = parse("/todo done wire jwt")
-    assert frame.body["args"] == {"op": "done", "task": "wire jwt", "phase": "wire jwt"}
+def test_todo_view_refuses_a_target_it_would_drop():
+    """A trailing word on a read-only op used to be accepted and thrown away, which
+    is the same shape as the bug this grammar fixes: an argument that looked
+    honoured and was not."""
+    with pytest.raises(CommandError, match="view takes no target"):
+        parse("/todo view auth")
 
 
 def test_fs_put_splits_under_the_rx_cap():
