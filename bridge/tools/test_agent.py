@@ -552,6 +552,45 @@ class TestAgent:
                 "created": args.get("offset", 0) == 0,
                 "bytes": len(chunk),
             }
+        elif name in ("wifi.status", "wifi.connect", "wifi.disconnect", "wifi.reconnect"):
+            # `10-test-agent.md` §6: the §3.9 object, and the state each verb leaves
+            # behind, so a bridge assertion distinguishes them instead of reading the
+            # same echo four times.
+            down = name == "wifi.disconnect"
+            result = {
+                "state": "off" if down else "connected",
+                "ssid": None if down else "HomeLab",
+                "rssi": 0 if down else -47,
+                "ip": None if down else "192.168.1.42",
+                # A join that succeeded has failed over zero times; the counter is the
+                # boot sequence's, and a verb that invented one would let a bridge test
+                # pass against a device that never does.
+                "failovers": 0,
+            }
+            self.reply(
+                "command.result",
+                {"name": name, "ok": True, "result": result, "duration_ms": 0},
+                reply_to=frame.id,
+            )
+            return
+        elif name == "wifi.scan":
+            # `10-test-agent.md` §6: an echo would give the dropdown `args` and no
+            # `networks`, which is the failure it shows against a real device.
+            result = {
+                "networks": [
+                    {"ssid": "HomeLab", "rssi": -47, "auth": "wpa2"},
+                    {"ssid": "Cafe-FREE", "rssi": -71, "auth": "open"},
+                    {"ssid": "OldRouter", "rssi": -83, "auth": "wep"},
+                ],
+                "truncated": False,
+            }
+            self.reply(
+                "command.result",
+                {"name": name, "ok": True, "result": result, "duration_ms": 0},
+                reply_to=frame.id,
+            )
+            return
+
         else:
             result = dict(STATUS) if name == "status" else {"echo": args}
         self.reply(

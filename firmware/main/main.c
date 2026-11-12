@@ -411,6 +411,80 @@ static esp_err_t handle_templates_list(const json_node_t *args, json_node_t *roo
     return ESP_OK;
 }
 
+/* `04` §4.26: `wifi.connect` walks every configured AP with a
+ * `wifi.connect_timeout_ms` wait and a backoff between, so it can hold the link task
+ * for tens of seconds — `/wifi connect` after a `/wifi disconnect` is exactly the
+ * case where it will. It gets the `net.ping` treatment: its own task, its own busy
+ * flag, and a reply written from there. */
+typedef struct {
+    char reply_to[LINK_ID_MAX + 1];
+    /* The name that was asked, not a constant: `reconnect` runs the same task as
+     * `connect`, and a reply that renamed itself left the bridge matching a command
+     * it never sent — the probe found `wifi.reconnect` answering as `wifi.connect`. */
+    char name[16];
+    int64_t start_us;
+} wifi_args_t;
+
+static volatile bool s_wifi_busy;
+
+/* The §3.9 object, which every `wifi.*` result and `status` share, so the three
+ * cannot disagree about what the radio is doing. */
+static void wifi_add_state(json_node_t *result)
+{
+    net_status_t st;
+    net_status(&st);
+    json_add_string(result, "state", net_state_name(st.state));
+    if (st.ssid != NULL) json_add_string(result, "ssid", st.ssid);
+    else json_add_null(result, "ssid");
+    if (st.ssid != NULL) json_add_int(result, "rssi", st.rssi);
+    else json_add_null(result, "rssi");
+    if (st.ip != NULL) json_add_string(result, "ip", st.ip);
+    else json_add_null(result, "ip");
+    json_add_int(result, "failovers", st.failovers);
+}
+
+static void wifi_emit(const wifi_args_t *wa, esp_err_t err)
+{
+    json_doc_t *body = json_new_object();
+    if (body == NULL) return;
+    json_node_t *root = json_root(body);
+    char id[16];
+    link_next_id(id, sizeof id);
+    json_add_string(root, "name", wa->name);
+    json_add_bool(root, "ok", err == ESP_OK);
+    json_add_int(root, "duration_ms", (esp_timer_get_time() - wa->start_us) / 1000);
+    json_node_t *result = json_add_object(root, "result");
+    if (result != NULL) wifi_add_state(result);
+    if (err != ESP_OK) {
+        /* §4.26: a join that failed is `E_WIFI`, which is the same code the boot
+         * sequence reports for the same event (`02-firmware.md` §4.2). */
+        json_node_t *error = json_add_object(root, "error");
+        if (error != NULL) {
+            json_add_string(error, "code", "E_WIFI");
+            json_add_string(error, "message", "no configured network joined");
+        }
+    }
+    link_emit_body("command.result", id, 0, wa->reply_to, body);
+    json_free(body);
+}
+
+static bool agent_busy(void)
+{
+    agent_status_t agent;
+    agent_status(&agent);
+    return agent.busy;
+}
+
+static void wifi_connect_task(void *arg)
+{
+    wifi_args_t *wa = arg;
+    esp_err_t err = net_connect();
+    wifi_emit(wa, err);
+    s_wifi_busy = false;
+    free(wa);
+    vTaskDelete(NULL);
+}
+
 /* `04` §4.25: four ICMP probes on `link_task` would hold `pong` for up to 2.8 s,
  * which §3.7 bounds at 1 s. The task owns every byte it needs: the caller's frame is
  * freed when `answer_command` returns. */
@@ -942,6 +1016,75 @@ static void answer_command(const json_node_t *frame)
         }
         json_add_bool(result, "truncated", scan_truncated);
         built = ESP_OK;
+    } else if (name && (strcmp(name, "wifi.status") == 0 ||
+                        strcmp(name, "wifi.connect") == 0 ||
+                        strcmp(name, "wifi.disconnect") == 0 ||
+                        strcmp(name, "wifi.reconnect") == 0)) {
+        if (strcmp(name, "wifi.status") == 0) {
+            /* `status` is busy-safe and reports this same object, so a read is not
+             * refused during a run: it touches no radio state, and refusing it would
+             * make the one question an operator asks during a run unanswerable. */
+            json_node_t *result = json_add_object(root, "result");
+            json_add_string(root, "name", "wifi.status");
+            json_add_bool(root, "ok", true);
+            if (result != NULL) wifi_add_state(result);
+            built = ESP_OK;
+        } else if (agent_busy()) {
+            /* §4.26: the three that steer are refused while a run is in flight. A
+             * run's provider call is on the link a join would re-point, and a scan's
+             * rule (§4.24) already says the radio holds one caller at a time. */
+            emit_failure(name, reply_to, "E_BUSY", "agent run in flight");
+            json_free(body); return;
+        } else if (strcmp(name, "wifi.disconnect") == 0) {
+            if (s_wifi_busy) {
+                emit_failure(name, reply_to, "E_BUSY", "a connect is already in flight");
+                json_free(body); return;
+            }
+            esp_err_t derr = net_disconnect();
+            if (derr != ESP_OK) {
+                emit_failure(name, reply_to, "E_WIFI", "radio did not leave");
+                json_free(body); return;
+            }
+            json_node_t *result = json_add_object(root, "result");
+            json_add_string(root, "name", "wifi.disconnect");
+            json_add_bool(root, "ok", true);
+            if (result != NULL) wifi_add_state(result);
+            built = ESP_OK;
+        } else {
+            /* `connect` and `reconnect` are the same act from this side; the second
+             * name exists because "make it work again" and "join" are different
+             * questions to a reader, and `reconnect` additionally leaves a live link
+             * to rejoin the best AP rather than returning the current one. */
+            if (s_wifi_busy) {
+                emit_failure(name, reply_to, "E_BUSY", "a connect is already in flight");
+                json_free(body); return;
+            }
+            wifi_args_t *wa = calloc(1, sizeof *wa);
+            if (wa == NULL) {
+                emit_failure(name, reply_to, "E_INTERNAL", "connect task not started");
+                json_free(body); return;
+            }
+            snprintf(wa->reply_to, sizeof wa->reply_to, "%s", reply_to);
+            snprintf(wa->name, sizeof wa->name, "%s", name);
+            /* The timer starts before the leave, so `duration_ms` covers the whole
+             * act rather than only the join. */
+            wa->start_us = esp_timer_get_time();
+            s_wifi_busy = true;
+            /* `reconnect` from a live link: leaving first makes the attempt loop join
+             * the best AP instead of short-circuiting on the one already held. */
+            if (strcmp(name, "wifi.reconnect") == 0) net_disconnect();
+            /* 4096: `net_connect` blocks on the event group and holds a `wifi_config_t`
+             * (about 100 bytes) and a `wifi_ap_record_t` across it, which will not fit
+             * on the 3072 `net.ping` uses. */
+            if (xTaskCreate(wifi_connect_task, "wifi_connect", 4096, wa, 4, NULL) != pdPASS) {
+                s_wifi_busy = false;
+                free(wa);
+                emit_failure(name, reply_to, "E_INTERNAL", "connect task not started");
+                json_free(body); return;
+            }
+            json_free(body);
+            return;
+        }
     } else if (name && strcmp(name, "config.get") == 0) {
         built = handle_config_get(args, root, json_add_object(root, "result"));
         if (built != ESP_OK) {

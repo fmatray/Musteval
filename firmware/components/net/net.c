@@ -74,6 +74,10 @@ static bool s_ever_connected;
  * before the radio had a chance to associate. The reason code distinguishes the two
  * cases, so the handler can tell a deliberate leave from a real drop. */
 static bool s_leaving;
+/* Set by `net_disconnect`, cleared by `net_connect`: an operator who typed
+ * `/wifi disconnect` asked for a link that stays down, and the disconnect event must
+ * not read that intent as §4.2's "WiFi Lost" and reconnect behind their back. */
+static bool s_manual_down;
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -105,7 +109,7 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
             xEventGroupClearBits(s_events, NET_GOT_IP_BIT);
             xEventGroupSetBits(s_events, NET_FAIL_BIT);
         }
-        if (!s_attempting && s_ever_connected) {
+        if (!s_attempting && s_ever_connected && !s_manual_down) {
             /* `02-firmware.md` §4.2 `WiFi Lost`: `net` attempts reconnect. It is the
              * attempt loop's absence, not the previous state, that says whether this
              * handler owns the retry — a reconnect that itself fails must try again,
@@ -302,6 +306,7 @@ esp_err_t net_connect(void)
     esp_err_t err = radio_up();
     if (err != ESP_OK) return err;
 
+    s_manual_down = false;
     s_state = NET_STATE_CONNECTING;
     s_attempting = true;
     for (size_t attempt = 0; attempt < s_ap_count; attempt++) {
@@ -366,6 +371,29 @@ esp_err_t net_connect(void)
 bool net_connected(void)
 {
     return s_state == NET_STATE_CONNECTED;
+}
+
+esp_err_t net_disconnect(void)
+{
+    s_manual_down = true;
+    /* Nothing to leave: the radio may never have started, and `esp_wifi_disconnect`
+     * on a stopped interface is an error rather than a no-op. */
+    if (s_sta != NULL) {
+        s_leaving = true;
+        esp_err_t err = esp_wifi_disconnect();
+        s_leaving = false;
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) {
+            ESP_LOGW(TAG, "wifi: disconnect failed: %s", esp_err_to_name(err));
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    s_attempting = false;
+    s_state = NET_STATE_OFF;
+    s_ip[0] = '\0';
+    s_ssid[0] = '\0';
+    s_rssi = 0;
+    ESP_LOGI(TAG, "wifi: down by command");
+    return ESP_OK;
 }
 
 esp_err_t net_scan(net_scan_entry_t *out, size_t cap, size_t *count, bool *truncated)

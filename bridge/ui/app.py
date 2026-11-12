@@ -72,6 +72,8 @@ from .render import (
     render_tool_call,
     render_tool_result,
     sanitize,
+    wifi_scan_lines,
+    wifi_state_line,
 )
 
 COMPOSER_MAX_ROWS = 6
@@ -1650,6 +1652,15 @@ class BridgeApp(App):
             )
             self.run_worker(self.browse(self._files_path))
             return
+        if name.startswith("wifi.") and name != "wifi.scan" and isinstance(result, dict):
+            # `04` §4.26: one line, worded from the §3.9 object so a reading from a
+            # command and a reading from `status` cannot disagree.
+            self._chat().write(wifi_state_line(result))
+            return
+        if name == "wifi.scan" and isinstance(result, dict):
+            for line in wifi_scan_lines(result):
+                self._chat().write(line)
+            return
         if name == "net.ping" and isinstance(result, dict):
             # `04` §4.25: one line. 100 % loss is a result the device measured, not
             # an error frame, so it is shown as the answer it is — but coloured as
@@ -2188,15 +2199,17 @@ class BridgeApp(App):
         return [name for name, _ in catalog]
 
     async def _onboard_scan(self) -> tuple[list[dict], list[str]]:
-        """The `wifi.scan` result and the lines worth showing about it."""
+        """The `wifi.scan` result and the lines worth showing about it.
+
+        The frame comes from `parse` rather than being assembled here, so the
+        wizard cannot name a command the parser would refuse — which is how
+        `wifi.scan` stayed unreachable after the firmware shipped it.
+        """
         try:
             async with self._working(
                 "scanning for networks", "wifi.scan; a few seconds, longer in a busy band"
             ):
-                reply = await self.session.request(
-                    Frame(type="command", id=new_id("b"), ts=0,
-                          body={"name": "wifi.scan", "args": {}})
-                )
+                reply = await self.session.request(parse("/wifi scan")[0])
         except (SessionError, asyncio.TimeoutError):
             return [], ["scan unavailable; type the ssid"]
         if reply.type != "command.result" or not reply.body.get("ok"):

@@ -101,6 +101,13 @@ COMMAND_NAMES = frozenset(
         "sandbox.mkdir",
         "sandbox.move",
         "sys.reset_counter",
+        # `04-protocol.md` §4.24: the access points the radio can hear.
+        "wifi.scan",
+        # `04-protocol.md` §4.26: the station's own state, and steering it.
+        "wifi.status",
+        "wifi.connect",
+        "wifi.disconnect",
+        "wifi.reconnect",
         # `04-protocol.md` §4.25: ICMP reachability from the device itself.
         "net.ping",
     }

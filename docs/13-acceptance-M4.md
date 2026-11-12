@@ -329,7 +329,7 @@ every one of them fails its new test when reverted.
   `/tools/*.json` can exist on this image yet.
 - **`weather_now` and `web_search`.** `00-overview.md` §7 ships them as ordinary
   `/tools/*.json` files in a default `userfs` image that does not exist; building
-  it is `07-roadmap.md` §M5's deliverable (`bridge/tools/build_userfs.py`).
+  it is now provided by `bridge/tools/build_userfs.py`.
 - **Peripherals.** `adc.read`, `i2c.scan`, `i2c.read`, `i2c.write` — the bus is not
   configured, so those three are not advertised at all. The pin allowlist and the
   argument bounds are host-tested.
@@ -368,6 +368,15 @@ need no provider. Recover from safe mode first if the board is in it.
       more access points than it reported, the difference being the hidden and the
       duplicate-SSID ones; that collapse is asserted exactly in
       `firmware/test_host/main/test_m3.c`, where the input is known.
+- [X] `wifi.status`, `wifi.disconnect`, `wifi.connect` and `wifi.reconnect` on the
+      board each answer the `04` §3.9 wifi object in `04` §4.26's shape. Run on
+      `/dev/ttyACM0` as raw `command` frames: `status` reported `connected` on
+      `StoneBox` at `-67` dBm with `192.168.1.175`; `disconnect` answered `off` with
+      `ssid`, `rssi` and `ip` all null in 24 ms and was **still** `off` 25 s later
+      (§4.2's auto-reconnect did not undo it); `connect` answered `connected` in
+      3 416 ms and `reconnect` in 3 428 ms, both back on the same IP. Both join forms
+      returned after their own name, which is the point of the row: the reply name is
+      the command asked, not a constant.
 - [X] `/onboard` showing that scan in the SSID dropdown beside a hand-typed field,
       and the region dropdown pre-selecting the stored zone's region. Driven on the
       board through a pty: `bin/bridge`, then `/onboard`, and step 1 drew with

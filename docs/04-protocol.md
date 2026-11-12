@@ -222,7 +222,7 @@ seconds rather than minutes. Cancellation is not a failure and is never retried.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the twenty-four names in §4. |
+| `name` | string | yes | One of the twenty-nine names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -569,7 +569,7 @@ generic notification line and MUST NOT error.
 
 ## 4. Command catalog
 
-All twenty-four names, their arguments and their `result` shapes. Unknown names are
+All twenty-nine names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -600,6 +600,10 @@ reads are never refused.
 | `sandbox.move` | `{from, to}` | `{from, to, moved}` | `E_CONFIG` (either path outside `/workspace/`, or `to` exists), `E_STORAGE` (missing source, or a cross-mount move) | yes |
 | `sys.reset_counter` | `{}` | `{reset, previous, safe_mode}` | `E_INTERNAL` | yes |
 | `wifi.scan` | `{}` | `{networks:[{ssid,rssi,auth}], truncated}` | `E_WIFI` (radio unavailable), `E_BUSY` (run in flight) | no |
+| `wifi.status` | `{}` | wifi object (§3.9) | `E_INTERNAL` | yes |
+| `wifi.connect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
+| `wifi.disconnect` | `{}` | wifi object (§3.9), `state: "off"` | `E_WIFI` (radio did not leave), `E_BUSY` (run in flight or a connect already in flight) | yes |
+| `wifi.reconnect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
 | `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
 
 
@@ -1205,6 +1209,56 @@ The four probes are sent `NET_PING_INTERVAL_MS` (200 ms) apart with a
 when every probe times out, and it runs on its own task so `pong` keeps its 1 s
 bound (§3.7).
 The same probe backs the model's `net.ping` tool (`tools/net.md`), so the two never disagree about what a reachability answer means.
+
+
+### 4.26 `wifi.status`, `wifi.connect`, `wifi.disconnect`, `wifi.reconnect`
+
+The station's own state, and the three ways to steer it. `wifi.scan` (§4.24) asks the
+radio what it can hear; these ask what it is doing, and change it. All four answer
+with the §3.9 wifi object, which is the object `status` carries — so a bridge renders
+one shape whether the reading came from a poll or from a command.
+
+```json
+{"v":1,"type":"command","id":"b-41","ts":1730572600,"name":"wifi.disconnect","args":{}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-51","ts":1730572601,"reply_to":"b-41","name":"wifi.disconnect","ok":true,"result":{"state":"off","ssid":null,"rssi":null,"ip":null,"failovers":0},"duration_ms":12}
+```
+
+| Name | Effect | `state` on success |
+|---|---|---|
+| `wifi.status` | Reads the state. Touches nothing. | whatever it already was |
+| `wifi.connect` | Joins the best visible AP from `wifi.networks[]`, exactly as the boot sequence does | `connected`, or the frame fails |
+| `wifi.disconnect` | Leaves the network and stays down | `off` |
+| `wifi.reconnect` | Leaves first, then joins: the deliberate-rejoin form of `connect` | `connected`, or the frame fails |
+
+**`wifi.disconnect` is a latch, not a drop.** A link taken down by command is not a
+link that dropped, so `02-firmware.md` §4.2's "WiFi Lost" auto-reconnect does not fire
+behind it; the station stays `off` until a `wifi.connect` or `wifi.reconnect` clears
+the latch. Without that distinction the disconnect event would reconnect within
+milliseconds and the command would report a lie. A `reload` that restarts the services
+and a reboot both clear it, because both run the boot sequence again.
+
+`wifi.status` and `wifi.disconnect` are answered inline. `wifi.connect` and
+`wifi.reconnect` are not: the attempt loop waits up to one `wifi.connect_timeout_ms`
+per configured network with a backoff between attempts, so the join runs on its own
+task — the same treatment `net.ping` (§4.25) gets, and for the same reason, to keep
+§3.7's 1 s `pong` bound. `duration_ms` covers the whole act, including the leave that
+`wifi.reconnect` issues first.
+
+The three that steer are refused with `E_BUSY` while an agent run is in flight, because
+a run's provider call is on the link a join would re-point. `wifi.status` is not: it
+reads the object `status` already reports mid-run and touches no radio state, so a
+poll is busy-safe like every other read. `wifi.connect` and `wifi.reconnect` are
+additionally refused while another join is already in flight; `wifi.disconnect` is
+refused in that case too, since leaving during an attempt would be undone by the
+attempt loop's next round.
+
+`E_WIFI` on a join means every configured network refused, which is the same code
+§4.2 reports for the same event at boot. The frame still carries the wifi object, so
+the caller sees `state: "failed"` and the `failovers` count that says how many were
+tried — the error is not the only information in the reply.
 
 
 ## 5. Error codes

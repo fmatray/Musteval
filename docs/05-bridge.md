@@ -710,6 +710,11 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/sandbox move <f> <t>` | `command {name:"sandbox.move"}` | `from, to` | Renames or relocates a file or directory |
 | `/sandbox delete <p> [-r]` | `command {name:"sandbox.delete"}` | `path, recursive?` | Deletes one entry; recursive removes populated directories |
 | `/sys reset-counter` | `command {name:"sys.reset_counter"}` | none | Clears the boot-failure counter |
+| `/wifi scan` | `command {name:"wifi.scan"}` | none | Lists the access points the radio can hear, strongest first. The scan holds the radio, so a run in flight answers `E_BUSY` rather than steering the station mid-run |
+| `/wifi status` | `command {name:"wifi.status"}` | none | Reads the station's state, SSID, RSSI and IP without touching it. Busy-safe, so it answers during a run |
+| `/wifi connect` | `command {name:"wifi.connect"}` | none | Joins the best configured network, as the boot sequence does; the join runs on its own task, so the prompt stays responsive while it waits |
+| `/wifi disconnect` | `command {name:"wifi.disconnect"}` | none | Leaves the network and stays down: the connection does not come back on its own (`04-protocol.md` §4.26) |
+| `/wifi reconnect` | `command {name:"wifi.reconnect"}` | none | Leaves and rejoins, so a link that is up but on the wrong AP is moved to the best one |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
 | `/tools` | (Local) | none | Lists `capabilities.tools` (every tool currently callable, declarative ones included) and `capabilities.mcp` |
@@ -1092,7 +1097,7 @@ reports its result in chat.
 
 ## 11. Maintenance Tooling
 
-- `bridge/tools/build_userfs.py`: builds the `userfs` image from a source directory and flashes it to the device. Planned M5 deliverable (`07-roadmap.md` M5), not yet written.
+- `bridge/tools/build_userfs.py`: builds the `userfs` image from a source directory (default: `firmware/userfs/`) and flashes it at the partition offset. Flashing is opt-in via `--port`.
 - `bridge/tools/test_agent.py`: fake device over a pseudo-terminal for hardware-free bridge testing. Selected with `--target test` (§4.1); specified in `10-test-agent.md`.
 - `--json` (debug): the flag from §8 under which the bridge may log its own internal protocol frames; without it, frames are never written to a file.
 

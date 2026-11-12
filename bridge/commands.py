@@ -129,6 +129,13 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         ]
     if head == "geo":
         return [_command("geo.locate")]
+    if head == "wifi":
+        # `05-bridge.md` §7: `scan` asks the radio, the other four ask the station.
+        if rest == ["scan"]:
+            return [_command("wifi.scan")]
+        if rest in (["status"], ["connect"], ["disconnect"], ["reconnect"]):
+            return [_command(f"wifi.{rest[0]}")]
+        raise CommandError("usage: /wifi scan|status|connect|disconnect|reconnect")
     if head == "ping":
         # `05-bridge.md` §7: `device` is the link-latency ping the bridge already
         # measured; the other three make the device run an ICMP round itself.

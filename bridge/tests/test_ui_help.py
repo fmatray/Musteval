@@ -144,6 +144,14 @@ def test_options_lists_subcommands_after_a_head_and_a_space():
 
 
 def test_options_filters_a_partial_subcommand():
+    assert options("/wifi ") == [
+        "/wifi scan",
+        "/wifi status",
+        "/wifi connect",
+        "/wifi disconnect",
+        "/wifi reconnect",
+    ]
+
     assert options("/config s") == ["/config set"]
 
 

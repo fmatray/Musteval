@@ -207,6 +207,20 @@ def test_secret_set_requires_a_value_in_state():
     assert frame.body == {"key": "wifi", "value": "hunter2"}
 
 
+def test_wifi_subcommands_map_to_their_commands():
+    """`05-bridge.md` §7: `scan` asks the radio, the other four steer the station."""
+    for verb in ("status", "connect", "disconnect", "reconnect"):
+        (frame,) = parse(f"/wifi {verb}")
+        assert frame.body["name"] == f"wifi.{verb}"
+
+
+def test_wifi_refuses_an_unknown_verb():
+    with pytest.raises(CommandError):
+        parse("/wifi bogus")
+    with pytest.raises(CommandError):
+        parse("/wifi")
+
+
 def test_fs_put_splits_under_the_rx_cap():
     data = b"x" * (FS_PUT_CHUNK_BYTES * 2 + 10)
     frames = parse("/fs put /ws/a.txt", CommandState(upload_bytes=data))

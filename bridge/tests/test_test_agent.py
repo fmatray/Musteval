@@ -182,7 +182,7 @@ def test_every_other_known_command_is_answered(harness, name):
     harness.feed_frame(_frame("command", {"name": name, "args": {"path": "/workspace/notes.md"}}))
     reply = harness.one()
     assert reply["type"] == "command.result"
-    assert reply["body" if "body" in reply else "name"] == name
+    assert reply["name"] == name
 
 
 def test_sandbox_list_reports_the_fixture_tree(harness):
@@ -192,6 +192,34 @@ def test_sandbox_list_reports_the_fixture_tree(harness):
     assert names == ["runs", "notes.md"]
     assert [e["dir"] for e in result] == [True, False]
     assert result[1]["bytes"] == len("# notes\n\nplain text, no markup.\n")
+
+
+def test_fake_device_answers_wifi_scan(harness):
+    """`10-test-agent.md`: the reply is `04` §4.24's shape, not an echo. The
+    fall-through that answered `{"echo": {}}` is what made the bridge's scan look
+    like a radio that heard nothing."""
+    harness.feed_frame(_frame("command", {"name": "wifi.scan", "args": {}}))
+    reply = harness.one()
+    assert reply["ok"] is True
+    result = reply["result"]
+    assert [n["ssid"] for n in result["networks"]] == ["HomeLab", "Cafe-FREE", "OldRouter"]
+    assert [n["rssi"] for n in result["networks"]] == [-47, -71, -83]
+    assert result["truncated"] is False
+
+
+def test_fake_device_steers_the_station(harness):
+    """`10-test-agent.md` §6: each verb leaves a different state, so a bridge test
+    distinguishes them instead of reading one echo four times."""
+    harness.feed_frame(_frame("command", {"name": "wifi.connect", "args": {}}))
+    up = harness.one()
+    assert up["ok"] is True
+    assert up["result"]["state"] == "connected"
+    assert up["result"]["ssid"] == "HomeLab"
+
+    harness.feed_frame(_frame("command", {"name": "wifi.disconnect", "args": {}}))
+    down = harness.one()
+    assert down["result"]["state"] == "off"
+    assert down["result"]["ssid"] is None
 
 
 def test_sandbox_list_of_a_nested_directory(harness):

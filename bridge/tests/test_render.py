@@ -160,7 +160,60 @@ def test_fit_drops_whole_trailing_segments_and_never_the_first():
     assert _fit(segments, 99) == segments
 
 
-def test_a_key_is_named_as_a_human_writes_it():
+from bridge.ui.render import wifi_scan_lines, wifi_state_line
+
+def test_wifi_scan_renders_networks():
+    result = {
+        "networks": [
+            {"ssid": "HomeLab", "rssi": -47, "auth": "wpa2"},
+            {"ssid": "Cafe-FREE", "rssi": -71, "auth": "open"},
+            {"ssid": "OldRouter", "rssi": -83, "auth": "wep"},
+        ],
+        "truncated": False,
+    }
+    lines = wifi_scan_lines(result)
+    assert len(lines) == 3
+    for line in lines:
+        assert "dBm" in line
+    assert "HomeLab" in lines[0] and "wpa2" in lines[0]
+    assert "OldRouter" in lines[2] and "wep" in lines[2]
+
+def test_wifi_scan_renders_truncated():
+    result = {"networks": [{"ssid": "A", "rssi": -50, "auth": "open"}], "truncated": True}
+    lines = wifi_scan_lines(result)
+    assert "truncated" in lines[-1]
+
+def test_wifi_scan_renders_empty():
+    assert wifi_scan_lines({"networks": []}) == ["no networks heard"]
+
+def test_a_connected_wifi_state_line_names_the_network():
+    line = wifi_state_line(
+        {"state": "connected", "ssid": "home-2g", "rssi": -58, "ip": "192.168.1.42"}
+    )
+    assert "connected" in line and "home-2g" in line
+    assert "-58" in line and "192.168.1.42" in line
+
+
+@pytest.mark.parametrize("state", ["off", "connecting", "failed"])
+def test_a_station_with_no_identity_reports_only_its_state(state):
+    """A name slot holding `None` reads as a device fault instead of a link that is
+    simply not up."""
+    assert wifi_state_line({"state": state, "ssid": None, "rssi": None, "ip": None}) == (
+        f"wifi {state}"
+    )
+
+
+def test_wifi_state_line_sanitises_ssid():
+    line = wifi_state_line({"state": "connected", "ssid": "\x1b[31mHostile\x1b[0m"})
+    assert "\x1b" not in line and "Hostile" in line
+
+
+def test_wifi_scan_sanitises_ssid():
+    result = {"networks": [{"ssid": "\x1b[31mHostile\x1b[0m", "rssi": -50, "auth": "open"}]}
+    lines = wifi_scan_lines(result)
+    assert "\x1b" not in lines[0]
+    assert "Hostile" in lines[0]
+
     assert key_label("ctrl+d") == "Ctrl+D"
     assert key_label("enter") == "Enter"
     assert key_label("escape") == "Escape"

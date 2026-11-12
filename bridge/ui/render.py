@@ -56,6 +56,38 @@ def ping_line(result: dict[str, Any]) -> str:
     return line
 
 
+def wifi_state_line(result: dict[str, Any]) -> str:
+    """`04-protocol.md` §4.26's answer as one line. The §3.9 object is the same one
+    `status` carries, so the two readings of the radio cannot word it differently."""
+    state = str(result.get("state") or "off")
+    ssid = result.get("ssid")
+    if not ssid:
+        # `off`, `connecting` and `failed` have no identity to report, and printing
+        # `None` where a name belongs reads as a device fault.
+        return f"wifi {state}"
+    return f"wifi {state} ({sanitize(str(ssid))}) rssi {result.get('rssi')} dBm ip {result.get('ip')}"
+
+
+def wifi_scan_lines(result: dict[str, Any]) -> list[str]:
+    """`04-protocol.md` §4.24's answer, one line per network, strongest first.
+
+    An ssid is whatever the access point chose to broadcast, so it goes through
+    `sanitize` like any other untrusted payload: a hostile one can carry escape
+    bytes into this terminal.
+    """
+    networks = [n for n in result.get("networks") or [] if isinstance(n, dict)]
+    if not networks:
+        return ["no networks heard"]
+    rows = [(sanitize(str(n.get("ssid") or "")), n.get("rssi", 0), str(n.get("auth") or "unknown")) for n in networks]
+    names = max(len(ssid) for ssid, _, _ in rows)
+    levels = max(len(str(rssi)) for _, rssi, _ in rows)
+    lines = [f"  {ssid.ljust(names)}  {str(rssi).rjust(levels)} dBm  {auth}" for ssid, rssi, auth in rows]
+    if result.get("truncated"):
+        lines.append(f"  truncated: {len(networks)} networks shown, more were in range")
+    return lines
+
+
+
 def render_tool_result(frame_body: dict[str, Any]) -> str:
     tool = frame_body.get("tool")
     duration = frame_body.get("duration_ms", 0)

@@ -56,6 +56,12 @@ esp_err_t net_connect(void);
 /* True once an IP is assigned and the interface is up. */
 bool net_connected(void);
 
+/* Leave the network and stay down: the state becomes `off` and §4.2's auto-reconnect
+ * does not fire, because a link the operator took down is not a link that dropped.
+ * `net_connect` clears that intent, so this is reversible without a reboot. Returns
+ * ESP_OK when there was no association to leave. Board-only. */
+esp_err_t net_disconnect(void);
+
 void net_status(net_status_t *out);
 
 /* --- Transport (`llm`'s only way onto the wire) ---------------------------- */

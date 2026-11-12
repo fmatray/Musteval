@@ -36,7 +36,7 @@ class CommandHelp:
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Device": (
         "status", "reload", "reboot", "tasks", "run", "config", "secret",
-        "templates", "template", "mqtt", "geo", "fs", "sandbox", "sys",
+        "templates", "template", "mqtt", "geo", "wifi", "fs", "sandbox", "sys",
     ),
     "Chat": ("retry", "ping", "cancel", "diag", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context", "todo"),
@@ -112,6 +112,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
         "pick the provider's model",
         False,
     ),
+    CommandHelp("wifi", "/wifi scan|status|connect|disconnect|reconnect",
+                "scan the radio, or read and steer the station", False),
     CommandHelp("diag", "/diag", "render the diagnostic half of status", False),
     CommandHelp("tools", "/tools", "list built-in and MCP tools", True),
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),
@@ -137,6 +139,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "sys": ("reset-counter",),
     "secret": ("set",),
     "ping": ("device", "router", "llm", "ntp"),
+    "wifi": ("scan", "status", "connect", "disconnect", "reconnect"),
 }
 
 _NAMES: tuple[str, ...] = tuple(command.name for command in COMMANDS)
