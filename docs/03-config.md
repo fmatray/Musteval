@@ -120,6 +120,9 @@ Single JSON object, UTF-8, no comments, no trailing commas.
 | `tools.allow_dangerous` | bool | no | `false` | switch read by the write tools; the list is `06-security.md` §6, not restated here |
 | `tools.http_allow_hosts[]` | string[] | no | `[]` | 0..8 hostnames; exact match, no wildcards |
 | `tools.memory_max_bytes` | int | no | `2048` | 256..4096; total bytes across the `memory` NVS namespace |
+| `tools.i2c_sda` | int | no | `null` | one of GPIO1, GPIO2, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9; `null` means the I2C tools are absent, and it must differ from `tools.i2c_scl` |
+| `tools.i2c_scl` | int | no | `null` | same set and rule as `tools.i2c_sda`; both are set together or neither is |
+| `tools.task_max` | int | no | `16` | 1..16; the ceiling `task.set` must not exceed, never above the 16-entry schema cap |
 | `sys.safe_mode_after` | int | no | `3` | 2..10; consecutive failed boots before safe mode |
 | `serial.baud` | int | no | `115200` | `115200` or `921600` only |
 | `serial.max_line_bytes` | int | no | `4096` | 512..4096, must match `04-protocol.md` RX limit |

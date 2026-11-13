@@ -75,6 +75,9 @@ ROWS: tuple[ConfigRow, ...] = (
     ),
     _row("tools.http_allow_hosts[]", "string[]", [], "0..8 hostnames; exact match, no wildcards"),
     _row("tools.memory_max_bytes", "int", 2048, "256..4096; total bytes across the `memory` NVS namespace"),
+    _row("tools.i2c_sda", "int", None, "GPIO1, GPIO2, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8 or GPIO9; `-` for absent"),
+    _row("tools.i2c_scl", "int", None, "GPIO1, GPIO2, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8 or GPIO9; `-` for absent"),
+    _row("tools.task_max", "int", 16, "1..16"),
     _row("sys.safe_mode_after", "int", 3, "2..10; consecutive failed boots before safe mode"),
     _row("serial.baud", "int", 115200, "`115200` or `921600` only"),
     _row("serial.max_line_bytes", "int", 4096, "512..4096, must match `04-protocol.md` RX limit"),
@@ -106,6 +109,10 @@ def _range(bound: str) -> tuple[int, int] | None:
 def coerce(row: ConfigRow, text: str) -> object:
     """Parse user input to the row's JSON type, or raise `ValueError` naming it."""
     raw = text.strip()
+    # `render_value` writes `None` as `-`; reading it back must produce `null` again,
+    # or an unset nullable key (`tools.i2c_sda`) can never be cleared once set.
+    if raw == "-":
+        return None
     if row.kind == "int":
         if not _INTEGER.fullmatch(raw):
             raise ValueError(f"{row.path} expects an integer, got {text!r}")

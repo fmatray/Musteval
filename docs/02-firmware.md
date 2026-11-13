@@ -463,19 +463,36 @@ module hands it a JSON body built with the `store` helpers.
   it is a module name the firmware chose, never a provider-supplied value.
 
 ### `sched` — Scheduler
-- `sched_init()`: Load `/tasks.json` and start timers.
-- `sched_trigger_event(type, pin_id)`: Mark a trigger (e.g., `gpio`, `boot`)
-  as fired.
-- `sched_on_mqtt_message(server_id, topic, payload)`: match inbound messages
-  against `mqtt_message` tasks (`02-firmware.md` §5.4).
-- `sched_apply_task(id)`: re-arm one task after `tasks.set` added or updated it, so
-  a new schedule takes effect without a `reload`.
-- `sched_remove_task(id)`: cancel one task's timer after `tasks.delete`. Returns
-  `E_CONFIG` for an unknown id; the caller has already validated, so this only
-  fires on a race with `reload`.
+- `sched_init()`: allocate the state, the lock, the GPIO queue and the drain task.
+  Reads nothing and arms nothing, so safe mode still answers `tasks.list` and
+  `tasks.delete` (§3.2).
+- `sched_start()`: load `/tasks.json`, arm the tick and the GPIO pins, then fire the
+  `boot` trigger (§3.1 step 9). Never called in safe mode.
+- `sched_reload()`: re-read `/tasks.json` and re-arm the pins. A file the build
+  refuses leaves the armed schedule in place, so a bad edit never unschedules the
+  device.
+- `sched_command(name, args, out, why, why_cap)`: one `tasks.*` command
+  (`04-protocol.md` §4.4). Every write is the whole-file rewrite, so a refused
+  `tasks.set` leaves the previous document armed.
+- `sched_trigger_bare(type)`: a transition the firmware observed — `boot`,
+  `wifi_connected`, `ntp_synced`, `serial_connected`. Returns how many tasks fired.
+- `sched_trigger_event(name, data)`: fire every `event` task named `name`, then emit
+  `agent.event` with the hit count — even at 0 (§5.5). Returns the hits.
+- `sched_trigger_mqtt(server_id, topic, payload)`: match inbound messages against
+  `mqtt_message` tasks (§5.4).
+- `sched_trigger_gpio_isr(pin)`: the registered handler's body. Queues the pin and
+  returns; matching and firing happen on the drain task (§5.1).
 - `sched_set_submit(fn)`: install the `agent_submit_fn` port (§2.1). Any trigger
   that starts a run — `boot`, `schedule`, `gpio`, `mqtt_message`, `event` — goes
   through `*fn`. `sched` never includes an `agent` header.
+- `sched_stored_json(out)`: `/tasks.json` as stored, for `task.list`
+  (`docs/tools/tasks.md`).
+- `sched_trigger_json(parent, task)`: add a task's `trigger` object in the frozen
+  shape. Public because `task.fired` (`04` §3.16) reports the same object, and one
+  owner for the shape keeps the file, the list and the frame from drifting.
+
+`sched` emits its own `task.fired` and `gpio.edge` frames, which is why `sched` →
+`link` is a permitted L2 edge (`08-code-architecture.md` §1.1).
 
 ### `mqtt` — Brokers
 - `mqtt_init()`: create one `esp_mqtt_client_handle_t` per `mqtt.servers[]`
@@ -615,7 +632,7 @@ The device follows a strict linear boot to ensure dependencies are met.
    asynchronous and does not block boot; a broker that never connects does not
    delay the agent.
 9. **Scheduler**: `sched` loads `tasks.json` → `boot` trigger fires.
-10. **Idle**: `app` enters main loop, waiting for `prompt`, `sched` or `mqtt.message` events. This is the step that clears `boot_failures` (§3.2). It is not implemented before M4: `app_main` returns after steps 1-8, so `link_task` is what keeps the device reachable, and the boot counter legitimately stays at its incremented value because the idle step that clears it does not run yet.
+10. **Idle**: `app` enters main loop, waiting for `prompt`, `sched` or `mqtt.message` events. Reaching it clears `boot_failures` back to `0` (§3.2), because the boot that reached the idle point is the proof the previous one completed. A normal boot clears it; safe mode deliberately does not, so the operator exits that state with `reload` rather than with a reset that repaired nothing.
 
 Steps 5-7 log and continue: a radio that will not associate or an NTP server that
 does not answer must not cost the operator the link, because the link is how they
@@ -837,7 +854,7 @@ now answers `E_SAFE_MODE` (`04-protocol.md` §4.11) instead of a generic error.
 The scheduler implements the frozen triggers from `docs/00-overview.md` §5.
 
 ### 5.1 Trigger Semantics
- - `boot`: Fires once during boot sequence after `sched_init()`.
+ - `boot`: Fires once during boot sequence, at the end of `sched_start()`.
  - `wifi_connected`: Fires when `net` confirms association.
  - `ntp_synced`: Fires when `clock` receives first valid SNTP update.
  - `serial_connected`: Fires when `link` detects the host has opened the port.
@@ -846,7 +863,7 @@ The scheduler implements the frozen triggers from `docs/00-overview.md` §5.
    `sys` only to configure the pin (`sys_gpio_edge_config(pin, edge)`, an L0 call).
    `gpio_isr_handler_add()` registers a handler *function*; the handler it registers
    does one thing — `xQueueSendFromISR()` into a `sched`-owned queue — and returns. The
-   `sched` task drains that queue and calls `sched_trigger_event("gpio", pin_id)`
+   `sched` task drains that queue, reads the level, emits `gpio.edge` and matches
    there, not in ISR context. No ISR work, no upward call.
    This keeps the edge L2 → L0; `sys` never learns what a trigger is.
  - `mqtt_message`: Fires when an inbound message matches §5.4. Inert until that

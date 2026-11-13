@@ -17,8 +17,10 @@ Runtime counters (e.g. `fired_count`) live in NVS namespace `runtime` keyed by
 task id and are never written into the file (`../03-config.md` §tasks).
 
 `[ASSUMPTION]` each entry in the result is the stored task object as it appears
-in `/tasks.json`. The corresponding `tasks.list` command in the protocol returns
-an enriched view including runtime state (`../04-protocol.md` §4.4).
+in `/tasks.json`, `action` included — the prompt is the task, and a list that hid
+it would describe a task nobody could recognise. The corresponding `tasks.list`
+command in the protocol returns an enriched view including runtime state and
+without the action (`../04-protocol.md` §4.4).
 
 **Arguments**
 
@@ -29,8 +31,8 @@ None. The schema is an object with no properties.
 ```json
 {
   "tasks": [
-    {"id": "nightly-digest", "enabled": true, "description": "Summarize the day at 22:00 local time", "trigger": {"type": "schedule", "kind": "at", "at": "22:00:00"}, "repeat": {"mode": "forever", "count": 0}, "missed": "run_once"},
-    {"id": "button-press", "enabled": false, "description": "Button on GPIO9 pulled low", "trigger": {"type": "gpio", "pin": 9, "level": 0}, "repeat": {"mode": "forever", "count": 0}, "missed": "skip"}
+    {"id": "nightly-digest", "enabled": true, "description": "Summarize the day at 22:00 local time", "trigger": {"type": "schedule", "kind": "at", "at": "22:00:00"}, "action": {"kind": "prompt", "prompt": "Summarize the day"}, "repeat": {"mode": "forever"}, "missed": "run_once"},
+    {"id": "button-press", "enabled": false, "description": "Button on GPIO9 pulled low", "trigger": {"type": "gpio", "pin": 9, "level": 0}, "action": {"kind": "template", "template": "button", "vars": {"pin": "9"}}, "repeat": {"mode": "count", "count": 3}, "missed": "skip"}
   ]
 }
 ```

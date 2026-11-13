@@ -86,8 +86,8 @@ Three consequences, all checkable by grep in CI:
    `llm`; `geo` does not call `clock` — it includes it, since `clock` is L0. The
    permitted L2 edges are directional and form no cycle:
    - `sched` → `link`, to emit `task.fired` and `gpio.edge`. `link` never calls `sched`.
-   - `tools` → `sched`, for `sched_apply_task()` / `sched_remove_task()` after
-     `task.set` or `tasks.delete`. `sched` never calls `tools`.
+   - `tools` → `sched`, for `sched_trigger_event()` (`event.emit`) and
+     `sched_stored_json()` (`task.list`). `sched` never calls `tools`.
 3. **L0 carries no business logic.** `store` does not know what a task is; `net` does
    not know what a provider is.
 

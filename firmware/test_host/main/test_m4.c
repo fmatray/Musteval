@@ -925,12 +925,13 @@ TEST_CASE("an unbuilt tool names the milestone that owes it", "[m4]")
                              tools_unbuilt_reason("mqtt.list"));
     TEST_ASSERT_EQUAL_STRING("mqtt is not implemented before M6",
                              tools_unbuilt_reason("mqtt.publish"));
-    TEST_ASSERT_EQUAL_STRING("the scheduler is not implemented before M5",
-                             tools_unbuilt_reason("task.list"));
-    TEST_ASSERT_EQUAL_STRING("the scheduler is not implemented before M5",
+    /* The scheduler's own three tools shipped with M5, so only `task.set` — which
+     * writes the file and needs `tools.task_max` — is still owed, and it is owed by
+     * M6 (`07-roadmap.md`). */
+    TEST_ASSERT_NULL(tools_unbuilt_reason("task.list"));
+    TEST_ASSERT_NULL(tools_unbuilt_reason("event.emit"));
+    TEST_ASSERT_EQUAL_STRING("task.set is not implemented before M6",
                              tools_unbuilt_reason("task.set"));
-    TEST_ASSERT_EQUAL_STRING("the scheduler is not implemented before M5",
-                             tools_unbuilt_reason("event.emit"));
     /* A built tool has no reason, and neither does an absent name: the caller's
      * fallback is what answers those. */
     TEST_ASSERT_NULL(tools_unbuilt_reason("time.now"));
