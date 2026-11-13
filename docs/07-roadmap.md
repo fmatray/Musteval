@@ -156,7 +156,13 @@ unproven here: the board this was built on joins no network and resolves no key.
 ### M5: Scheduler, MCP & Hardening
 Goal: Full automation, remote capabilities, and final security audit.
 - **Scope**: Trigger engine, `tasks.json` execution, MCP servers, redaction audit, NVS encryption (`nvs_keys` partition).
+  `sched` and `mcp` are implemented and build for the board; the acceptance tests
+  below are the on-target runs that close the milestone. NVS encryption (`S18`) is
+  not implemented and is the one scope item still open.
 - **Deliverables**: `sched`, `mcp` modules, plus `bridge/tools/build_userfs.py` (shipped).
+  `mcp` is `components/mcp/`, split the same way as `geo`: `mcp_parse.c`
+  (host-tested) and `mcp.c` (board; excluded from the `linux` target so the host
+  suite needs no HTTP stack).
 - **Acceptance Tests**:
   - Triggers: `boot`, `wifi_connected`, `gpio`, `event`, `schedule` (at/every) all fire associated tasks.
   - Missed-fire: `missed: "skip"` skips late tasks; `run_once` fires them on next sync.

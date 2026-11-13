@@ -18,10 +18,10 @@ the energy rules are in `docs/08-code-architecture.md`; this table is the summar
 | `agent` | L3 | Agent loop, tool dispatch, conversation history | `llm`, `tools`, `skills`, `mcp` |
 | `link` | L2 | NDJSON framing over USB-Serial/JTAG (CDC-ACM) | `cfg` |
 | `sched` | L2 | Task trigger logic, `tasks.json` tracking, timers | `store`, `cfg`, `clock`, `link`* |
-| `tools` | L2 | Tool registry (built-in + declarative) | `store`, `cfg`, `net`, `geo`, `mqtt`, `sched`* |
+| `tools` | L2 | Tool registry (built-in, declarative, remote) | `store`, `cfg`, `net`, `geo`, `mqtt`, `mcp`, `sched`* |
 | `llm` | L1 | HTTPS client, provider failover chain, prompt assembly | `net`, `cfg` |
 | `skills` | L1 | Prompt template loading from `/skills/*.md` | `store` |
-| `mcp` | L1 | Remote MCP server communication (HTTP/JSON-RPC) | `net`, `cfg` |
+| `mcp` | L1 | Remote MCP server communication (HTTP/JSON-RPC) | `net`, `cfg`, `store` |
 | `mqtt` | L1 | One client per configured broker, subscriptions, publish | `net`, `cfg` |
 | `geo` | L1 | WiFi scan positioning with provider fallback | `net`, `cfg` |
 | `clock` | L0 | SNTP client, time sync, timezone offset | `net`, `cfg`, `store` |
@@ -970,19 +970,59 @@ and still produces the frame with `task_hits: 0`.
 
 ## 6. MCP Dispatch
 
-The Model Context Protocol (MCP) is implemented as a direct-to-server
-HTTP bridge.
+`mcp` is L1 (`08-code-architecture.md` §1): it depends on `cfg`, `net` and `store`,
+calls no host, and is called by `tools` (L2) and by `agent` through `tools`.
 
-1. **Discovery**: `agent` identifies tools starting with `mcp.`.
-2. **Connection**: `mcp` module opens a TLS connection to the server URL in
-   `mcp.servers[]`.
-3. **Request**: Sends a JSON-RPC request to the remote server.
-4. **Result**: Returns the tool output to the LLM.
-5. **Isolation**: An `E_MCP` error in one server does not affect built-in
-   tools or other MCP servers.
+### 6.1 Transport
 
-Cross-references: Protocol envelope in `docs/04-protocol.md`; config keys in
-`docs/03-config.md`; hardware pins in `docs/01-hardware.md`.
+MCP over Streamable HTTP: every request is one `POST` of a single JSON-RPC object to
+`mcp.servers[].url`, and the reply is the response body. No SSE stream is opened, so a
+server that answers only over `text/event-stream` is not supported. `net` performs the
+request; `mcp` builds the body and parses the reply.
+
+`auth_header_ref`, when set, resolves through `cfg_resolve_secret` into the whole
+`Authorization` header value, which `mcp` zeroes after the request. The secret is never
+logged and never reaches a frame.
+
+### 6.2 Session and discovery
+
+Discovery runs once at start, after the network is up and before the model is offered
+its tool list, so `hello_ack.capabilities.tools`, `hello_ack.capabilities.mcp` and the
+`tools` array sent to the model cannot disagree:
+
+1. For each enabled server, in config order: `initialize`, then
+   `notifications/initialized`, then `tools/list`.
+2. Cache the returned `tools[].name`, `description` and `inputSchema`, namespaced as
+   `mcp.<server_id>.<tool_name>`. A name over `MCP_TOOL_NAME_MAX` or a set over
+   `MCP_MAX_TOOLS` is dropped rather than truncated.
+3. A server that fails contributes no tools, raises `mcp.error`, and does not stop the
+   others. A board where every server is down still boots with its built-in tools.
+
+`mcp_discovered()` returns that flattened set; `tools_context_from_config` copies it
+onto `tools_context_t.mcp_tools`, which is what `tools_json.c` offers and what
+`tools_offered` recognises. Nothing re-derives it per model round.
+
+### 6.3 Call
+
+A `mcp.` name is split at the first two dots into server id and tool name. A name whose
+server is not configured, or whose tool was not discovered, is refused with `E_TOOL`
+before any request is made. Otherwise `tools/call` is posted and the reply's
+`result.content[].text` items are joined with a space into the tool result string; a
+non-text item contributes `[<type>]` so a refusal is visible rather than empty. The join
+is cut at the caller's cap with a trailing `…`, the same rule `tools` applies to a long
+built-in result. `result.structuredContent` is not read.
+
+A remote tool is **untrusted**: it is gated on `tools.allow_dangerous`, because the
+server chooses what it does. A JSON-RPC `error` object, a non-2xx status, a timeout or
+an unparseable body is `E_MCP` with the server's own message when it gave one. A reply
+with `result.isError` true is also `E_MCP`, with the joined content as the message.
+
+### 6.4 Memory
+
+A discovered set is `MCP_MAX_SERVERS × MCP_MAX_TOOLS` entries of fixed-size strings,
+about 88 KiB. Both the per-server state and the flattened set are heap allocations,
+PSRAM first and internal as fallback, for the same reason `sched` and `agent` do it:
+the model's task stack comes from the same DIRAM pool.
 
 ## 7. Tools
 
