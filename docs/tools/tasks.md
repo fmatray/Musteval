@@ -47,14 +47,16 @@ None. The schema is an object with no properties.
 
 Creates or replaces one task and writes `/tasks.json`. It validates the input
 against the task schema in `../03-config.md` §tasks and refuses if the resulting
-count would exceed `tools.task_max`. Result returns the task id.
+count would exceed `tools.task_max`. The cap is checked against a new id only: an
+update replaces in place and consumes no slot, so a schedule already at the cap can
+still be edited, including to set `enabled: false`. Result returns the task id.
 
 The tool is add/update only. A task object carrying any key outside the schema is
 rejected whole as `E_TOOL` and the file is never partially updated.
 
 `store_write_image_chunk("/tasks.json", ...)` writes the whole file atomically by writing to
-a temp file then renaming; this is held under a mutex and refused during `reload`
-(`../02-firmware.md` §7.2).
+a temp file then renaming. The write and `reload` take the same mutex, so a write issued
+during a reload waits for it rather than failing (`../02-firmware.md` §7.2).
 
 **Arguments**
 
@@ -122,13 +124,12 @@ without it re-enables a disabled task (`../04-protocol.md` §4.6).
 
 ## Errors
 
- - `E_TOOL` — `tools.allow_dangerous` is `false`; resulting task count exceeds
-   `tools.task_max`; or argument fails schema validation (unknown key, bad id,
+ - `E_TOOL` — `tools.allow_dangerous` is `false`; a *new* id would push the count
+   past `tools.task_max`; or argument fails schema validation (unknown key, bad id,
    bad trigger).
  - `E_STORAGE` — `[ASSUMPTION]` the atomic write to `/fs/tasks.json` failed; file
    left as before.
- - `E_BUSY` — the `tasks.json` write is refused when `reload` is in progress.
-   This is the only failure of `task.set` that is neither `E_TOOL` nor `E_STORAGE`.
+
 ## See also
 
 - [Task schema](../03-config.md#task-schema)

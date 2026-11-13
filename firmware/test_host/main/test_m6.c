@@ -11,6 +11,7 @@
 #include "cfg.h"
 #include "geo.h"
 #include "mqtt.h"
+#include "tools.h"
 
 /* --- Provider responses --------------------------------------------------- */
 

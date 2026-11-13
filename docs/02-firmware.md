@@ -1032,8 +1032,10 @@ executing, and no partial effect is applied.
 
 This is the only **tool** allowed to write to `userfs`. It validates the input
 against the task schema in `docs/03-config.md` §tasks and refuses if the resulting
-count would exceed `tools.task_max`. Result returns the task id. This is a deliberate
-carve-out to `06-security.md` §6.1 barrier 3.
+count would exceed `tools.task_max`. The cap is checked against a *new* id only: an
+update replaces in place and consumes no slot, so a schedule already at the cap can
+still be edited. Result returns the task id. This is a deliberate carve-out to
+`06-security.md` §6.1 barrier 3.
 
 The tool is **add/update only**. There is no delete op and no field that reads as
 one: an unrecognised field fails schema validation, and `enabled: false` retains the
@@ -1048,9 +1050,11 @@ previous file intact. `sched` is its only caller. There is no separate
 `store_write_image_chunk()` — the generic image writer already has the semantics the task
 file needs, and a second entry point would be a second place to keep the atomicity
 right.
- A write refused during `reload` returns `E_BUSY`; this is the only failure of
- `task.set` that is neither `E_TOOL` nor `E_STORAGE`. Its callers are exactly
- three: the `task.set` tool, and the `tasks.set` / `tasks.delete` commands.
+ A write cannot be refused by a concurrent `reload`: both take the same mutex, so the
+ write waits for the reload to finish and then lands. There is therefore no `E_BUSY`
+ for this path, and the only failures are the ones named in `04-protocol.md` §4.6 and
+ `docs/tools/tasks.md`. Its callers are exactly three: the `task.set` tool, and the
+ `tasks.set` / `tasks.delete` commands.
  `tasks.delete` additionally purges that task's keys from NVS namespace `runtime`
  before the rename commits, so a partially applied delete cannot leave orphaned
  `fired_count` state.

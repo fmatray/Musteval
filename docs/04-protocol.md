@@ -588,9 +588,9 @@ reads are never refused.
 | `secret.set` | `{key, value}` | `{key, stored, length}` | `E_CONFIG`, `E_STORAGE` | yes |
 | `templates.list` | `{}` | `{"templates":["brief.md","daily.md"]}` | `E_STORAGE` | yes |
 | `template.get` | `{name}` | `{name, bytes, text}` | `E_STORAGE` (missing), `E_PROTOCOL` (bad name) | yes |
-| `geo.locate` | `{}` | `{lat, lon, accuracy_m, source, age_s}` | `E_GEO`, `E_CONFIG` (geo disabled) | yes |
-| `mqtt.publish` | `{server_id, topic, payload, qos?, retain?}` | `{published, server_id, topic}` | `E_MQTT` (unknown server/topic, disconnected) | yes |
-| `mqtt.status` | `{}` | `{servers:[{id,connected,subscriptions,last_error}]}` | `E_INTERNAL` | yes |
+| `geo.locate` | `{}` | `{lat, lon, accuracy_m, provider, age_s}` | `E_GEO`, `E_CONFIG` (geo disabled) | yes |
+| `mqtt.publish` | `{server_id, topic, payload, qos?, retain?}` | `{published}` | `E_MQTT` (unknown server/topic, disconnected) | yes |
+| `mqtt.status` | `{}` | `[{id, connected, subscriptions}]` | `E_CONFIG` (`mqtt.servers[]` missing or malformed) | yes |
 | `fs.put` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created, requires_reboot}` | `E_CONFIG` (bad path, bad extension, or a built-in target), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
 | `sandbox.list` | `{path?}` | `{path, entries:[{name,dir,bytes}]}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing directory) | yes |
 | `sandbox.read` | `{path}` | `{path, bytes, text, truncated}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (missing file) | yes |
@@ -855,10 +855,6 @@ Lists the connection state and subscription count for all configured MQTT broker
 
 Only returns `E_CONFIG` if `mqtt.servers[]` is completely missing or malformed.
 Individual broker disconnection is reported as `connected:false`.
-
-```json
-{"v":1,"type":"command.result","id":"d-21","ts":1730571600,"reply_to":"b-13","name":"config.get","ok":true,"result":{"path":"llm.providers.0.model","value":"gpt-4o-mini"},"duration_ms":4}
-```
 
 ### 4.16 `fs.put`
 

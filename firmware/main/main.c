@@ -24,7 +24,9 @@
 
 #include "cfg.h"
 #include "clock.h"
+#include "geo.h"
 #include "llm.h"
+#include "mqtt.h"
 #include "net.h"
 #include "agent.h"
 #include "link.h"
@@ -52,6 +54,34 @@ static char s_boot_id[9];
  * the link, because the link is how they fix the config. Safe mode skips the radio
  * entirely (§3.2), which is why the clock is left unsynced. `reload` runs this with
  * `false` after clearing the flag, which is what makes it the way out (§3.2). */
+/* `mqtt` emits `mqtt.message` through this sink rather than calling `link`, because
+ * `08-code-architecture.md` §1.1 has no `mqtt`→`link` edge. It also fires the
+ * `mqtt_message` tasks, which is the same transition the frame reports. */
+static void mqtt_frame_sink(const char *server_id, const char *topic, const char *payload,
+                            size_t len, bool truncated, uint8_t qos, bool retain,
+                            int64_t received_ts)
+{
+    json_doc_t *body = json_new_object();
+    if (body == NULL) return;
+    json_node_t *root = json_root(body);
+    json_add_string(root, "server_id", server_id);
+    json_add_string(root, "topic", topic);
+    /* `04` §3.18: `payload` is a string, so a binary message is reported as the bytes
+     * that arrived. `truncated` says whether the cap bit. */
+    json_add_string(root, "payload", payload);
+    json_add_bool(root, "truncated", truncated);
+    json_add_int(root, "qos", qos);
+    json_add_bool(root, "retain", retain);
+    json_add_int(root, "received_ts", received_ts);
+    char id[32];
+    link_next_id(id, sizeof id);
+    (void)link_emit_body("mqtt.message", id, clock_now(), NULL, body);
+    json_free(body);
+
+    (void)sched_trigger_mqtt(server_id, topic, payload);
+    (void)len;
+}
+
 static void start_services(bool safe_mode)
 {
     if (safe_mode) {
@@ -95,6 +125,24 @@ static void start_services(bool safe_mode)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "boot: llm: %s: provider commands answer E_LLM_UNAVAILABLE",
                  esp_err_to_name(err));
+    }
+
+    /* `geo` before the tools are offered, so `hello_ack`'s capability list and
+     * `geo.locate` cannot disagree about whether the locator exists. A disabled
+     * locator is ESP_OK with `geo_enabled()` false, not a failure. */
+    err = geo_init();
+    if (err != ESP_OK) {
+        /* A refused chain is a config error the user can fix, so it is named rather
+         * than silently degrading: `geo.locate` then answers `E_CONFIG`. */
+        ESP_LOGW(TAG, "boot: geo: %s: geo.locate will refuse", esp_err_to_name(err));
+    }
+
+    /* `mqtt` needs the network and the clock for `received_ts`, and the sink needs
+     * `link`, so it starts here rather than with the other L1 modules. */
+    mqtt_set_sink(mqtt_frame_sink);
+    err = mqtt_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "boot: mqtt: %s: brokers unavailable", esp_err_to_name(err));
     }
 
     /* After `link_start`, so a run's first frame has a writer (`02` §3.1). */
@@ -912,6 +960,17 @@ static void answer_command(const json_node_t *frame)
         agent_status(&agent);
         tool_counters_t tool_counts;
         tools_counters(&tool_counts);
+        /* §3.9's `geo` and `mqtt[]` come from the two modules rather than from a
+         * fabricated idle value, so the bridge's status panel shows what is true. */
+        static link_mqtt_row_t mqtt_rows[MQTT_MAX_SERVERS];
+        mqtt_state_t brokers[MQTT_MAX_SERVERS];
+        size_t mqtt_n = mqtt_states(brokers, MQTT_MAX_SERVERS);
+        for (size_t i = 0; i < mqtt_n; i++) {
+            mqtt_rows[i].id = brokers[i].id;
+            mqtt_rows[i].connected = brokers[i].connected;
+        }
+        geo_fix_t fix = {0};
+        bool have_geo = geo_cached_fix(&fix);
         link_status_t st = {
             .safe_mode = s_safe_mode,
             .boot_failures = s_boot_failures,
@@ -947,6 +1006,13 @@ static void answer_command(const json_node_t *frame)
             .agent_queue_depth = agent.queue_depth,
             .tool_calls = tool_counts.calls,
             .tool_failures = tool_counts.failures,
+            .have_geo = have_geo,
+            .geo_lat = have_geo ? fix.lat : 0,
+            .geo_lon = have_geo ? fix.lon : 0,
+            .geo_accuracy_m = have_geo ? fix.accuracy_m : 0,
+            .geo_age_s = have_geo ? (clock_now() - fix.source_ts) : 0,
+            .mqtt_rows = mqtt_rows,
+            .mqtt_row_count = mqtt_n,
         };
         json_node_t *result = json_add_object(root, "result");
         json_add_string(root, "name", "status");
@@ -1175,12 +1241,14 @@ static void answer_command(const json_node_t *frame)
         char why[96] = "";
         esp_err_t r = sched_command(name, args, &result, why, sizeof why);
         if (r != ESP_OK) {
-            /* `04` §4.4: a bad task object or a full file is `E_CONFIG`, and the
-             * detail names the key. A missing id is the same refusal class. */
+            /* `04` §4.6, §4.7: a bad task object, a full file or an unknown id is
+             * `E_CONFIG` and the detail names the key. Anything else came back from the
+             * write itself, which is `E_STORAGE`. */
+            bool refused = r == ESP_ERR_INVALID_ARG || r == ESP_ERR_INVALID_SIZE ||
+                           r == ESP_ERR_NOT_FOUND;
             char message[96];
             snprintf(message, sizeof message, "%s", why[0] ? why : "command refused");
-            emit_failure(name, reply_to,
-                         r == ESP_ERR_NO_MEM ? "E_STORAGE" : "E_CONFIG", message);
+            emit_failure(name, reply_to, refused ? "E_CONFIG" : "E_STORAGE", message);
             json_free(body); return;
         }
         if (result != NULL) {
@@ -1189,20 +1257,104 @@ static void answer_command(const json_node_t *frame)
             json_free(result);
         }
         built = ESP_OK;
-    } else if (name && (strcmp(name, "mqtt.publish") == 0 ||
-                        strcmp(name, "mqtt.status") == 0)) {
-        /* M6 (`07-roadmap.md`). Neither `E_MQTT` nor `E_GEO` fits: both are
-         * documented as retryable broker/provider failures, and "the client does
-         * not exist yet" is not retryable. `E_INTERNAL` is the catalog's code for a
-         * device-side gap, so the bridge reports the truth instead of inviting a
-         * retry that can never succeed. */
-        emit_failure(name, reply_to, "E_INTERNAL",
-                     "mqtt is not wired yet: the client lands in M6");
-        json_free(body); return;
+    } else if (name && strcmp(name, "mqtt.publish") == 0) {
+        /* `04` §4.14: `E_MQTT` is the whole failure domain, "not `E_CONFIG`, as this
+         * validates broker state". The command and the tool share one implementation
+         * so a topic the model is refused is refused to the bridge too. */
+        esp_err_t err = ESP_OK;
+        const char *code = "E_MQTT";
+        const json_node_t *a = (args != NULL) ? args : json_root(body);
+        const char *server_id = json_string(json_get(a, "server_id"));
+        const char *topic = json_string(json_get(a, "topic"));
+        const char *payload = json_string(json_get(a, "payload"));
+        char why[96] = "";
+        if (server_id == NULL || topic == NULL || payload == NULL) {
+            emit_failure(name, reply_to, "E_MQTT",
+                         "server_id, topic and payload are required strings");
+            json_free(body); return;
+        }
+        uint8_t qos = 0;
+        const json_node_t *qn = json_get(a, "qos");
+        int64_t qv = 0;
+        if (qn != NULL) {
+            if (!json_int(qn, &qv) || !mqtt_qos_ok(qv)) {
+                emit_failure(name, reply_to, "E_MQTT", "qos: must be 0 or 1");
+                json_free(body); return;
+            }
+            qos = (uint8_t)qv;
+        }
+        err = mqtt_publish(server_id, topic, payload, strlen(payload), qos);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_NOT_FOUND) {
+                snprintf(why, sizeof why, "%s: not in mqtt.servers[]", server_id);
+            } else if (err == ESP_ERR_INVALID_STATE) {
+                snprintf(why, sizeof why, "%s: not connected", server_id);
+            } else {
+                snprintf(why, sizeof why, "topic is not in the allowlist");
+            }
+            (void)code;
+            emit_failure(name, reply_to, "E_MQTT", why);
+            json_free(body); return;
+        }
+        json_add_bool(json_add_object(root, "result"), "published", true);
+        built = ESP_OK;
+    } else if (name && strcmp(name, "mqtt.status") == 0) {
+        /* `04` §4.15: a row per configured broker whether or not it is up. */
+        mqtt_state_t rows[MQTT_MAX_SERVERS];
+        size_t n = mqtt_states(rows, MQTT_MAX_SERVERS);
+        if (n == 0) {
+            /* §4.15: "Only returns `E_CONFIG` if `mqtt.servers[]` is completely
+             * missing or malformed." No running client is exactly that, because
+             * `mqtt_init` refuses a malformed list at boot. */
+            emit_failure(name, reply_to, "E_CONFIG",
+                         "mqtt.servers[] is empty or malformed");
+            json_free(body); return;
+        }
+        json_node_t *arr = json_new_array(root, "result");
+        if (arr == NULL) {
+            emit_failure(name, reply_to, "E_INTERNAL", "out of memory");
+            json_free(body); return;
+        }
+        for (size_t i = 0; i < n; i++) {
+            json_node_t *row = json_array_push_object(arr);
+            if (row == NULL) {
+                emit_failure(name, reply_to, "E_INTERNAL", "out of memory");
+                json_free(body); return;
+            }
+            json_add_string(row, "id", rows[i].id);
+            json_add_bool(row, "connected", rows[i].connected);
+            /* §4.15 shows `subscriptions` as an array of strings, not of objects. */
+            json_node_t *subs = json_new_array(row, "subscriptions");
+            for (size_t j = 0; subs != NULL && j < rows[i].topic_count; j++) {
+                json_array_push_string(subs, rows[i].topics[j].filter);
+            }
+        }
+        built = ESP_OK;
     } else if (name && strcmp(name, "geo.locate") == 0) {
-        emit_failure(name, reply_to, "E_INTERNAL",
-                     "geo is not wired yet: the providers land in M6");
-        json_free(body); return;
+        /* `04` §4.13: a disabled locator is `E_CONFIG`, a failed chain `E_GEO`. */
+        if (!geo_enabled()) {
+            emit_failure(name, reply_to, "E_CONFIG", "geo.enabled is false");
+            json_free(body); return;
+        }
+        geo_fix_t fix = {0};
+        esp_err_t err = geo_locate(&fix);
+        if (err != ESP_OK) {
+            emit_failure(name, reply_to, "E_GEO",
+                         err == ESP_ERR_TIMEOUT ? "no provider answered"
+                                                : "every provider failed");
+            json_free(body); return;
+        }
+        /* §4.13's example types the result as `{lat, lon, accuracy_m, provider,
+         * age_s}`; `source_ts` is the cache's own field (`02-firmware.md` §geo) and is
+         * not on the wire. */
+        json_node_t *res = json_add_object(root, "result");
+        json_add_double(res, "lat", fix.lat);
+        json_add_double(res, "lon", fix.lon);
+        json_add_int(res, "accuracy_m", fix.accuracy_m);
+        json_add_string(res, "provider", fix.provider);
+        int64_t age_s = (int64_t)clock_now() - fix.source_ts;
+        json_add_int(res, "age_s", age_s < 0 ? 0 : age_s);
+        built = ESP_OK;
     } else if (name && strcmp(name, "templates.list") == 0) {
         esp_err_t r = handle_templates_list(args, root, json_add_object(root, "result"));
         if (r != ESP_OK) {
