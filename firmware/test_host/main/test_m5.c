@@ -965,6 +965,7 @@ static const refusal_t k_refusals[] = {
     {"trigger: unknown key nope", "{\"id\":\"a\",\"trigger\":{\"type\":\"boot\",\"nope\":1},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}"},
     {"action: unknown key nope", "{\"id\":\"a\",\"trigger\":{\"type\":\"boot\"},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\",\"nope\":1}}"},
     {"task.description: not a string", "{\"id\":\"a\",\"description\":5,\"trigger\":{\"type\":\"boot\"},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}"},
+    {"task.description: must be 0..127 bytes", "{\"id\":\"a\",\"description\":\"DESCRIPTION_130\",\"trigger\":{\"type\":\"boot\"},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}"},
     {"trigger: type is required", "{\"id\":\"a\",\"trigger\":{},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}"},
     {"trigger: pin is required", "{\"id\":\"a\",\"trigger\":{\"type\":\"gpio\",\"level\":1},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}"},
     {"trigger: level is required", "{\"id\":\"a\",\"trigger\":{\"type\":\"gpio\",\"pin\":9},\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}"},
@@ -988,8 +989,21 @@ TEST_CASE("a task object outside the closed schema names the key it refuses", "[
     size_t n = sizeof k_refusals / sizeof *k_refusals;
     TEST_ASSERT_TRUE(n >= 30); /* a scan over zero rows proves nothing */
     for (size_t i = 0; i < n; i++) {
+        char expanded[1024];
+        const char *token = strstr(k_refusals[i].task, "DESCRIPTION_130");
+        if (token != NULL) {
+            /* 130 bytes, two past the 128-byte field: the boundary the doc names. */
+            char long_desc[131];
+            memset(long_desc, 'd', 130);
+            long_desc[130] = '\0';
+            size_t head = (size_t)(token - k_refusals[i].task);
+            snprintf(expanded, sizeof expanded, "%.*s%s%s", (int)head, k_refusals[i].task,
+                     long_desc, token + strlen("DESCRIPTION_130"));
+        } else {
+            snprintf(expanded, sizeof expanded, "%s", k_refusals[i].task);
+        }
         int written = snprintf(file, sizeof file, "{\"version\":1,\"tasks\":[%s]}",
-                               k_refusals[i].task);
+                               expanded);
         TEST_ASSERT_TRUE(written > 0 && (size_t)written < sizeof file);
         why[0] = '\0';
         size_t dropped = 0;

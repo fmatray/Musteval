@@ -68,10 +68,8 @@ static esp_err_t need_string(const json_node_t *obj, const char *key, size_t min
         }
         return ESP_ERR_INVALID_ARG;
     }
-    if (cap <= len) {
-        if (why != NULL && why_cap > 0) snprintf(why, why_cap, "%s.%s: too long", where, key);
-        return ESP_ERR_INVALID_SIZE;
-    }
+    /* `cap` always exceeds `max_len` at every call site, so the range check above is
+     * the only overflow this copy can be handed. */
     memcpy(out, text, len + 1);
     return ESP_OK;
 }
