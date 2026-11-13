@@ -56,9 +56,7 @@ either is refused with `E_MQTT` before any socket write. The call is refused wit
 QoS 1 is the same code (`../04-protocol.md` §4.14).
 
 `E_MQTT` is the entire failure domain of this tool. A malformed call — a missing
- `E_MQTT` is the entire failure domain of this tool. A malformed call — a missing
- required field, a `qos` other than `0` or `1`, an unknown property — is reported as
- `E_MQTT` as well, where every other built-in reports `E_TOOL`.
+required field, a `qos` other than `0` or `1`, an unknown property — is reported as
 `E_MQTT` as well, where every other built-in reports `E_TOOL`. The reason is that
 this tool's authorisation input is the configuration, and the configuration is
 what the refusal describes; the wrapper does not split syntax errors from state
@@ -67,10 +65,8 @@ with `ok: false` and never abort the run (`../04-protocol.md` §3.13).
 
 `payload` is sent as the message body exactly as given; it is not encoded, escaped
 or wrapped. The docs state no size bound for it `[ASSUMPTION]`. `qos` omitted means
- `payload` is sent as the message body exactly as given; it is not encoded, escaped
- or wrapped. The docs state no size bound for it `[ASSUMPTION]`. `qos` omitted means
- the server's `mqtt.servers[].qos` default. `0` and `1` are the only accepted
- values; QoS 2 is permanently unsupported (`../03-config.md` §mqtt).
+the server's `mqtt.servers[].qos` default. `0` and `1` are the only accepted
+values; QoS 2 is permanently unsupported (`../03-config.md` §mqtt).
 
 The host-side command of the same name additionally carries `retain?`
 (`../04-protocol.md` §4.14); the model-facing tool does not expose it.
