@@ -6,6 +6,8 @@
  * and only an executed one needs a board. */
 
 #include "tools.h"
+#include "geo.h"
+#include "mqtt.h"
 #include "sched.h"
 
 #include <inttypes.h>
@@ -781,6 +783,177 @@ static esp_err_t call_event_emit(const json_node_t *args, json_doc_t **out,
     return ESP_OK;
 }
 
+/* `geo.locate` (`04-protocol.md` §4.13, `docs/tools/geo.md`). The cached fix is returned
+ * while fresh; a lookup blocks for up to `geo.timeout_ms` per provider, which is what the
+ * tool contract tells the model. */
+static esp_err_t call_geo_locate(json_doc_t **out, const char **wire_code, char *why,
+                                 size_t why_cap)
+{
+    if (!geo_enabled()) {
+        /* `04` §4.13: a disabled geolocator is `E_CONFIG`, which tells the reader to
+         * turn it on rather than that the chain failed. */
+        set_why(why, why_cap, "geo.locate: geo.enabled is false");
+        if (wire_code != NULL) *wire_code = "E_CONFIG";
+        return ESP_ERR_INVALID_STATE;
+    }
+    geo_fix_t fix = {0};
+    esp_err_t err = geo_locate(&fix);
+    if (err != ESP_OK) {
+        set_why(why, why_cap, err == ESP_ERR_TIMEOUT ? "geo.locate: no provider answered"
+                                                     : "geo.locate: every provider failed");
+        if (wire_code != NULL) *wire_code = "E_GEO";
+        return err;
+    }
+    *out = json_new_object();
+    if (*out == NULL) return ESP_ERR_NO_MEM;
+    json_node_t *root = json_root(*out);
+    json_add_double(root, "lat", fix.lat);
+    json_add_double(root, "lon", fix.lon);
+    json_add_int(root, "accuracy_m", fix.accuracy_m);
+    json_add_string(root, "provider", fix.provider);
+    int64_t age = (int64_t)clock_now() - fix.source_ts;
+    json_add_int(root, "age_s", age < 0 ? 0 : age);
+    return ESP_OK;
+}
+
+/* `mqtt.list` (`docs/tools/mqtt.md`): every configured broker, its live state and the
+ * filters it subscribed to. No secret material is in the result: ids and topic strings
+ * are the only server-side values it carries (`06-security.md` §11, S11). */
+static esp_err_t call_mqtt_list(json_doc_t **out, const char **wire_code, char *why,
+                                size_t why_cap)
+{
+    mqtt_state_t states[MQTT_MAX_SERVERS];
+    size_t n = mqtt_states(states, MQTT_MAX_SERVERS);
+    *out = json_new_object();
+    if (*out == NULL) return ESP_ERR_NO_MEM;
+    json_node_t *root = json_root(*out);
+    json_node_t *arr = json_new_array(root, "servers");
+    if (arr == NULL) {
+        json_free(*out);
+        *out = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    for (size_t i = 0; i < n; i++) {
+        json_node_t *entry = json_array_push_object(arr);
+        if (entry == NULL) {
+            json_free(*out);
+            *out = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+        json_add_string(entry, "id", states[i].id);
+        json_add_bool(entry, "connected", states[i].connected);
+        json_node_t *subs = json_new_array(entry, "subscriptions");
+        for (size_t j = 0; subs != NULL && j < states[i].topic_count; j++) {
+            json_array_push_string(subs, states[i].topics[j].filter);
+        }
+    }
+    (void)wire_code;
+    (void)why;
+    (void)why_cap;
+    return ESP_OK;
+}
+
+/* `task.set` (`docs/tools/tasks.md`): add or replace one task, never delete. The schema
+ * and the write are `sched`'s — one owner for `/tasks.json` — so this only adds the one
+ * rule the scheduler cannot know: the model's cap is `tools.task_max`, not the schema's
+ * 16. An update does not consume a slot, so the cap is checked against a *new* id only. */
+static esp_err_t call_task_set(const tools_context_t *ctx, const json_node_t *args,
+                               json_doc_t **out, const char **wire_code, char *why,
+                               size_t why_cap)
+{
+    const json_node_t *task_obj = args != NULL ? json_get(args, "task") : NULL;
+    if (task_obj == NULL) task_obj = args;
+    const char *id = json_string(json_get(task_obj, "id"));
+    const sched_tasks_t *state = sched_state();
+    if (state == NULL) {
+        set_why(why, why_cap, "task.set: the schedule is unavailable");
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool known = false;
+    for (size_t i = 0; id != NULL && i < state->count; i++) {
+        if (strcmp(state->tasks[i].id, id) == 0) { known = true; break; }
+    }
+    if (!tools_task_set_fits(state->count, known, ctx->task_max)) {
+        /* The reader has to edit `tools.task_max` or drop a task, so the message names
+         * the cap rather than saying "too many". */
+        set_why(why, why_cap, "task.set: tools.task_max is reached; update a task or raise it");
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    json_doc_t *written = NULL;
+    esp_err_t err = sched_command("tasks.set", args, &written, why, why_cap);
+    if (err != ESP_OK) {
+        /* The schema and the 16-entry cap are the caller's fault, so `E_TOOL`; a
+         * refused write is the storage layer's, so `E_STORAGE` (`tasks.md` §Errors). */
+        bool refused = err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_SIZE;
+        if (wire_code != NULL) *wire_code = refused ? "E_TOOL" : "E_STORAGE";
+        return err;
+    }
+    /* The command's reply carries the count and the created flag for the bridge; the
+     * tool contract returns the id alone. */
+    *out = json_new_object();
+    if (*out == NULL) {
+        json_free(written);
+        return ESP_ERR_NO_MEM;
+    }
+    const char *written_id = json_string(json_get(json_root(written), "id"));
+    json_add_string(json_root(*out), "id", written_id != NULL ? written_id : "");
+    json_free(written);
+    return ESP_OK;
+}
+
+/* `mqtt.publish` (`docs/tools/mqtt.md`). Every argument is validated here rather than in
+ * `mqtt`, so the model gets a message naming the field it got wrong; the allowlist and
+ * the connection state are `mqtt`'s to answer. */
+static esp_err_t call_mqtt_publish(const json_node_t *args, json_doc_t **out,
+                                   const char **wire_code, char *why, size_t why_cap)
+{
+    const char *server_id = json_string(json_get(args, "server_id"));
+    const char *topic = json_string(json_get(args, "topic"));
+    const char *payload = json_string(json_get(args, "payload"));
+    if (server_id == NULL || topic == NULL || payload == NULL) {
+        set_why(why, why_cap, "mqtt.publish: server_id, topic and payload are required strings");
+        if (wire_code != NULL) *wire_code = "E_MQTT";
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t qos = 0;
+    json_node_t *q = json_get(args, "qos");
+    if (q != NULL) {
+        int64_t v = 0;
+        if (!json_int(q, &v) || !mqtt_qos_ok(v)) {
+            set_why(why, why_cap, "mqtt.publish: qos: must be 0 or 1");
+            if (wire_code != NULL) *wire_code = "E_MQTT";
+            return ESP_ERR_INVALID_ARG;
+        }
+        qos = (uint8_t)v;
+    }
+    size_t len = strlen(payload);
+    esp_err_t err = mqtt_publish(server_id, topic, payload, len, qos);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NOT_FOUND) {
+            set_why(why, why_cap, "mqtt.publish: unknown server_id");
+        } else if (err == ESP_ERR_INVALID_STATE) {
+            set_why(why, why_cap, "mqtt.publish: that server is not connected");
+        } else {
+            /* The allowlist refusal names the reason, because the fix is a config edit:
+             * the topic is not in `mqtt.servers[].topics[]`. */
+            set_why(why, why_cap, "mqtt.publish: topic is not in the allowlist");
+        }
+        /* `docs/tools/mqtt.md`: every failure of this tool is `E_MQTT`, including a
+         * malformed call, because its authorisation input is the configuration. */
+        if (wire_code != NULL) *wire_code = "E_MQTT";
+        return err;
+    }
+    *out = json_new_object();
+    if (*out == NULL) return ESP_ERR_NO_MEM;
+    json_node_t *root = json_root(*out);
+    json_add_bool(root, "ok", true);
+    json_add_int(root, "bytes", (int64_t)len);
+    return ESP_OK;
+}
+
 esp_err_t tools_call(const tools_context_t *ctx, const char *name,
                      const json_node_t *args, json_doc_t **out,
                      const char **wire_code, char *why, size_t why_cap)
@@ -818,6 +991,16 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         err = call_task_list(out, wire_code, why, why_cap);
     } else if (strcmp(name, "event.emit") == 0) {
         err = call_event_emit(args, out, wire_code, why, why_cap);
+    } else if (strcmp(name, "geo.locate") == 0) {
+        err = call_geo_locate(out, wire_code, why, why_cap);
+    } else if (strcmp(name, "mqtt.list") == 0) {
+        err = call_mqtt_list(out, wire_code, why, why_cap);
+    } else if (strcmp(name, "mqtt.publish") == 0) {
+        err = call_mqtt_publish(args, out, wire_code, why, why_cap);
+    } else if (strcmp(name, "task.set") == 0) {
+        /* The gate already refused an unauthorised caller with `E_TOOL`, because the
+         * registry marks this tool `TOOLS_GATE_DANGEROUS`. */
+        err = call_task_set(ctx, args, out, wire_code, why, why_cap);
     } else if (strcmp(name, "todo") == 0) {
         /* Through the port, because the tree belongs to `agent` (L3) and calling up
          * would break `08-code-architecture.md` §1.1. */
@@ -827,11 +1010,7 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         }
         err = ctx->todo.apply(args, out, why, why_cap, ctx->todo.ctx);
     } else {
-        /* The tools registered for later milestones are refused rather than
-         * answered wrongly. The wording lives in `tools_spec.c` so each family's
-         * message is host-tested (`07-roadmap.md`: M5 scheduler, M6 geo/mqtt). */
-        const char *reason = tools_unbuilt_reason(name);
-        set_why(why, why_cap, reason != NULL ? reason : "unknown tool");
+        set_why(why, why_cap, "unknown tool");
         if (wire_code != NULL) *wire_code = "E_TOOL";
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -877,6 +1056,7 @@ void tools_context_from_config(tools_context_t *ctx)
     ctx->memory_max_bytes = (size_t)cfg_int_or("tools.memory_max_bytes", 2048);
     ctx->i2c_sda = cfg_int_or("tools.i2c_sda", -1);
     ctx->i2c_scl = cfg_int_or("tools.i2c_scl", -1);
+    ctx->task_max = (size_t)cfg_int_or("tools.task_max", SCHED_MAX_TASKS);
     /* `todo` is `agent`'s tree, installed by whoever owns it (`tools_todo_port_t`). */
     ctx->todo.apply = NULL;
     ctx->todo.ctx = NULL;

@@ -324,28 +324,13 @@ bool tools_offered(const char *name, const tools_context_t *ctx)
     return true;
 }
 
-/* --- Unbuilt tools -------------------------------------------------------- */
+/* --- `task.set` cap ------------------------------------------------------- */
 
-/* The refusal for a registered tool whose milestone has not shipped, or NULL when
- * the tool is not one of them: `geo.locate` and `mqtt.*` are M6, the scheduler's
- * `task.*`/`event.emit` are M5. Pure, so each family's message is host-tested; one
- * shared message named the scheduler for all of them, which was true for two of the
- * three families and misdirected a reader for the rest. */
-const char *tools_unbuilt_reason(const char *name)
+bool tools_task_set_fits(size_t scheduled, bool known_id, size_t task_max)
 {
-    if (name == NULL) return NULL;
-    if (strcmp(name, "geo.locate") == 0) return "geo.locate is not implemented before M6";
-    if (strncmp(name, "mqtt.", 5) == 0) return "mqtt is not implemented before M6";
-    if (strcmp(name, "task.list") == 0) {
-        /* `tools/tasks.md`: the list is a plain read of `/tasks.json`, so it ships with
-         * the scheduler. `task.set` writes the file and needs `tools.task_max`, which
-         * is M6 (`07-roadmap.md`). */
-        return NULL;
-    }
-    if (strcmp(name, "task.set") == 0) {
-        return "task.set is not implemented before M6";
-    }
-    return NULL;
+    /* An update replaces in place, so a full schedule can still be edited; only a new
+     * id needs a free slot. */
+    return known_id || scheduled < task_max;
 }
 
 /* --- `event.emit` arguments (`tools/events.md` §`event.emit`) --------------- */

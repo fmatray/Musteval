@@ -136,6 +136,10 @@ typedef struct {
      * the three i2c tools are then absent from `tools_json` (`tools/i2c.md`). */
     int i2c_sda;
     int i2c_scl;
+    /* `tools.task_max`: the cap `task.set` enforces, tighter than the schema's own
+     * `SCHED_MAX_TASKS` (`tools/tasks.md` §Authority split: the tool is bounded, the
+     * bridge commands are not). */
+    size_t task_max;
 } tools_context_t;
 
 /* Fill `ctx` from the loaded `config.json`: `tools.allow_dangerous`,
@@ -171,10 +175,11 @@ const char *tools_memory_reserved_prefix(const char *key);
  * `tools_call` is the only caller. */
 const char *tools_wire_code(const char *tool, esp_err_t err);
 
-/* The refusal for a tool whose milestone has not shipped — `geo.locate` and
- * `mqtt.*` are M6, `task.*` is M6 — or NULL for a tool that is built. Pure, so each
- * family's message is host-tested. `tools.c` is the only caller. */
-const char *tools_unbuilt_reason(const char *name);
+/* True when `task.set` may write: an update never consumes a slot, so only an id the
+ * schedule does not already hold is counted against `tools.task_max`. Split out of
+ * `tools.c` because that file is board-only, and this is the one rule the model's cap
+ * adds over the schema's own (`tools/tasks.md` §Authority split). Pure. */
+bool tools_task_set_fits(size_t scheduled, bool known_id, size_t task_max);
 
 /* `tools/events.md` §Arguments: `type` is 1..32 bytes of `[a-z0-9._-]`, `data` at
  * most 512. Pure, because neither bound is expressible in the model-facing schema

@@ -328,3 +328,21 @@ TEST_CASE("an oversize payload sets truncated rather than shortening silently", 
  * `tools/tasks.md` §Authority split: the model's cap is `tools.task_max`, the bridge's
  * is the schema's 16. An update must survive a full schedule, or the model could never
  * disable the task it just filled the last slot with. */
+
+TEST_CASE("task.set admits a new id only into a free slot", "[task-set]")
+{
+    TEST_ASSERT_TRUE(tools_task_set_fits(0, false, 4));
+    TEST_ASSERT_TRUE(tools_task_set_fits(3, false, 4));
+    /* The cap itself is refused: `task_max` is how many may exist, not how many may be
+     * added. */
+    TEST_ASSERT_FALSE(tools_task_set_fits(4, false, 4));
+    TEST_ASSERT_FALSE(tools_task_set_fits(9, false, 4));
+    /* An update never consumes a slot, so it is admitted at and past the cap. */
+    TEST_ASSERT_TRUE(tools_task_set_fits(4, true, 4));
+    TEST_ASSERT_TRUE(tools_task_set_fits(9, true, 4));
+}
+
+/* --- JSON doubles ---------------------------------------------------------
+ * A latitude is a number, not an integer, and `json_add_int` cannot carry one.
+ * `docs/tools/geo.md` returns `lat`/`lon` as decimals, so the round trip has to hold
+ * to the bit, not to a rounded integer. */
