@@ -137,22 +137,28 @@ job — but `tools` cannot call `agent` and `sched` cannot either, since both ar
 `agent` is L3.
 
 Resolution: a **run port** that `agent` *implements* and `app` *hands down*.
-Ownership follows the caller, so `sched` and `tools` define nothing; `agent` publishes
-one function pointer and `app` passes it to the two L2 modules at boot.
+Ownership follows the caller, so `sched` defines the port and `agent` defines the
+function it wraps; `app` is the only module that names both.
 
 ```c
-/* agent exports; app installs into sched and tools */
-typedef void (*agent_run_done_cb)(esp_err_t err, void *user);
-typedef esp_err_t (*agent_submit_fn)(const char *source, const char *prompt,
-                                     agent_run_done_cb on_done, void *user,
-                                     char *run_id_out, size_t run_id_cap);
+/* agent exports */
+typedef enum {
+    AGENT_SOURCE_PROMPT = 0,
+    AGENT_SOURCE_TASK,
+    AGENT_SOURCE_TEMPLATE,
+} agent_source_t;
 
-esp_err_t agent_submit(const char *source, const char *prompt,
-                       agent_run_done_cb on_done, void *user,
-                       char *run_id_out, size_t run_id_cap);
-esp_err_t sched_set_submit(agent_submit_fn fn);
-esp_err_t tools_set_submit(agent_submit_fn fn);
+esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
+                       const char *reply_to, char *run_id_out, size_t run_id_cap);
+
+/* sched owns this; app implements it by calling agent_submit */
+typedef esp_err_t (*sched_submit_fn)(const char *prompt, size_t len, const char *source,
+                                     char *run_id_out, size_t run_id_cap);
+void sched_set_submit(sched_submit_fn fn);
 ```
+
+`tools` has no port of its own: `event.emit` reaches the scheduler through the
+permitted `tools` -> `sched` edge (§1.1), so no second installer exists.
 
 `run_id_out` is on the port, not an afterthought: `tasks.run` (`04` §4.5) and the
 `fired` frame (`04` §3.16) both have to name the run in the reply that starts it,
@@ -179,7 +185,7 @@ module or by `app`, and registered at boot. Nothing else. There are four.
 
 | Port | Owner (defines) | Implementer | Because |
 |---|---|---|---|
-| `agent_submit_fn` | `sched`, `tools` (consumers) | `agent`, installed by `app` | breaks Cycle B |
+| `sched_submit_fn` | `sched` | `app`, by calling `agent_submit` | breaks Cycle B |
 | `mqtt_sink_t` | `mqtt` | `sched` → `agent` (via `agent_submit`) | breaks Cycle A |
 | `tool_provider_t` | `tools` | one per domain (see §4) | a domain registers; `tools` does not include it |
 | `link_sink_t` | `link` | `app` | frames route to `agent` or `sched` by `type`; `link` must not know which |
