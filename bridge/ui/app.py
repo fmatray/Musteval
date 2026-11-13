@@ -1878,6 +1878,10 @@ class BridgeApp(App):
         try:
             frames = parse(text, state)
         except CommandError as exc:
+            # The value is consumed here or by `_request_secret`, never kept: a value
+            # left in hand makes the next `/secret set` skip its modal and file this
+            # one under another key.
+            self._pending_secret = None
             self._chat().write(f"{exc}", kind="error")
             return
         await self._send_frames(frames)
@@ -1943,11 +1947,16 @@ class BridgeApp(App):
         ]
 
     async def _request_secret(self, frame: Frame) -> None:
+        # Taken and cleared before the await: the write can block on a reply that
+        # never comes, and a value still in hand makes the next `/secret set` skip
+        # its own modal and file this one under another key.
+        value = self._pending_secret or ""
+        self._pending_secret = None
         outgoing = Frame(
             type="secret.set",
             id=frame.id,
             ts=0,
-            body={"key": frame.body["key"], "value": self._secret_value()},
+            body={"key": frame.body["key"], "value": value},
         )
         try:
             reply = await self.session.request(outgoing)
@@ -1956,11 +1965,9 @@ class BridgeApp(App):
             return
         except asyncio.TimeoutError:
             self._chat().write("the device did not answer in time", kind="error")
-            self._pending_secret = None
             return
         if reply.type == "command.result":
             self._on_command_result(reply)
-        self._pending_secret = None
 
     _pending_secret: str | None = None
     #: Set when the reader types `/ping`, so its pong gets a chat line and the
@@ -2320,13 +2327,6 @@ class BridgeApp(App):
         if result.get("truncated"):
             notes.append(f"{len(networks)} networks shown; the list was truncated")
         return [n for n in networks if isinstance(n, dict)], notes
-
-    async def _onboard_secret(self, key: str, value: str) -> None:
-        """One `secret.set`, via the existing path so redaction stays in one place."""
-        self._pending_secret = value
-        await self._request_secret(
-            Frame(type="secret.set", id=new_id("b"), ts=0, body={"key": key})
-        )
 
     async def _thinking(self, rest: list[str]) -> None:
         """`05` §7.2: read, or read-modify-write, the provider's thinking level.
