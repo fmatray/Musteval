@@ -747,3 +747,106 @@ TEST_CASE("an optional key set to null reads as absent", "[cfg]")
      * null there cannot satisfy `== 1`. */
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate("{\"version\":null}", why, sizeof why));
 }
+
+/* `03-config.md` §geo and §mqtt: two whole sections the validator had no row for, so
+ * every documented example was refused as unknown keys. The doc's own example is the
+ * fixture, which is the point — it is what a user copies. */
+static const char *const k_geo_mqtt_example =
+    "{\"version\":1,"
+    "\"wifi\":{\"networks\":[{\"ssid\":\"home\",\"password_ref\":\"nvs:wifi_psk\"}]},"
+    "\"llm\":{\"providers\":[{\"id\":\"openai\",\"base_url\":\"https://api.example/v1\","
+    "\"model\":\"m\",\"api_key_ref\":\"nvs:llm_key\"}]},"
+    "\"geo\":{\"enabled\":true,\"cache_ttl_s\":900,\"timeout_ms\":5000,\"max_bssids\":12,"
+    "\"providers\":["
+    "{\"id\":\"wifi_beacon\",\"kind\":\"wifi_scan\","
+    "\"url\":\"https://api.beacondb.net/v1/geolocate\",\"api_key_ref\":\"nvs:geo_beacon\"},"
+    "{\"id\":\"ip_fallback\",\"kind\":\"ip\",\"url\":\"https://ipapi.co/json/\"}]},"
+    "\"mqtt\":{\"max_servers\":4,\"servers\":["
+    "{\"id\":\"home\",\"host\":\"mqtt.home.example\",\"port\":8883,\"tls\":true,"
+    "\"client_id\":\"musteval-xiao-a1\",\"username\":\"musteval\","
+    "\"password_ref\":\"nvs:mqtt_home\",\"keepalive_s\":60,\"qos\":1,"
+    "\"topics\":[{\"filter\":\"home/office/temp\",\"qos\":0},"
+    "{\"filter\":\"home/alerts/door\",\"qos\":1}]},"
+    "{\"id\":\"lab\",\"host\":\"192.168.1.20\",\"port\":1883,\"tls\":false,"
+    "\"client_id\":\"musteval-lab\",\"keepalive_s\":30,\"qos\":0,"
+    "\"topics\":[{\"filter\":\"lab/*\",\"qos\":0}]}]}}";
+
+TEST_CASE("the documented geo and mqtt examples validate", "[cfg]")
+{
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_OK, validate(k_geo_mqtt_example, why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("", why);
+}
+
+TEST_CASE("a geo provider is refused when its kind's credential rule is broken", "[cfg]")
+{
+    /* `03-config.md` §geo: `wifi_scan` needs the key, `ip` must not have one. Both are
+     * keyed on `kind`, which no single row can express, so they are cross rules. */
+    char why[128] = "";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"geo\":{\"providers\":[{\"id\":\"a\","
+                                    "\"kind\":\"wifi_scan\",\"url\":\"https://x/v1\"}]}",
+                                    why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "wifi_scan"));
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"geo\":{\"providers\":[{\"id\":\"a\",\"kind\":\"ip\","
+                                    "\"url\":\"https://x/v1\","
+                                    "\"api_key_ref\":\"nvs:k\"}]}",
+                                    why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "ip"));
+
+    /* Geolocation leaves the device, so plaintext is refused at validation rather than
+     * discovered as a TLS failure at call time. `03-config.md` §geo: `https://` only. */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"geo\":{\"providers\":[{\"id\":\"a\",\"kind\":\"ip\","
+                                    "\"url\":\"http://x/v1\"}]}",
+                                    why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "https"));
+}
+
+TEST_CASE("an mqtt topic filter refuses the wildcards the grammar excludes", "[cfg]")
+{
+    /* `03-config.md` §mqtt: `topics[]` is the allowlist, so `+`/`#` would widen it past
+     * what the user wrote, and `*` is legal only as the final level. */
+    char why[128] = "";
+    const char *bad[] = { "a/#", "a/+/b", "a/*/b", "*/x" };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        char members[320];
+        int n = snprintf(members, sizeof members,
+                         "\"mqtt\":{\"servers\":[{\"id\":\"b\",\"host\":\"h\","
+                         "\"topics\":[{\"filter\":\"%s\"}]}]}",
+                         bad[i]);
+        TEST_ASSERT_LESS_THAN((int)sizeof members, n);
+        TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate_root(members, why, sizeof why));
+        TEST_ASSERT_NOT_NULL(strstr(why, "mqtt.servers.topics.filter"));
+    }
+
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"mqtt\":{\"servers\":[{\"id\":\"b\",\"host\":\"h\","
+                                    "\"topics\":[{\"filter\":\"sensors/*\"}]}]}",
+                                    why, sizeof why));
+}
+
+TEST_CASE("an mqtt server is refused outside its documented bounds", "[cfg]")
+{
+    char why[128] = "";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"mqtt\":{\"servers\":[{\"id\":\"b\",\"host\":\"h\","
+                                    "\"qos\":2}]}",
+                                    why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "mqtt.servers.qos"));
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"mqtt\":{\"servers\":[{\"id\":\"b\",\"host\":\"h\","
+                                    "\"keepalive_s\":9}]}",
+                                    why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "keepalive_s"));
+
+    /* Unique ids: `server_id` is how `mqtt.publish` names a broker. */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"mqtt\":{\"servers\":[{\"id\":\"b\",\"host\":\"h1\"},"
+                                    "{\"id\":\"b\",\"host\":\"h2\"}]}",
+                                    why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "duplicate id"));
+}

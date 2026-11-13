@@ -23,6 +23,7 @@ typedef enum {
     CFG_REF,      /* `^nvs:[A-Za-z0-9_]{1,15}$` */
     CFG_PATH,     /* starts with `/` */
     CFG_URL,      /* `http://` or `https://` */
+    CFG_HTTPS,    /* `https://` only: geolocation leaves the device */
     CFG_OBJECT,
     CFG_ARRAY,
     /* `wifi.networks` and `llm.providers` element rules: the row names a relative
@@ -73,6 +74,19 @@ static const cfg_rule_t k_rules[] = {
     { "mcp.servers",            CFG_ARRAY, 0, 4, false, NULL, NULL },
     { "mcp.servers.*",          CFG_ELEMENT, NONE, false, NULL, "servers" },
 
+    { "geo",                    CFG_OBJECT, NONE, false, NULL, NULL },
+    { "geo.enabled",            CFG_BOOL,   NONE, false, NULL, NULL },
+    { "geo.cache_ttl_s",        CFG_INT,    60, 86400, false, NULL, NULL },
+    { "geo.timeout_ms",         CFG_INT,    1000, 15000, false, NULL, NULL },
+    { "geo.max_bssids",         CFG_INT,    4, 32, false, NULL, NULL },
+    { "geo.providers",          CFG_ARRAY,  1, 4, false, NULL, NULL },
+    { "geo.providers.*",        CFG_ELEMENT, NONE, false, NULL, "providers" },
+
+    { "mqtt",                   CFG_OBJECT, NONE, false, NULL, NULL },
+    { "mqtt.max_servers",       CFG_INT,    1, 8, false, NULL, NULL },
+    { "mqtt.servers",           CFG_ARRAY,  0, 8, false, NULL, NULL },
+    { "mqtt.servers.*",         CFG_ELEMENT, NONE, false, NULL, "servers" },
+
     { "agent",                  CFG_OBJECT, NONE, false, NULL, NULL },
     { "agent.system_prompt",    CFG_PATH, NONE, false, NULL, NULL },
     { "agent.max_input_bytes",  CFG_INT, 256, 4096, false, NULL, NULL },
@@ -109,6 +123,25 @@ static const cfg_rule_t k_element_rules[] = {
     { "llm.providers.token_param",  CFG_ENUM,   NONE, false,
       "max_tokens max_completion_tokens", NULL },
     { "llm.providers.extra_body",   CFG_OBJECT, NONE, false, NULL, NULL },
+
+    { "geo.providers.id",           CFG_STRING, 1, 16, true, NULL, NULL },
+    { "geo.providers.kind",         CFG_ENUM,   NONE, true, "wifi_scan ip", NULL },
+    { "geo.providers.url",          CFG_HTTPS,  NONE, true, NULL, NULL },
+    { "geo.providers.api_key_ref",  CFG_REF,    NONE, false, NULL, NULL },
+
+    { "mqtt.servers.id",            CFG_STRING, 1, 16, true, NULL, NULL },
+    { "mqtt.servers.host",          CFG_STRING, 1, 128, true, NULL, NULL },
+    { "mqtt.servers.port",          CFG_INT,    1, 65535, false, NULL, NULL },
+    { "mqtt.servers.tls",           CFG_BOOL,   NONE, false, NULL, NULL },
+    { "mqtt.servers.client_id",     CFG_STRING, 1, 64, false, NULL, NULL },
+    { "mqtt.servers.username",      CFG_STRING, 1, 64, false, NULL, NULL },
+    { "mqtt.servers.password_ref",  CFG_REF,    NONE, false, NULL, NULL },
+    { "mqtt.servers.keepalive_s",   CFG_INT,    10, 300, false, NULL, NULL },
+    { "mqtt.servers.topics",        CFG_ARRAY,  0, 8, false, NULL, NULL },
+    { "mqtt.servers.qos",           CFG_INT,    0, 1, false, NULL, NULL },
+
+    { "mqtt.servers.topics.filter", CFG_STRING, 1, 128, true, NULL, NULL },
+    { "mqtt.servers.topics.qos",    CFG_INT,    0, 1, false, NULL, NULL },
 
     { "mcp.servers.id",             CFG_STRING, 1, 16, true, NULL, NULL },
     { "mcp.servers.url",            CFG_URL,    NONE, true, NULL, NULL },
@@ -203,6 +236,12 @@ static esp_err_t check_rule(const json_node_t *node, const cfg_rule_t *rule,
         bool ok = s != NULL && (starts_with(s, "https://") || starts_with(s, "http://"));
         return ok ? ESP_OK : fail(why, cap, "%s: not an http(s) url", rule->path);
     }
+    case CFG_HTTPS: {
+        const char *s = json_string(node);
+        return (s != NULL && starts_with(s, "https://"))
+                   ? ESP_OK
+                   : fail(why, cap, "%s: not an https url", rule->path);
+    }
     case CFG_OBJECT:
         return json_is_object(node) ? ESP_OK : fail(why, cap, "%s: not an object", rule->path);
     case CFG_ARRAY:
@@ -255,6 +294,22 @@ static esp_err_t check_extra_body(const json_node_t *extra, char *why, size_t ca
     return ESP_OK;
 }
 
+/* True when `group` names an element array: some element rule starts with `group.`.
+ * Lets a nested array (`mqtt.servers.topics`) be recognised as a second group without
+ * a second table. */
+static bool has_element_rules(const char *group)
+{
+    size_t glen = strlen(group);
+    for (size_t i = 0; i < RULE_COUNT(k_element_rules); i++) {
+        const char *path = k_element_rules[i].path;
+        if (strncmp(path, group, glen) == 0 && path[glen] == '.') {
+            const char *rest = path + glen + 1;
+            if (strchr(rest, '.') == NULL) return true;
+        }
+    }
+    return false;
+}
+
 /* One member of `wifi.networks` / `llm.providers` / `mcp.servers`. */
 static esp_err_t check_member(const json_node_t *member, const char *group,
                               char *why, size_t cap)
@@ -279,14 +334,43 @@ static esp_err_t check_member(const json_node_t *member, const char *group,
             err = check_extra_body(v, why, cap);
             if (err != ESP_OK) return err;
         }
+        /* An array of objects inside an element (`mqtt.servers[].topics[]`) is a
+         * second element group; recurse rather than teach the table two levels. */
+        if (rule->kind == CFG_ARRAY && has_element_rules(rule->path)) {
+            size_t members = json_array_len(v);
+            for (size_t m = 0; m < members; m++) {
+                err = check_member(json_array_at(v, m), rule->path, why, cap);
+                if (err != ESP_OK) return err;
+            }
+        }
     }
     return ESP_OK;
+}
+
+/* `03-config.md` §mqtt filter grammar: plain levels, optionally a `*` as the entire
+ * final level. `+`/`#` are refused wherever they appear, and a `*` inside a level or
+ * not at the end is refused too, so a config entry can never widen the allowlist past
+ * what the user wrote. Pure. */
+static bool mqtt_filter_is_valid(const char *filter)
+{
+    size_t n = strlen(filter);
+    if (n == 0) return false;
+    for (size_t i = 0; i < n; i++) {
+        if (filter[i] == '+' || filter[i] == '#') return false;
+    }
+    const char *star = strchr(filter, '*');
+    if (star == NULL) return true;
+    /* Exactly one `*`, and it is the whole last level. */
+    if (strchr(star + 1, '*') != NULL) return false;
+    if (star[1] != '\0') return false;
+    return star != filter && star[-1] == '/';
 }
 
 /* Cross-field rules and the array members, which a flat table cannot express. */
 static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
 {
-    const char *groups[] = { "wifi.networks", "llm.providers", "mcp.servers" };
+    const char *groups[] = { "wifi.networks", "llm.providers", "mcp.servers",
+                             "geo.providers", "mqtt.servers" };
     for (size_t g = 0; g < RULE_COUNT(groups); g++) {
         json_node_t *arr = json_path_get(doc, groups[g]);
         if (arr == NULL) continue;
@@ -308,7 +392,8 @@ static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
     }
 
     /* Ids are unique and dot-free (note 4): the id becomes a namespace on the wire. */
-    const char *id_groups[] = { "llm.providers", "mcp.servers" };
+    const char *id_groups[] = { "llm.providers", "mcp.servers", "geo.providers",
+                                "mqtt.servers" };
     for (size_t g = 0; g < RULE_COUNT(id_groups); g++) {
         json_node_t *arr = json_path_get(doc, id_groups[g]);
         if (arr == NULL) continue;
@@ -355,6 +440,47 @@ static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
     }
     if (has_sda && sda == scl) {
         return fail(why, cap, "tools.i2c_sda and tools.i2c_scl must differ", NULL);
+    }
+
+    /* `03-config.md` §geo: the credential rule is keyed on `kind`, so it is a cross
+     * rule and not a row. A `wifi_scan` provider without its key would fail at the
+     * first lookup with a 401 the reader cannot act on; an `ip` provider with one
+     * would ship a secret to a service that never asked for it. */
+    {
+        json_node_t *arr = json_path_get(doc, "geo.providers");
+        size_t n = arr == NULL ? 0 : json_array_len(arr);
+        for (size_t i = 0; i < n; i++) {
+            json_node_t *p = json_array_at(arr, i);
+            const char *kind = json_string(json_get(p, "kind"));
+            if (kind == NULL) continue; /* the element rule already refused it */
+            const json_node_t *ref = json_get(p, "api_key_ref");
+            bool has_ref = ref != NULL && !json_is_null(ref);
+            if (strcmp(kind, "wifi_scan") == 0 && !has_ref) {
+                return fail(why, cap, "geo.providers: wifi_scan requires api_key_ref", NULL);
+            }
+            if (strcmp(kind, "ip") == 0 && has_ref) {
+                return fail(why, cap, "geo.providers: ip must not carry api_key_ref", NULL);
+            }
+        }
+    }
+
+    /* `03-config.md` §mqtt: `topics[]` is the allowlist, so the filter grammar is
+     * deliberately smaller than MQTT's. `+` and `#` would widen it past what the user
+     * wrote; `*` is legal only as the whole final level. */
+    {
+        json_node_t *arr = json_path_get(doc, "mqtt.servers");
+        size_t n = arr == NULL ? 0 : json_array_len(arr);
+        for (size_t i = 0; i < n; i++) {
+            json_node_t *topics = json_get(json_array_at(arr, i), "topics");
+            size_t t = topics == NULL ? 0 : json_array_len(topics);
+            for (size_t k = 0; k < t; k++) {
+                const char *filter = json_string(json_get(json_array_at(topics, k), "filter"));
+                if (filter != NULL && !mqtt_filter_is_valid(filter)) {
+                    return fail(why, cap,
+                                "mqtt.servers.topics.filter: only a trailing * is allowed", NULL);
+                }
+            }
+        }
     }
     return ESP_OK;
 }
