@@ -188,11 +188,11 @@ esp_err_t tools_declared_load(tools_declared_set_t *set)
 
 #define DECLARED_HEADERS 8
 
-/* Expand the compiled header values, resolve an `nvs:` ref in each, and perform the
- * request. Header values are static because `net` reads them during the exchange and
- * the call's own frame is small. */
-static esp_err_t request(const tools_declared_t *tool, const char *url,
-                         const char *payload, json_doc_t **out,
+/* Expand the compiled header values from the call's arguments, resolve an `nvs:` ref
+ * in each, and perform the request. The value buffers are heap because `net` reads
+ * them only for the exchange. */
+static esp_err_t request(const tools_declared_t *tool, const json_node_t *args,
+                         const char *url, const char *payload, json_doc_t **out,
                          char *why, size_t why_cap)
 {
     /* Heap, not statics: 8 × 512 bytes of permanent DIRAM for values that live for
@@ -220,8 +220,10 @@ static esp_err_t request(const tools_declared_t *tool, const char *url,
             const char *value = json_string(json_object_value(root, i));
             if (key == NULL || value == NULL) continue;
 
+            /* `tools/web.md` allows a `{{arg}}` in a header value, so the call's
+             * arguments reach here; passing NULL silently sent the placeholder. */
             char expanded[CFG_SECRET_MAX];
-            esp_err_t err = tools_bind_text(tool, value, NULL, expanded,
+            esp_err_t err = tools_bind_text(tool, value, args, expanded,
                                             sizeof expanded, why, why_cap);
             if (err != ESP_OK) {
                 json_free(hdr);
@@ -340,7 +342,7 @@ esp_err_t tools_declared_call(const tools_declared_t *tool, const json_node_t *a
         url = joined;
     }
 
-    err = request(tool, url, payload, out, why, why_cap);
+    err = request(tool, args, url, payload, out, why, why_cap);
 
 cleanup:
     free(url);

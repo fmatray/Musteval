@@ -538,9 +538,13 @@ static bool run_one_tool(const tools_context_t *ctx, const char *run_id, int rou
 
     const tools_builtin_t *builtin = tools_find(call->name);
     bool remote = builtin == NULL && strncmp(call->name, "mcp.", 4) == 0;
-    if (builtin == NULL && !remote) {
-        /* A declarative tool has no registry entry either; it is refused with the
-         * same code rather than reaching `tools_call`'s fallthrough. */
+    /* A declarative tool has no registry row to carry its gate or its schema, so it
+     * reaches `tools_call`, which checks the host allowlist and validates nothing
+     * beyond the compiled parameter list the model was shown. `tools_offered` above
+     * already refused a name the loaded set does not carry. */
+    bool declared = builtin == NULL && !remote &&
+                    tools_declared_find(ctx->declared, call->name) != NULL;
+    if (builtin == NULL && !remote && !declared) {
         emit_agent_tool_result(run_id, round, call, false, NULL, "E_TOOL",
                                "unknown tool", 0);
         history_push_tool_result(call, false, NULL, "E_TOOL", "unknown tool");
@@ -554,7 +558,8 @@ static bool run_one_tool(const tools_context_t *ctx, const char *run_id, int rou
     /* An MCP tool's arguments are validated by the server that published the schema
      * the model was shown, so only the registry's tools go through the registry
      * validator. The `mcp.` namespace was checked to be offered above. */
-    esp_err_t err = remote ? ESP_OK : tools_validate(call->name, args, why, sizeof why);
+    esp_err_t err = (remote || declared) ? ESP_OK
+                                        : tools_validate(call->name, args, why, sizeof why);
     if (err != ESP_OK) {
         emit_agent_tool_result(run_id, round, call, false, NULL, "E_TOOL",
                                why[0] != '\0' ? why : "arguments rejected", 0);
@@ -566,10 +571,12 @@ static bool run_one_tool(const tools_context_t *ctx, const char *run_id, int rou
 
     char host[128];
     const char *host_name =
-        remote ? NULL : tools_gate_host_for(builtin, args, host, sizeof host);
+        (remote || declared) ? NULL : tools_gate_host_for(builtin, args, host, sizeof host);
     /* A remote tool's gate is inside `tools_call`, because its name has no registry
-     * row to carry it. */
-    err = remote ? ESP_OK : tools_gate_check(builtin, &ctx->policy, host_name, why, sizeof why);
+     * row to carry it; a declarative tool's is too, and its host is the file's. */
+    err = (remote || declared)
+              ? ESP_OK
+              : tools_gate_check(builtin, &ctx->policy, host_name, why, sizeof why);
     if (err != ESP_OK) {
         emit_agent_tool_result(run_id, round, call, false, NULL, "E_TOOL",
                                why[0] != '\0' ? why : "tool refused", 0);
