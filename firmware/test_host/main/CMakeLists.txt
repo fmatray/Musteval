@@ -7,7 +7,7 @@ set(SRCS "test_main.c" "test_smoke.c" "test_store.c" "test_link.c" "test_sys.c"
 # the object and the suite silently reports `0 Tests`.
 idf_component_register(SRCS ${SRCS}
                        INCLUDE_DIRS "."
-                       REQUIRES unity store link sys cfg clock net llm agent tools skills sched geo
+                       REQUIRES unity store link sys cfg clock net llm agent tools skills sched geo broker
                        WHOLE_ARCHIVE)
 
 # IDF includes this file a second time in CMake *script* mode to collect

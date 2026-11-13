@@ -495,13 +495,22 @@ module hands it a JSON body built with the `store` helpers.
 `link` is a permitted L2 edge (`08-code-architecture.md` §1.1).
 
 ### `mqtt` — Brokers
+Lives in `components/broker/`, not `components/mqtt/`: ESP-IDF already ships a
+component named `mqtt` (the `esp-mqtt` submodule's directory), and a local
+component of that name shadows it, which drops `mqtt_client.h` from the include
+path. The public header is still `mqtt.h` and the module is still `mqtt`
+everywhere else, so only the directory differs from the `components/<name>/`
+layout in `08-code-architecture.md` §2.
+
 - `mqtt_init()`: create one `esp_mqtt_client_handle_t` per `mqtt.servers[]`
   entry, up to `mqtt.max_servers`; subscribe to that server's `topics[]`.
 - `mqtt_publish(server_id, topic, payload, len, qos)`: refuse `E_MQTT` unless
   `server_id` exists and `topic` is covered by that server's `topics[]`.
   Returns `E_MQTT` when the client is not connected. `E_MQTT` is the whole
   failure domain here; neither gate maps to `E_TOOL`.
-- `mqtt_status(out, len)`: serialise `[{id,connected,subscriptions}]`.
+- `mqtt_status(out, len)`: serialise `[{id,connected,subscriptions}]`, where
+  `subscriptions` is that server's configured `topics[].filter` list — the set it
+  subscribed to, which is what `04` §4.15 shows.
 - `mqtt_set_sink(sink)`: install the `mqtt_sink_t` callback (§2.1). `mqtt` calls
   `sink->on_message(server_id, topic, payload, len)` for every inbound message and
   does not know who consumes it. `app` registers `sched`'s handler at boot, which

@@ -167,6 +167,14 @@ typedef struct {
  * envelope builder needs the body in place, and no store API adopts a subtree. */
 esp_err_t link_build_hello_ack(json_node_t *obj, const link_hello_t *hello);
 
+/* One `status.mqtt[]` row (`04` §3.9). `link` does not depend on `mqtt` (`08` §1.1),
+ * so the shape is restated here and the caller adapts; two fields is cheaper than an
+ * edge, and one adaptor loop is cheaper than a port. */
+typedef struct {
+    const char *id;
+    bool        connected;
+} link_mqtt_row_t;
+
 /* The board facts `status` reports; everything else in §3.9 is either a constant
  * or a subsystem that does not exist yet. */
 typedef struct {
@@ -210,6 +218,18 @@ typedef struct {
      * does, so they are carried here rather than recounted. */
     int32_t  tool_calls;
     int32_t  tool_failures;
+
+    /* `geo` (`04` §3.9): the cached fix, or `have_geo` false for the JSON null the
+     * section requires when no fix has been taken. */
+    bool     have_geo;
+    double   geo_lat, geo_lon;
+    int32_t  geo_accuracy_m;
+    int64_t  geo_age_s;
+
+    /* `mqtt[]`: one row per configured broker. `mqtt_rows` is NULL before `mqtt_init`,
+     * which is the empty array §3.9 shows for a device with no brokers. */
+    const link_mqtt_row_t *mqtt_rows;
+    size_t   mqtt_row_count;
 } link_status_t;
 
 /* `status` BODY only (§3.9), the single canonical status object. Subsystems absent

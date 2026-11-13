@@ -1,5 +1,6 @@
-/* M6, part one: the pure half of `geo` — provider-response parsing, the scan payload
- * and the cache rule (`02-firmware.md` §geo, `docs/tools/geo.md`). */
+/* M6: the pure halves of `geo` and `mqtt`, and the `task.set` cap. Each module keeps
+ * its board half out of the host build (`02-firmware.md` §geo, §mqtt), so what is
+ * asserted here is the logic those halves call. */
 
 #include <stdint.h>
 #include <string.h>
@@ -7,7 +8,9 @@
 #include "unity.h"
 
 #include "store.h"
+#include "cfg.h"
 #include "geo.h"
+#include "mqtt.h"
 
 /* --- Provider responses --------------------------------------------------- */
 
@@ -231,3 +234,96 @@ TEST_CASE("a non-finite double is refused rather than emitted as null", "[json]"
     TEST_ASSERT_FALSE(json_double(NULL, &out));
     json_free(other);
 }
+
+TEST_CASE("a filter covers its own topic and one level below it", "[mqtt]")
+{
+    TEST_ASSERT_TRUE(cfg_mqtt_filter_covers("home/office/temp", "home/office/temp"));
+    TEST_ASSERT_TRUE(cfg_mqtt_filter_covers("sensors/*", "sensors/temp"));
+
+    /* Exactly one level: a trailing star is not a subtree matcher. */
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers("sensors/*", "sensors/temp/raw"));
+    /* Nor is it the parent. */
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers("sensors/*", "sensors"));
+    /* Nor a sibling. */
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers("sensors/*", "actuators/temp"));
+    /* An exact filter covers nothing else. */
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers("home/office/temp", "home/office/humidity"));
+    /* A prefix is not a match: `home/office` must not cover `home/office/temp`. */
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers("home/office", "home/office/temp"));
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers(NULL, "x"));
+    TEST_ASSERT_FALSE(cfg_mqtt_filter_covers("x", NULL));
+}
+
+TEST_CASE("the allowlist is a set, so any covering entry admits the topic", "[mqtt]")
+{
+    mqtt_topic_t topics[2] = { { .filter = "home/office/temp", .qos = 0 },
+                               { .filter = "garage/*", .qos = 1 } };
+    TEST_ASSERT_TRUE(mqtt_topics_cover(topics, 2, "home/office/temp"));
+    TEST_ASSERT_TRUE(mqtt_topics_cover(topics, 2, "garage/door"));
+
+    /* The important case: a topic no entry covers is refused, even though the broker
+     * would accept it. This is the whole authorisation story. */
+    TEST_ASSERT_FALSE(mqtt_topics_cover(topics, 2, "home/office/humidity"));
+    TEST_ASSERT_FALSE(mqtt_topics_cover(topics, 2, "garage/door/state"));
+    /* Only the first `count` entries count, so a stale tail cannot widen the list. */
+    TEST_ASSERT_FALSE(mqtt_topics_cover(topics, 1, "garage/door"));
+    TEST_ASSERT_FALSE(mqtt_topics_cover(NULL, 2, "x"));
+    TEST_ASSERT_FALSE(mqtt_topics_cover(topics, 2, NULL));
+}
+
+TEST_CASE("qos 2 is refused wherever it appears", "[mqtt]")
+{
+    /* `03-config.md` §mqtt: unsupported permanently, not merely unimplemented. */
+    TEST_ASSERT_TRUE(mqtt_qos_ok(0));
+    TEST_ASSERT_TRUE(mqtt_qos_ok(1));
+    TEST_ASSERT_FALSE(mqtt_qos_ok(2));
+    TEST_ASSERT_FALSE(mqtt_qos_ok(-1));
+    TEST_ASSERT_FALSE(mqtt_qos_ok(3));
+}
+
+TEST_CASE("the port defaults follow the transport", "[mqtt]")
+{
+    /* A configured port always wins; an absent one is 8883 or 1883 by transport, which
+     * is what `03-config.md` §mqtt promises. */
+    TEST_ASSERT_EQUAL_UINT16(8883, mqtt_effective_port(true, 0));
+    TEST_ASSERT_EQUAL_UINT16(1883, mqtt_effective_port(false, 0));
+    TEST_ASSERT_EQUAL_UINT16(1884, mqtt_effective_port(false, 1884));
+    TEST_ASSERT_EQUAL_UINT16(8884, mqtt_effective_port(true, 8884));
+}
+
+TEST_CASE("the derived client id names the device and the broker", "[mqtt]")
+{
+    char buf[64];
+    size_t n = mqtt_derive_client_id("xiao-s3-01", "home", buf, sizeof buf);
+    TEST_ASSERT_EQUAL_STRING("musteval-xiao-s3-01-home", buf);
+    TEST_ASSERT_EQUAL_UINT32(n, strlen(buf));
+
+    /* A missing device name must not produce `musteval--home`. */
+    TEST_ASSERT_GREATER_THAN(0, mqtt_derive_client_id(NULL, "home", buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("musteval-device-home", buf);
+}
+
+TEST_CASE("a derived client id that does not fit is refused, not truncated", "[mqtt]")
+{
+    /* A truncated id is a different client to the broker, so it would shadow the real
+     * device's session instead of failing where the reader can see it. */
+    char buf[16] = "untouched";
+    TEST_ASSERT_EQUAL_UINT32(0, mqtt_derive_client_id("xiao-s3-01", "home", buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("", buf);
+    TEST_ASSERT_EQUAL_UINT32(0, mqtt_derive_client_id("d", "s", NULL, 8));
+    TEST_ASSERT_EQUAL_UINT32(0, mqtt_derive_client_id("d", NULL, buf, sizeof buf));
+}
+
+TEST_CASE("an oversize payload sets truncated rather than shortening silently", "[mqtt]")
+{
+    /* `04-protocol.md` §3.18: the frame carries a capped payload and a `truncated` flag.
+     * A frame that quietly carried 1024 of 2000 bytes would read as a complete message. */
+    TEST_ASSERT_FALSE(mqtt_payload_truncates(0));
+    TEST_ASSERT_FALSE(mqtt_payload_truncates(MQTT_PAYLOAD_MAX));
+    TEST_ASSERT_TRUE(mqtt_payload_truncates(MQTT_PAYLOAD_MAX + 1));
+}
+
+/* --- `task.set`'s cap -----------------------------------------------------
+ * `tools/tasks.md` §Authority split: the model's cap is `tools.task_max`, the bridge's
+ * is the schema's 16. An update must survive a full schedule, or the model could never
+ * disable the task it just filled the last slot with. */

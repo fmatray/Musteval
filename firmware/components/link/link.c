@@ -685,10 +685,38 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
     json_node_t *sysn = json_add_object(obj, "sys");
     json_node_t *mcp = json_new_array(obj, "mcp");
     json_node_t *mqtt = json_new_array(obj, "mqtt");
+    /* A fix exists or it does not: the key is an object or a JSON null, never an
+     * object with no members. */
+    json_node_t *geo = NULL;
+    if (st->have_geo) {
+        geo = json_add_object(obj, "geo");
+        if (geo != NULL) {
+            json_add_double(geo, "lat", st->geo_lat);
+            json_add_double(geo, "lon", st->geo_lon);
+            json_add_int(geo, "accuracy_m", st->geo_accuracy_m);
+            /* `04` §3.9 types `geo` as exactly these four: `provider` belongs to the
+             * tool result (`tools/geo.md`), not to `status`. */
+            json_add_int(geo, "age_s", st->geo_age_s);
+        }
+    } else {
+        /* No fix yet reads as null, not as an object of zeroes: 0,0 is a real place
+         * in the Gulf of Guinea, so a fabricated fix would be a lie the UI shows. */
+        json_add_null(obj, "geo");
+    }
 
     bool ok = wifi != NULL && time != NULL && llm != NULL && agent != NULL &&
               storage != NULL && ufs != NULL && wfs != NULL && mem != NULL &&
-              sysn != NULL && mcp != NULL && mqtt != NULL;
+              sysn != NULL && mcp != NULL && mqtt != NULL &&
+              (!st->have_geo || geo != NULL);
+
+    /* `mqtt[]`: one row per configured broker, and an empty array for a device with
+     * none, which is what §3.9 shows (never `null`). */
+    for (size_t i = 0; i < st->mqtt_row_count && st->mqtt_rows != NULL; i++) {
+        json_node_t *row = json_array_push_object(mqtt);
+        if (row == NULL) { ok = false; break; }
+        json_add_string(row, "id", st->mqtt_rows[i].id != NULL ? st->mqtt_rows[i].id : "");
+        json_add_bool(row, "connected", st->mqtt_rows[i].connected);
+    }
 
     /* A subsystem that does not exist yet reports its idle value, not a plausible
      * one: the bridge prints §3.9 verbatim, so a fabricated field would be a lie
@@ -720,7 +748,9 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
               : json_add_null(llm, "limit_hour")) &&
          (st->llm_limit_day > 0 ? json_add_int(llm, "limit_day", st->llm_limit_day)
                                 : json_add_null(llm, "limit_day")) &&
-         json_add_null(obj, "geo") &&
+         /* `geo` is an object when a fix exists and null when one has never been
+          * taken (`04` §3.9), and `mqtt` is an array either way. Both are built before
+          * this chain so their children can be added inside it. */
          json_add_bool(agent, "busy", st->agent_busy) &&
          (st->agent_run_id != NULL ? json_add_string(agent, "run_id", st->agent_run_id)
                                    : json_add_null(agent, "run_id")) &&

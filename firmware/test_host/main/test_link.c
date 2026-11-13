@@ -654,3 +654,63 @@ TEST_CASE("a connected status reports every member it was given", "[link]")
 
     json_free(doc);
 }
+
+/* `04` §3.9: `geo` is an object with the fix or JSON null before one is taken, and
+ * `mqtt` is an array of one row per configured broker, empty when there are none.
+ * A zeroed fix would report the Gulf of Guinea as a real position, so the null arm is
+ * the one that matters. */
+TEST_CASE("status reports the fix and the brokers, or their absence", "[link]")
+{
+    static const link_mqtt_row_t rows[2] = { { "home", true }, { "lab", false } };
+
+    link_status_t st = {0};
+    json_doc_t *doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_EQUAL(ESP_OK, link_build_status(json_root(doc), &st));
+
+    /* No fix and no broker: `geo` null, `mqtt` empty and still an array. */
+    TEST_ASSERT_TRUE(json_is_null(json_get(json_root(doc), "geo")));
+    json_node_t *none = json_get(json_root(doc), "mqtt");
+    TEST_ASSERT_NOT_NULL(none);
+    TEST_ASSERT_EQUAL_UINT(0, json_array_len(none));
+    json_free(doc);
+
+    /* A fix and two brokers. */
+    st.have_geo = true;
+    st.geo_lat = 48.858222;
+    st.geo_lon = 2.2945;
+    st.geo_accuracy_m = 40;
+    st.geo_age_s = 12;
+    st.mqtt_rows = rows;
+    st.mqtt_row_count = 2;
+
+    doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_EQUAL(ESP_OK, link_build_status(json_root(doc), &st));
+
+    json_node_t *geo = json_get(json_root(doc), "geo");
+    TEST_ASSERT_TRUE(json_is_object(geo));
+    double lat = 0, lon = 0;
+    TEST_ASSERT_TRUE(json_double(json_get(geo, "lat"), &lat));
+    TEST_ASSERT_TRUE(json_double(json_get(geo, "lon"), &lon));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, 48.858222, lat);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, 2.2945, lon);
+    /* §3.9 types the object as four members: `provider` belongs to the tool result. */
+    TEST_ASSERT_NULL(json_get(geo, "provider"));
+    int64_t age = 0;
+    TEST_ASSERT_TRUE(json_int(json_get(geo, "age_s"), &age));
+    TEST_ASSERT_EQUAL_INT(12, age);
+
+    json_node_t *mqtt = json_get(json_root(doc), "mqtt");
+    TEST_ASSERT_EQUAL_UINT(2, json_array_len(mqtt));
+    json_node_t *first = json_array_at(mqtt, 0);
+    TEST_ASSERT_EQUAL_STRING("home", json_string(json_get(first, "id")));
+    bool up = false;
+    TEST_ASSERT_TRUE(json_bool(json_get(first, "connected"), &up));
+    TEST_ASSERT_TRUE(up);
+    json_node_t *second = json_array_at(mqtt, 1);
+    TEST_ASSERT_EQUAL_STRING("lab", json_string(json_get(second, "id")));
+    TEST_ASSERT_TRUE(json_bool(json_get(second, "connected"), &up));
+    TEST_ASSERT_FALSE(up);
+    json_free(doc);
+}

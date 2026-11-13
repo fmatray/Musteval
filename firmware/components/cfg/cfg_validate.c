@@ -351,7 +351,7 @@ static esp_err_t check_member(const json_node_t *member, const char *group,
  * final level. `+`/`#` are refused wherever they appear, and a `*` inside a level or
  * not at the end is refused too, so a config entry can never widen the allowlist past
  * what the user wrote. Pure. */
-static bool mqtt_filter_is_valid(const char *filter)
+bool cfg_mqtt_filter_is_valid(const char *filter)
 {
     size_t n = strlen(filter);
     if (n == 0) return false;
@@ -364,6 +364,27 @@ static bool mqtt_filter_is_valid(const char *filter)
     if (strchr(star + 1, '*') != NULL) return false;
     if (star[1] != '\0') return false;
     return star != filter && star[-1] == '/';
+}
+
+/* True when `filter` covers `topic`: exact, or one level deeper when the filter ends in
+ * a star. The filter has already been validated, so a star is only ever the final
+ * level. */
+bool cfg_mqtt_filter_covers(const char *filter, const char *topic)
+{
+    if (filter == NULL || topic == NULL) return false;
+    size_t n = strlen(filter);
+    if (n > 0 && filter[n - 1] == '*') {
+        /* Drop the star, then require the topic to be the remaining prefix plus one
+         * non-empty level. `sensors/` plus a star covers `sensors/temp` but not
+         * `sensors/temp/raw`
+         * (`03-config.md` §mqtt: "matches exactly one level"). */
+        size_t prefix = n - 1;
+        if (strncmp(filter, topic, prefix) != 0) return false;
+        const char *rest = topic + prefix;
+        if (rest[0] == '\0') return false;
+        return strchr(rest, '/') == NULL;
+    }
+    return strcmp(filter, topic) == 0;
 }
 
 /* Cross-field rules and the array members, which a flat table cannot express. */
@@ -475,7 +496,7 @@ static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
             size_t t = topics == NULL ? 0 : json_array_len(topics);
             for (size_t k = 0; k < t; k++) {
                 const char *filter = json_string(json_get(json_array_at(topics, k), "filter"));
-                if (filter != NULL && !mqtt_filter_is_valid(filter)) {
+                if (filter != NULL && !cfg_mqtt_filter_is_valid(filter)) {
                     return fail(why, cap,
                                 "mqtt.servers.topics.filter: only a trailing * is allowed", NULL);
                 }

@@ -132,6 +132,21 @@ bool cfg_redact_line(char *line, size_t cap);
  * secrets it holds rather than failing the log line. */
 bool cfg_secrets_add(const char *value);
 
+/* --- The mqtt topic-filter grammar ---------------------------------------
+ * `03-config.md` §mqtt owns this rule, and it gates both the config validator and the
+ * runtime allowlist. It lives here because `cfg_validate.c` is the one file both the
+ * host suite and the board build always contain, so `mqtt` asking it cannot duplicate
+ * the grammar. */
+
+/* True when `filter` is a plain topic with an optional trailing `*` as the whole final
+ * level. `+` and `#` are refused wherever they appear, because the list is an
+ * allowlist and a wildcard would widen it past what the user wrote. */
+bool cfg_mqtt_filter_is_valid(const char *filter);
+
+/* True when `filter` covers `topic`: an exact match, or one level deeper when the
+ * filter ends in a star. Pure. */
+bool cfg_mqtt_filter_covers(const char *filter, const char *topic);
+
 /* Write a secret into NVS namespace `secrets` (`04` §4.10). An empty value is
  * ESP_ERR_INVALID_ARG, never a deletion. `*stored` is the byte length written. */
 esp_err_t cfg_store_secret(const char *key, const char *value, size_t *stored);
