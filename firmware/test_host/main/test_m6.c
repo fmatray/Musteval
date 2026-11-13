@@ -342,6 +342,36 @@ TEST_CASE("task.set admits a new id only into a free slot", "[task-set]")
     TEST_ASSERT_TRUE(tools_task_set_fits(9, true, 4));
 }
 
+/* --- Inbound chunking -----------------------------------------------------
+ * esp-mqtt splits a payload larger than its RX buffer across several
+ * `MQTT_EVENT_DATA` events. Each carries its offset and the message total, and the
+ * firmware assembles them before emitting one `mqtt.message`. These are the two
+ * decisions that reassembly makes; the buffer arithmetic around them is board-only. */
+
+TEST_CASE("a chunk contributes only what the frame can still hold", "[mqtt]")
+{
+    /* Room to spare: the whole chunk fits. */
+    TEST_ASSERT_EQUAL_UINT(10, mqtt_chunk_take(0, 10));
+    TEST_ASSERT_EQUAL_UINT(0, mqtt_chunk_take(MQTT_PAYLOAD_MAX, 10));
+    /* Exactly reaches the cap: still all taken, because the cap is inclusive. */
+    TEST_ASSERT_EQUAL_UINT(10, mqtt_chunk_take(MQTT_PAYLOAD_MAX - 10, 10));
+    /* One byte over the room left: the tail is dropped rather than written past the
+     * end, and the caller sees `len > take` and sets the truncation flag. */
+    TEST_ASSERT_EQUAL_UINT(10, mqtt_chunk_take(MQTT_PAYLOAD_MAX - 10, 11));
+}
+
+TEST_CASE("a message is whole at its announced total", "[mqtt]")
+{
+    /* A chunk that fits its RX buffer arrives with no total, so it is whole. */
+    TEST_ASSERT_TRUE(mqtt_chunk_completes(0, 12, 0));
+    /* Mid-message: more chunks to come. */
+    TEST_ASSERT_FALSE(mqtt_chunk_completes(0, 8, 20));
+    /* The chunk that reaches the total completes it. */
+    TEST_ASSERT_TRUE(mqtt_chunk_completes(12, 8, 20));
+    /* A broker that under-reports its total cannot strand the message. */
+    TEST_ASSERT_TRUE(mqtt_chunk_completes(0, 20, 20));
+}
+
 /* --- JSON doubles ---------------------------------------------------------
  * A latitude is a number, not an integer, and `json_add_int` cannot carry one.
  * `docs/tools/geo.md` returns `lat`/`lon` as decimals, so the round trip has to hold

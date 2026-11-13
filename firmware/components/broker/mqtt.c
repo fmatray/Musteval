@@ -11,6 +11,7 @@
 #include "cfg.h"
 #include "clock.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "store.h"
@@ -22,6 +23,18 @@ typedef struct {
     esp_mqtt_client_handle_t client;
     bool connected;
     bool started;
+    /* esp-mqtt delivers a payload larger than its RX buffer as several
+     * `MQTT_EVENT_DATA` events, each with `current_data_offset` set. Emitting one frame
+     * per chunk would report a single message as many, and a truncated chunk is not
+     * NUL-terminated either. So a message is assembled here first, capped at
+     * `MQTT_PAYLOAD_MAX`, and only the completed message becomes a frame. The buffer
+     * is internal SRAM, like the client's own (`02-firmware.md` §7.1), but taken from
+     * the heap rather than reserved for all eight servers: a board with one broker
+     * should not pay for eight, and `agent`'s 8 KiB task stack comes from the same
+     * 17 KiB pool. */
+    char  *rx;
+    size_t rx_len;
+    bool   rx_truncated;
 } mqtt_runtime_t;
 
 static mqtt_runtime_t s_servers[MQTT_MAX_SERVERS];
@@ -42,41 +55,57 @@ static mqtt_runtime_t *find_runtime(const char *server_id)
     return NULL;
 }
 
-/* `rt` comes from the handler's own argument: `esp_mqtt_event_t` carries no
- * user context, and `esp_mqtt_client_handle_t` is an opaque pointer, so the runtime
- * has to be threaded through the one place that already has it. */
+/* Fold one chunk into the reassembly buffer, then emit the message once it is whole.
+ * esp-mqtt splits a payload larger than its RX buffer across several
+ * `MQTT_EVENT_DATA` events, each carrying `total_data_len` and
+ * `current_data_offset`; a message that fits arrives as one event with both zero. */
 static void on_message(mqtt_runtime_t *rt, esp_mqtt_event_handle_t event)
 {
-    if (rt == NULL || event->topic == NULL) return;
+    /* `rt` comes from the handler's own argument: `esp_mqtt_event_t` carries no user
+     * context and `esp_mqtt_client_handle_t` is opaque, so the runtime is threaded
+     * through the one place that already has it. */
+    if (rt == NULL || event->topic == NULL || rt->rx == NULL) return;
 
     /* §3.18: an inbound message on a topic no configured entry covers is never
      * delivered. The client subscribes only to the allowlist, but a broker may send
      * anything it likes on that subscription, so the check is repeated here. */
     const char *topic = event->topic;
-    bool covered = false;
-    for (size_t i = 0; i < rt->server->topic_count; i++) {
-        if (cfg_mqtt_filter_covers(rt->server->topics[i].filter, topic)) {
-            covered = true;
-            break;
-        }
-    }
-    if (!covered) {
+    if (!mqtt_topics_cover(rt->server->topics, rt->server->topic_count, topic)) {
         ESP_LOGW(TAG, "%s: ignored message on an unlisted topic", rt->server->id);
         return;
     }
 
     size_t len = event->data_len > 0 ? (size_t)event->data_len : 0;
-    bool truncated = mqtt_payload_truncates(len);
-    size_t send = truncated ? MQTT_PAYLOAD_MAX : len;
+    size_t offset = (size_t)(event->current_data_offset > 0 ? event->current_data_offset : 0);
+    size_t total = event->total_data_len > 0 ? (size_t)event->total_data_len : offset + len;
 
-    if (s_sink != NULL) {
-        s_sink(rt->server->id, topic, event->data != NULL ? event->data : "", send,
-               truncated, (uint8_t)(event->qos == 1 ? 1 : 0), event->retain != 0,
-               (int64_t)clock_now());
+    if (offset == 0) {
+        rt->rx_len = 0;
+        rt->rx_truncated = false;
+    } else if (offset != rt->rx_len) {
+        /* A gap means a chunk was lost or delivered out of order, so the reassembled
+         * body would be a message nobody sent. Drop it and wait for the next head. */
+        ESP_LOGW(TAG, "%s: dropped a chunk at %u, expected %u", rt->server->id,
+                 (unsigned)offset, (unsigned)rt->rx_len);
+        rt->rx_len = 0;
+        return;
     }
 
-    /* A message the reader was told about is a message a task may match. The trigger is
-     * exact-topic (`02-firmware.md` §5.4), so the task layer applies its own grammar. */
+    size_t take = mqtt_chunk_take(rt->rx_len, len);
+    if (take > 0 && event->data != NULL) {
+        memcpy(rt->rx + rt->rx_len, event->data, take);
+        rt->rx_len += take;
+    }
+    if (len > take) rt->rx_truncated = true;
+
+    if (!mqtt_chunk_completes(offset, len, total)) return; /* more chunks to come */
+
+    rt->rx[rt->rx_len] = '\0';
+    if (s_sink != NULL) {
+        s_sink(rt->server->id, topic, rt->rx, rt->rx_len, rt->rx_truncated,
+               (uint8_t)(event->qos == 1 ? 1 : 0), event->retain != 0,
+               (int64_t)clock_now());
+    }
 }
 
 static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -222,6 +251,13 @@ static esp_err_t start_server(mqtt_runtime_t *rt, const mqtt_server_t *server)
     memset(password, 0, sizeof password);
     if (rt->client == NULL) return ESP_ERR_NO_MEM;
 
+    rt->rx = heap_caps_malloc(MQTT_PAYLOAD_MAX + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (rt->rx == NULL) {
+        esp_mqtt_client_destroy(rt->client);
+        rt->client = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     rt->server = server;
     esp_mqtt_client_register_event(rt->client, ESP_EVENT_ANY_ID, mqtt_event_handler, rt);
     esp_err_t err = esp_mqtt_client_start(rt->client);
@@ -236,6 +272,12 @@ static esp_err_t start_server(mqtt_runtime_t *rt, const mqtt_server_t *server)
 
 esp_err_t mqtt_init(void)
 {
+    /* `reload` reaches this a second time (`main.c` `start_services`), so the previous
+     * run's clients are released rather than overwritten. */
+    for (size_t i = 0; i < MQTT_MAX_SERVERS; i++) {
+        if (s_servers[i].client != NULL) esp_mqtt_client_destroy(s_servers[i].client);
+        heap_caps_free(s_servers[i].rx);
+    }
     s_count = 0;
     memset(s_servers, 0, sizeof s_servers);
 

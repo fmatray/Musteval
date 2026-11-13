@@ -45,3 +45,16 @@ size_t mqtt_derive_client_id(const char *device, const char *server_id, char *bu
 }
 
 bool mqtt_payload_truncates(size_t len) { return len > MQTT_PAYLOAD_MAX; }
+
+size_t mqtt_chunk_take(size_t have, size_t len)
+{
+    if (have >= MQTT_PAYLOAD_MAX) return 0;
+    size_t room = MQTT_PAYLOAD_MAX - have;
+    return len < room ? len : room;
+}
+
+bool mqtt_chunk_completes(size_t offset, size_t len, size_t total)
+{
+    if (total == 0) return true;
+    return offset + len >= total;
+}

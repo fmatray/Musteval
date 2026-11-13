@@ -100,3 +100,12 @@ size_t mqtt_derive_client_id(const char *device, const char *server_id, char *bu
 /* True when an inbound payload exceeded `MQTT_PAYLOAD_MAX`, so the frame's
  * `truncated` is set rather than the payload being silently short. Pure. */
 bool mqtt_payload_truncates(size_t len);
+
+/* How many bytes of a chunk to keep when `have` bytes are already buffered. The tail
+ * that does not fit sets the truncation flag instead of being appended, so the frame
+ * never claims to hold more than it does. Pure. */
+size_t mqtt_chunk_take(size_t have, size_t len);
+
+/* True when a chunk is the last of its message, so the frame can be emitted. A chunk
+ * that fits arrives with `total` 0; then it is whole by definition. Pure. */
+bool mqtt_chunk_completes(size_t offset, size_t len, size_t total);

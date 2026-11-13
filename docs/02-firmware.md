@@ -518,8 +518,14 @@ layout in `08-code-architecture.md` §2.
   triggers.
 
 Reconnect uses `wifi.retry_backoff_ms[]`. `tls: true` sets
-`broker.verification`; there is no insecure fallback. Client contexts and RX
-buffers are internal SRAM, never PSRAM (DMA; `01-hardware.md` §2).
+`broker.verification`; there is no insecure fallback. Client contexts and the
+per-server inbound buffer are internal SRAM, never PSRAM (DMA;
+`01-hardware.md` §2). The inbound buffer is `MQTT_PAYLOAD_MAX + 1` bytes taken
+from the heap when that server starts, not an array reserved for
+`mqtt.max_servers` entries: a board with one broker pays for one. An inbound
+payload larger than one RX read arrives as several `MQTT_EVENT_DATA` events,
+which `mqtt` assembles before raising a single `mqtt.message`; a payload past
+`MQTT_PAYLOAD_MAX` is emitted with `truncated: true` rather than dropped.
 
 ### `geo` — WiFi positioning
 - `geo_init()`: validate `geo.providers[]`, resolve any `api_key_ref`.
