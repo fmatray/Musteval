@@ -141,6 +141,21 @@ TEST_CASE("an ESP-IDF V1 log line is split into its parts", "[log]")
     TEST_ASSERT_EQUAL_STRING_LEN("associated with example", p.msg, p.msg_len);
 }
 
+/* The clock source: `I (10:04:22.117) tag: msg`. A time of day is not a
+ * millisecond count, so it reports 0 rather than a number that would read as ten
+ * million milliseconds of uptime. */
+TEST_CASE("a clock-time log line reports no millisecond stamp", "[log]")
+{
+    const char *line = "I (10:04:22.117) net: associated\n";
+    link_log_line_t p;
+
+    TEST_ASSERT_TRUE(link_log_parse(line, strlen(line), &p));
+    TEST_ASSERT_EQUAL_CHAR('I', p.level_letter);
+    TEST_ASSERT_EQUAL_INT64(0, p.t_ms);
+    TEST_ASSERT_EQUAL_STRING_LEN("net", p.tag, p.tag_len);
+    TEST_ASSERT_EQUAL_STRING_LEN("associated", p.msg, p.msg_len);
+}
+
 TEST_CASE("the message keeps colons but the tag ends at the first separator", "[log]")
 {
     const char *line = "E (9) llm: failed: E_LLM_TIMEOUT after 30000 ms\n";

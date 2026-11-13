@@ -637,6 +637,11 @@ TEST_CASE("tools_validate enforces argument types", "[m4]")
     /* `object`: `http.get`'s `headers` is a map, and a string is refused. */
     TEST_ASSERT_TRUE(validates("http.get", "{\"url\":\"https://a.test/\",\"headers\":{}}"));
     TEST_ASSERT_FALSE(validates("http.get", "{\"url\":\"https://a.test/\",\"headers\":\"x\"}"));
+    /* `array`: `todo`'s nested `list` is an array of phase objects, and the flat
+     * form is refused rather than coerced. Both directions, because an arm that
+     * accepts everything would pass the refusal case alone. */
+    TEST_ASSERT_TRUE(validates("todo", "{\"op\":\"init\",\"list\":[]}"));
+    TEST_ASSERT_FALSE(validates("todo", "{\"op\":\"init\",\"list\":\"x\"}"));
 }
 
 /* `todo` is validated against the same schema the model receives, so `op` must be one
@@ -1082,6 +1087,28 @@ TEST_CASE("a declarative tool is read from its documented shape", "[m4]")
      * a conforming headers object arrived as `{}`. Both members must be present. */
     TEST_ASSERT_NOT_NULL(strstr(tool.headers, "\"Accept\":\"application/json\""));
     TEST_ASSERT_NOT_NULL(strstr(tool.headers, "nvs:brave_key"));
+}
+
+/* `tools/web.md`: both members are required, and their absence names that rather
+ * than the generic "http is not an object" a reader would chase in the wrong place. */
+TEST_CASE("a declarative file without a description or url names the missing member", "[m4]")
+{
+    tools_declared_t tool;
+    char why[128];
+    const struct {
+        const char *body;
+    } bad[] = {
+        {"{\"http\":{\"url\":\"https://a.test/\"}}"},
+        {"{\"description\":\"d\",\"http\":{}}"},
+        {"{\"description\":3,\"http\":{\"url\":\"https://a.test/\"}}"},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        why[0] = '\0';
+        TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, tools_declared_compile(
+            "t", bad[i].body, strlen(bad[i].body), secret_yes, NULL, &tool,
+            why, sizeof why));
+        TEST_ASSERT_NOT_NULL(strstr(why, "required strings"));
+    }
 }
 
 /* `03-config.md` §tools: the bound is 1..60000, and a value outside it takes the

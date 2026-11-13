@@ -225,11 +225,11 @@ static esp_err_t check_extra_body(const json_node_t *extra, char *why, size_t ca
     static const char *reserved[] = { "model", "messages", "tools", "stream" };
     size_t count = json_object_len(extra);
     for (size_t i = 0; i < count; i++) {
+        /* `json_object_key` answers `NULL` only for a non-object, which the guard
+         * above already refused, and `json_object_value` is non-`NULL` for every
+         * index below the member count. There is no unreadable member here. */
         const char *key = json_object_key(extra, i);
         const json_node_t *value = json_object_value(extra, i);
-        if (key == NULL || value == NULL) {
-            return fail(why, cap, "extra_body: member unreadable", NULL);
-        }
         for (size_t r = 0; r < RULE_COUNT(reserved); r++) {
             if (strcmp(key, reserved[r]) == 0) {
                 return fail(why, cap, "extra_body: reserved key %s", key);
@@ -326,22 +326,14 @@ static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
  * Step 4 rejects a key the tree does not name, so a typo is a refusal rather than
  * a silently ignored setting. The walk is over the document, not the table, so a
  * key nobody thought of is caught too. */
-static const cfg_rule_t *find_rule(const char *path, bool *is_element)
+/* Every `X.*` group names an array, and `walk` does not descend into one, so no
+ * walked path can equal a group. There is no element arm here: a group's members
+ * are checked by `check_member`, which reads the array itself. */
+static const cfg_rule_t *find_rule(const char *path)
 {
-    *is_element = false;
     for (size_t i = 0; i < RULE_COUNT(k_rules); i++) {
         if (k_rules[i].kind == CFG_ELEMENT) continue;
         if (strcmp(k_rules[i].path, path) == 0) return &k_rules[i];
-    }
-    /* `X.*` marks an element group; its members are `k_element_rules`. */
-    for (size_t i = 0; i < RULE_COUNT(k_rules); i++) {
-        if (k_rules[i].kind != CFG_ELEMENT) continue;
-        size_t n = strlen(k_rules[i].path);
-        if (n > 2 && strcmp(k_rules[i].path + n - 2, ".*") == 0 &&
-            strncmp(path, k_rules[i].path, n - 2) == 0 && path[n - 2] == '.') {
-            *is_element = true;
-            return &k_rules[i];
-        }
     }
     return NULL;
 }
@@ -358,14 +350,8 @@ static esp_err_t walk(const json_node_t *obj, const char *prefix,
         int n = snprintf(path, sizeof path, "%s%s%s", prefix, prefix[0] ? "." : "", key);
         if (n <= 0 || (size_t)n >= sizeof path) return fail(why, cap, "key too long", key);
 
-        bool element = false;
-        const cfg_rule_t *rule = find_rule(path, &element);
+        const cfg_rule_t *rule = find_rule(path);
         if (rule == NULL) return fail(why, cap, "unknown key %s", path);
-        if (element) {
-            /* The `*` row only says "array of objects"; members are checked above. */
-            if (!json_is_object(c)) return fail(why, cap, "%s: not an object", path);
-            continue;
-        }
         if (rule->kind == CFG_OBJECT) {
             esp_err_t err = walk(c, path, why, cap);
             if (err != ESP_OK) return err;

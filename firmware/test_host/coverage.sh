@@ -1,5 +1,5 @@
 #!/bin/sh
-# Firmware host coverage gate (`AGENTS.md` Test Strategy): 97% line over the
+# Firmware host coverage gate (`AGENTS.md` Test Strategy): 98% line over the
 # host-testable modules. Run from `firmware/test_host/` after a `-DCOVERAGE=ON`
 # build.
 #
@@ -17,4 +17,4 @@ PY=${PY:-$(dirname -- "$0")/../../.venv/bin/python}
 
 "$PY" -m gcovr -r "$ROOT" --filter '\.\./components/' --filter 'components/' \
          --gcov-ignore-errors=no_working_dir_found \
-         --fail-under-line 97 "$BUILD"
+         --fail-under-line 98 "$BUILD"

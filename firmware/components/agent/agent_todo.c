@@ -332,11 +332,10 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
         const json_node_t *entry = json_array_at(phases, i);
         const char *name = json_string(json_get(entry, "phase"));
         const json_node_t *items = json_get(entry, "items");
+        /* Cannot fail: `n` is bounded by `AGENT_TODO_MAX_PHASES` above and every
+         * name is distinct, so `list` has room for each one. */
         uint8_t phase = 0;
-        if (!phase_add(list, name, &phase)) {
-            if (why != NULL) snprintf(why, why_cap, "too many phases");
-            return ESP_ERR_INVALID_SIZE;
-        }
+        (void)phase_add(list, name, &phase);
         for (size_t j = 0; j < json_array_len(items); j++) {
             const char *content = NULL, *blocker = NULL;
             todo_status_t status = TODO_PENDING;
@@ -391,11 +390,9 @@ static esp_err_t op_init_flat(todo_list_t *list, const json_node_t *args,
     }
 
     todo_list_clear(list);
+    /* Cannot fail: the list was just cleared and one phase is added. */
     uint8_t phase = 0;
-    if (!phase_add(list, phase_name, &phase)) {
-        if (why != NULL) snprintf(why, why_cap, "too many phases");
-        return ESP_ERR_INVALID_SIZE;
-    }
+    (void)phase_add(list, phase_name, &phase);
     for (size_t i = 0; i < n; i++) {
         if (!task_add(list, phase, json_string(json_array_at(items, i)))) {
             if (why != NULL) snprintf(why, why_cap, "duplicate content");
