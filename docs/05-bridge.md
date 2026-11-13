@@ -948,10 +948,12 @@ as the built-ins; an entry sharing an `id` replaces the built-in, which is how a
 reader corrects a stale `base_url` without patching the bridge. The file is read
 when the wizard opens. A malformed file is reported as one chat line naming the
 path and the parse error, and the built-ins are used alone — a broken local file
-never costs the reader the ability to onboard a device. A custom entry that is
-missing `id`, `base_url` or `label` is skipped with its reason named, because a
-half-entry cannot be written to the device and silently dropping it would look like
-the file was not read.
+never costs the reader the ability to onboard a device. **One line, once**: both
+the provider step and the model step read the same catalog, so the complaint
+belongs to the step that first read it; printing it twice reads as two broken
+files. A custom entry that is missing `id`, `base_url` or `label` is skipped with
+its reason named, because a half-entry cannot be written to the device and
+silently dropping it would look like the file was not read.
 
 `[ASSUMPTION]`: a model list is fetched with the same bearer token that will be
 written to the device. If a provider requires a token exchange or a different scope

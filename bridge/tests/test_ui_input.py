@@ -1466,3 +1466,14 @@ async def test_ctrl_c_is_scoped_to_chat_and_ignored_when_hidden():
         # Chat composer should still hold its text
         assert field.value == "keep me"
         await session.close()
+
+
+def test_history_in_a_bare_filename_saves_without_a_parent_directory(tmp_path, monkeypatch):
+    """`05` §5.11: the ring is one NDJSON file. `PromptHistory` takes any path, so a
+    bare filename has no parent directory, and `makedirs("")` raises — an error
+    `_save` swallows, losing the ring without a word."""
+    monkeypatch.chdir(tmp_path)
+    h = PromptHistory(path="h.ndjson")
+    h.add("kept")
+    assert (tmp_path / "h.ndjson").exists()
+    assert PromptHistory(path="h.ndjson").previous("") == "kept"

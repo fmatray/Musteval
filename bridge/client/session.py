@@ -299,9 +299,9 @@ class Session:
             return False
         finally:
             self._pending.pop(hello.id, None)
-        if self._state is LinkState.REJECTED:
-            await self._transport.close()
-            return False
+        # No `REJECTED` re-check: a `link.rejected` event fails this future
+        # (`_fail_pending`), so that arm leaves through the `except` above, and a
+        # rejection that lands after the ack is the reader's to report.
         if reply.type != "hello_ack":
             await self._stop_reader()
             await self._transport.close()

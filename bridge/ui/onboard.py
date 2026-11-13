@@ -133,10 +133,11 @@ def writes_network(answers: Answers) -> list[tuple[str, dict[str, object]]]:
     """
     if not network_writable(answers):
         return []
-    plan: list[tuple[str, dict[str, object]]] = []
-    if answers.password:
-        plan.append(("secret", {"key": WIFI_KEY, "value": answers.password}))
-    plan.append(
+    # `network_writable` above already required a passphrase, so the secret is
+    # unconditional here: a reference to a key that was never written is a document
+    # `03-config.md` rule 9 rejects.
+    return [
+        ("secret", {"key": WIFI_KEY, "value": answers.password}),
         (
             "config",
             {
@@ -144,9 +145,8 @@ def writes_network(answers: Answers) -> list[tuple[str, dict[str, object]]]:
                     {"ssid": answers.ssid, "password_ref": f"nvs:{WIFI_KEY}"}
                 ]
             },
-        )
-    )
-    return plan
+        ),
+    ]
 
 
 def writes_provider(answers: Answers) -> list[tuple[str, dict[str, object]]]:

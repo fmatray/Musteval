@@ -242,3 +242,17 @@ async def test_a_refused_edit_names_the_problem_and_keeps_the_tree():
         await pilot.pause(0.05)
         assert "duplicate phase name" in str(editor.query_one("#todo-status").render())
         assert [p["name"] for p in editor.phases] == ["design", "ship"]
+
+
+async def test_the_modal_fits_a_small_terminal_with_its_input_and_legend():
+    """`05` §13.4: the tree scrolls, so a long plan must not push the controls off."""
+    async with _Host().run_test(size=(80, 16)) as pilot:
+        await pilot.pause(0.1)
+        editor = await _open(pilot)
+        # Region counts padding and border; `size` is the content the modal needs.
+        box = editor.query_one(".prompt-box")
+        assert box.size.height <= 12
+        screen = editor.screen.region
+        assert box.region.bottom <= screen.bottom
+        for selector in ("#todo-value", "#todo-hint"):
+            assert editor.query_one(selector).region.bottom <= box.region.bottom

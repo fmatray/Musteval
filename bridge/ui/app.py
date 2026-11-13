@@ -535,10 +535,9 @@ class TasksScreen(Vertical):
         table = self.query_one("#task-table", DataTable)
         if table.row_count == 0 or table.cursor_row is None:
             return None
-        try:
-            return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
-        except Exception:
-            return None
+        # `row_count` and a non-`None` cursor row are the whole precondition; a
+        # `try` here only swallowed a bug the table would otherwise report.
+        return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
 
 
 class LogsScreen(Vertical):
@@ -664,10 +663,7 @@ class SettingsScreen(Vertical):
         table = self.query_one("#settings-table", DataTable)
         if table.row_count == 0:
             return None
-        try:
-            return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
-        except Exception:
-            return None
+        return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         # In a worker: `edit_setting` awaits `push_screen_wait`, which Textual
@@ -1416,11 +1412,9 @@ class BridgeApp(App):
         On Chat it cancels the current run, which is the one place Esc changes
         device state rather than local navigation.
         """
-        if len(self.screen_stack) > 1:
-            # A modal never reaches this binding: `ModalScreen` sets `_modal`,
-            # which suppresses app bindings, so `PromptBox` owns its own Esc.
-            self.pop_screen()
-            return
+        # No screen-stack branch: every screen below is a child of the app toggled
+        # by `display`, and the only pushed screens are `ModalScreen`s, which
+        # suppress app bindings — so this binding never fires with a modal on top.
         if self.query_one("#chat").display is False:
             self.action_show("chat")
             return
@@ -1466,11 +1460,10 @@ class BridgeApp(App):
         Called on every fact that changes, never on a keystroke, so the bar
         costs no frames.
         """
-        if not self.is_mounted:
-            return
         # The bar lives on the chat screen, which is not queryable until the app's
         # children are mounted. A link-state change that lands before that must not
-        # take the whole app down over a bar nobody can see yet.
+        # take the whole app down over a bar nobody can see yet — so this one check
+        # covers both "not mounted yet" and "gone".
         chat = self.query("#chat")
         if not chat:
             return
@@ -2108,9 +2101,10 @@ class BridgeApp(App):
         # The level is seeded from the stored entry, not from `none`: re-running the
         # wizard must not be a silent downgrade for a reader who set one (`05` §13.6).
         stored_extra = first.get("extra_body") if isinstance(first, dict) else None
-        entries, notes = providers_mod.catalog()
-        for note in notes:
-            self._chat().write(note)
+        # No catalog note loop here: `_onboard_provider` already wrote them, and this
+        # step always follows it, so repeating them would print the same complaint
+        # twice for one malformed file.
+        entries = providers_mod.catalog()[0]
         entry = providers_mod.find(answers.provider) if answers.provider else None
         step = ModelStep(
             models=models,

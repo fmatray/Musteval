@@ -113,20 +113,6 @@ class SecretPrompt(PromptBox[str | None]):
             yield Input(password=True, id="secret-input")
             yield Static("Enter: store | Esc: cancel", classes="prompt-hint")
 
-    def _choices(self) -> list[tuple[str, str]]:
-        """The list, plus the stored name when the provider did not publish it.
-
-        The two controls must agree on what is current. A stored name the fetch did
-        not return — `gemma4:cloud` against the cloud list, which is the state of the
-        first device this ran on — would otherwise leave the field saying one model
-        and the highlight another, and clearing the field would silently move the
-        reader onto a model they never chose.
-        """
-        names = list(self.models)
-        if self.current and self.current not in names:
-            names.insert(0, self.current)
-        return [(name, name) for name in names]
-
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         self.action_submit()
@@ -324,10 +310,6 @@ class _StepBox(PromptBox[Any]):
             yield Static(self.pass_note(), id="step-pass", classes="step-note")
             yield Static("", id="step-verdict", classes="step-note")
 
-    def fields(self) -> Any:
-        """The step's widgets. Each is yielded by its own subclass."""
-        return []
-
     def on_mount(self) -> None:
         self.query_one("#step-verdict", Static).update(
             f"previous step: {self.verdict}" if self.verdict else ""
@@ -346,17 +328,6 @@ class _StepBox(PromptBox[Any]):
         """
         self.passed = True
         self.dismiss(self.answer())
-
-    def can_pass(self) -> bool:
-        """Whether the stored config already answers this step, which `pass_note` says."""
-        return False
-
-    def pass_note(self) -> str:
-        """One line naming what `Ctrl+G` would keep, and what it would leave unset."""
-        return ""
-
-    def answer(self) -> Any:
-        return None
 
     @staticmethod
     def _select(options: list[tuple[str, str]], value: str, widget_id: str,
@@ -505,9 +476,9 @@ class NetworkStep(_StepBox):
         auth = next(
             (str(n.get("auth") or "") for n in self.scan if n.get("ssid") == ssid), ""
         )
-        region = self.query_one("#step-region", Select).value
-        if not isinstance(region, str) or not region:
-            region = providers.region_names()[0]
+        # `allow_blank=False` above, so the select always holds one of its rows: a
+        # region name, or a stored zone the table lacks, kept as its own row.
+        region = str(self.query_one("#step-region", Select).value)
         timezone, server = (
             providers.timezone_for(region)
             if region in providers.region_names()
@@ -875,11 +846,10 @@ class FilePrompt(PromptBox[str | None]):
         super().__init__()
         self.path = path
         self.text = text
-        #: The find bar is a two-step prompt: `finding` asks for the needle,
-        #: `replacing` asks what to put there. A dict avoids a second modal and
-        #: keeps the caret in the buffer while the query is typed.
+        #: The find bar is a two-step prompt: the first Enter takes the needle, the
+        #: second what to put there. `_replacing` says which Enter this is, so no
+        #: second modal is needed and the caret stays in the buffer.
         self._query = ""
-        self._finding = False
         self._replacing = False
 
     def compose(self) -> ComposeResult:
@@ -905,7 +875,6 @@ class FilePrompt(PromptBox[str | None]):
         return self.query_one("#file-find", Input)
 
     def action_find(self) -> None:
-        self._finding = True
         self._replacing = False
         bar = self._bar()
         bar.placeholder = "find..."
@@ -949,7 +918,6 @@ class FilePrompt(PromptBox[str | None]):
             self._close_find()
             return
         self._query = event.value
-        self._finding = False
         self._replacing = True
         self._bar().value = ""
         self._bar().placeholder = f"replace {self._query!r} with..."
@@ -962,7 +930,6 @@ class FilePrompt(PromptBox[str | None]):
             self._close_find()
 
     def _close_find(self) -> None:
-        self._finding = False
         self._replacing = False
         bar = self._bar()
         bar.remove_class("active")
@@ -1086,10 +1053,20 @@ class TodoEditor(PromptBox[list[Frame] | None]):
         Binding("ctrl+s", "send", "Send", show=False),
     ]
     CSS = _CSS + """
+/* `height: auto` makes the box hug the tree: a `1fr` child in an auto-height
+   container expands to the screen, which is what made the modal full height.
+   `max-height: 100%` keeps the box on screen at 12 rows, where the chrome plus
+   five tree rows would otherwise overflow. */
+TodoEditor .prompt-box {
+    max-height: 100%;
+}
+
 #todo-tree {
-    height: 1fr;
-    max-height: 14;
-    min-height: 4;
+    height: auto;
+    /* Five rows: a phase header plus four tasks, the rest scrolls. The tree is
+       the only variable part, so its cap is what sets the modal's height. */
+    max-height: 5;
+    min-height: 1;
     border: none;
 }
 """
@@ -1308,7 +1285,11 @@ class TodoEditor(PromptBox[list[Frame] | None]):
     # -- lines ----------------------------------------------------------
 
     def _say(self, text: str) -> None:
-        self.query_one("#todo-status", Static).update(text)
+        # Hidden rather than emptied: an empty `Static` still costs a row, and
+        # the common case is nothing to report.
+        status = self.query_one("#todo-status", Static)
+        status.update(text)
+        status.display = bool(text)
 
     def _count(self, phase: str) -> int:
         for entry in self.phases:
