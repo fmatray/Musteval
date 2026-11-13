@@ -1,12 +1,12 @@
 #!/bin/sh
-# Bridge coverage gate (`AGENTS.md` Test Strategy): 97% line, per scope.
+# Bridge coverage gate (`AGENTS.md` Test Strategy): 98% line and branch, per scope.
 #
 # One pytest run, then one check per scope, because a single global number would let
 # a well-covered package hide a thin one. Run from the repo root.
 #
 # The gates are checked from `coverage.json` rather than `coverage report
 # --fail-under`: that flag compares a single combined figure, so a scope at 100% line
-# and 94% branch would pass a `97` branch gate. Line and branch are separate numbers
+# and 94% branch would pass a `98` branch gate. Line and branch are separate numbers
 # in the table and are checked separately here.
 set -e
 PY=${PY:-.venv/bin/python}
@@ -21,11 +21,11 @@ import sys
 # `scope:line_gate:branch_gate`; a branch gate of `None` means line only.
 SPECS = [
     ("bridge/protocol/", 100, 100),
-    ("bridge/link/", 97, 97),
-    ("bridge/client/", 97, 97),
-    ("bridge/commands.py", 97, 97),
-    ("bridge/ui/", 97, 97),
-    ("bridge/tools/", 97, None),
+    ("bridge/link/", 98, 98),
+    ("bridge/client/", 98, 98),
+    ("bridge/commands.py", 98, 98),
+    ("bridge/ui/", 98, 98),
+    ("bridge/tools/", 98, None),
 ]
 
 with open("coverage.json", encoding="utf-8") as fh:

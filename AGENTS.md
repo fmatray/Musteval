@@ -40,7 +40,7 @@ Five suites, one per kind of thing that can break. Each has an owner, a command,
 | Bridge unit | host | `protocol`, `link`, `client`, `commands`, and the `ui` modules that are pure (`render`, `help`, `files`, `onboard`) | `uv run pytest bridge/tests` |
 | Bridge end to end | host | `link` + `client` + `ui` over a real serial device, no board | `uv run pytest bridge/tests/e2e` (the fixture starts `bridge/tools/test_agent.py`) |
 | Test agent | host | `bridge/tools/test_agent.py`: the `10-test-agent.md` §5 ladder and §6 replies, including every refusal | `uv run pytest bridge/tests/test_test_agent.py` |
-| Firmware host | host, `linux` target | pure logic: NDJSON codec, config schema, tool-argument validation, skill and geo parsing, and the `store` decision helpers (`store_delete_action`, `store_move_verdict`, `store_path_is_under`, `store_is_staging_entry`) | `idf.py --preview set-target linux build`, then run the produced unity binary; coverage via `firmware/test_host/coverage.sh` (gate 97% line) |
+| Firmware host | host, `linux` target | pure logic: NDJSON codec, config schema, tool-argument validation, skill and geo parsing, and the `store` decision helpers (`store_delete_action`, `store_move_verdict`, `store_path_is_under`, `store_is_staging_entry`) | `idf.py --preview set-target linux build`, then run the produced unity binary; coverage via `firmware/test_host/coverage.sh` (gate 98% line) |
 | Firmware on target | XIAO ESP32-S3 | NVS and `secrets`, GPIO and ADC, scheduler timers, WiFi failover, brownout, boot guard | Not built yet: `firmware/test/on_target/` does not exist, so hardware-bound facts are proven today by a scripted board probe over `/dev/ttyACM0` and recorded in the reply. A suite lands with pytest-embedded |
 
 A module that calls ESP-IDF hardware APIs is not forced onto the host: its firmware-side unit test is the on-target suite. Writing a host test for it means testing a stub, which proves nothing about the code that ships.
@@ -49,22 +49,22 @@ A module that calls ESP-IDF hardware APIs is not forced onto the host: its firmw
 
 High coverage is a floor, not a goal. A suite at 95% that has never failed on a real bug is worth less than one at 85% that caught the last regression. Never add a test to move a number.
 
-Every scope is gated at **97% line**. A branch gate applies only where the table says so.
+Every scope is gated at **98% line**. A branch gate applies only where the table says so.
 
 | Scope | Gate | Why this number |
 |---|---|---|
 | `bridge/protocol/` | 100% line and branch | small, pure, and every branch is a protocol rule from `docs/04-protocol.md` |
-| `bridge/link/`, `bridge/client/`, `bridge/commands.py` | 97% line and branch | state machines with named failure paths; the remaining 3% is I/O error branches that only a real port can provoke |
-| `bridge/ui/` | 97% line and branch | the pilot drives real event handlers, so an uncovered handler is an untested screen; the tail is Textual dispatch the framework owns |
-| `bridge/tools/` | 97% line | the device double and `build_userfs.py` are what e2e trusts; a skipped rung turns a protocol bug into a mysterious bridge timeout |
-| firmware, host-testable modules | 97% line | C error paths are long, but an untaken branch is still an unread refusal; ESP-IDF glue is the documented exception below |
-| hardware-bound modules | 97% line | measured on the target, not against a stub: the on-target suite is what counts here |
+| `bridge/link/`, `bridge/client/`, `bridge/commands.py` | 98% line and branch | state machines with named failure paths; the remaining 2% is I/O error branches that only a real port can provoke |
+| `bridge/ui/` | 98% line and branch | the pilot drives real event handlers, so an uncovered handler is an untested screen; the tail is Textual dispatch the framework owns |
+| `bridge/tools/` | 98% line | the device double and `build_userfs.py` are what e2e trusts; a skipped rung turns a protocol bug into a mysterious bridge timeout |
+| firmware, host-testable modules | 98% line | C error paths are long, but an untaken branch is still an unread refusal; ESP-IDF glue is the documented exception below |
+| hardware-bound modules | 98% line | measured on the target, not against a stub: the on-target suite is what counts here |
 
 `bridge/__main__.py` is excluded: it is argument parsing and process setup, and its behaviour is asserted end to end by `bridge/tests/e2e/`.
 
 A scope that cannot reach the gate is not exempted by editing this table. Either the code loses branches that no caller can reach, or the gap is named here with the reason it is unprovable — a silent lower number is how a gate stops meaning anything.
 
-Enforcement: `bridge/coverage.sh` for Python and `firmware/test_host/coverage.sh` for the firmware build, which runs `gcovr --fail-under-line 97` over a build made with `idf.py -DCOVERAGE=ON build`. **Both are commands, not intentions.** A gate that is not enforced by a command is a suggestion, so both run in the same step as the suite, and a change that lowers a scope below its gate fails that step.
+Enforcement: `bridge/coverage.sh` for Python and `firmware/test_host/coverage.sh` for the firmware build, which runs `gcovr --fail-under-line 98` over a build made with `idf.py -DCOVERAGE=ON build`. **Both are commands, not intentions.** A gate that is not enforced by a command is a suggestion, so both run in the same step as the suite, and a change that lowers a scope below its gate fails that step.
 
 ### Non-regression rules
 
@@ -164,7 +164,23 @@ changes; read them as the failure modes this codebase actually has.
   caller: a copy-pasted `_choices`, an attribute written and never read, base-class
   stubs every subclass overrides, and a `REJECTED` re-check that an earlier `except`
   already answered. Each was reachable only from a test written to reach it. The gate
-  pays for behaviour, so the branch goes and its reason is named in a comment.
+  pays for behaviour, so the branch goes and its reason is named in a comment. Seven
+  more went the same way when the gates moved to 98: `cfg_validate.c`'s element arm
+  (`walk` never descends into an array, so no walked path can equal an `X.*` group),
+  its `extra_body` member guard (a non-object was refused eight lines above), two
+  `phase_add` failures in `agent_todo.c` that a preceding count check and a just-
+  cleared list make impossible, `app.py`'s trailing-slash test on a path
+  `sandbox_normalise` guarantees has none, and two in `modals.py` — `_narrow`'s empty
+  level list (the `Select` only exists where `fields()` already found levels) and
+  `_add_op`'s "no cursor but phases exist" arm (`_rebuild` always highlights a row
+  when there is one).
+- **A guard that can never fire hides a gesture that can never work.** The `_begin`
+  guard in `bridge/ui/modals.py` answered "select a phase or a task first" when no row
+  was selected — including on an empty tree, where no row can be selected. `Ctrl+N`
+  on a fresh list was therefore dead: the one gesture that seeds the first phase was
+  refused by the guard meant to protect it. Reachability is a question about callers,
+  and the empty tree is a caller. Ask what the user does first, not what the code does
+  next.
 
 ## Documentation Updates
 
