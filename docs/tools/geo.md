@@ -77,10 +77,9 @@ never as instructions (`../06-security.md` §6.4). A provider cannot redirect th
 ```
 
 `provider` is the `geo.providers[].id` that produced the fix. `source_ts` is the Unix
-second the fix was obtained, which is also the reference point the cache age is
-measured against. [ASSUMPTION] The docs name `source_ts` only as a field of the cached
-record; it is not stated whether it carries the provider's timestamp or the local
-receive time.
+second the fix was obtained — the local receive time, stamped when the response parsed,
+because a provider is not trusted to report a usable clock — and it is the reference
+point the cache age is measured against.
 
 **Schema sent to the model**
 
@@ -89,7 +88,7 @@ receive time.
 ```
 
 The bridge-side `geo.locate` command is a separate surface with a different result
-shape (`{lat, lon, accuracy_m, source, age_s}`, `../04-protocol.md` §4); the tool
+shape (`{lat, lon, accuracy_m, provider, age_s}`, `../04-protocol.md` §4.13); the tool
 documented here is the one the model calls.
 
 ## Errors

@@ -532,17 +532,18 @@ Flow:
 1. Return the cached fix when its age is under `geo.cache_ttl_s`.
 2. `esp_wifi_scan_start` (blocking), sort by RSSI, keep the
    `geo.max_bssids` strongest.
- 3. Try each `kind: "wifi_scan"` provider in order with
-    `[{bssid, rssi}]`. If a provider exceeds its attempt budget or fails to
-    respond within `geo.timeout_ms`, it is considered failed and the chain
-    continues to the next entry.
- 4. Fall back to the first `kind: "ip"` provider, which needs no key.
- 5. Cache `{lat, lon, accuracy_m, provider, source_ts}` and return it.
+3. Walk `geo.providers[]` in the order it was written, whichever `kind` each entry
+   is. A `wifi_scan` entry is sent `[{bssid, rssi}]`; an `ip` entry needs no key and
+   no body. If a provider exceeds its attempt budget or fails to respond within
+   `geo.timeout_ms`, it is considered failed and the chain continues to the next
+   entry. Order is the user's privacy control (`docs/tools/geo.md` §Provider chain),
+   so the firmware does not reorder the chain by kind.
+4. Cache `{lat, lon, accuracy_m, provider, source_ts}` and return it.
 
- The cache is RAM-only and bounded by `geo.cache_ttl_s` alone: a change in RSSI
- does not invalidate it. A reboot costs one scan. Geolocation reveals the access
- point's position, not necessarily the device's, and `accuracy_m` is reported
- as-is rather than implied precise (`06-security.md` §6).
+The cache is RAM-only and bounded by `geo.cache_ttl_s` alone: a change in RSSI
+does not invalidate it. A reboot costs one scan. Geolocation reveals the access
+point's position, not necessarily the device's, and `accuracy_m` is reported
+as-is rather than implied precise (`06-security.md` §6).
 
 ### `sys` — Hardware abstraction
 - `sys_board_init()`: Install the GPIO ISR service (`gpio_install_isr_service()`) and

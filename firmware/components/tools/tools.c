@@ -811,8 +811,10 @@ static esp_err_t call_geo_locate(json_doc_t **out, const char **wire_code, char 
     json_add_double(root, "lon", fix.lon);
     json_add_int(root, "accuracy_m", fix.accuracy_m);
     json_add_string(root, "provider", fix.provider);
-    int64_t age = (int64_t)clock_now() - fix.source_ts;
-    json_add_int(root, "age_s", age < 0 ? 0 : age);
+    /* `docs/tools/geo.md` §Result: the tool reports when the fix was taken, which is
+     * what the cache age is measured against. The command surface reports an age
+     * instead (`04-protocol.md` §4.13), and the two shapes are deliberately apart. */
+    json_add_int(root, "source_ts", fix.source_ts);
     return ESP_OK;
 }
 

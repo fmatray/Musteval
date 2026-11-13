@@ -6,7 +6,7 @@ Read the configured brokers and publish to one of them. `mqtt.list` is ungated;
 
 | Tool | Gate | Errors |
 |---|---|---|
-| `mqtt.list` | none | `E_MQTT` `[ASSUMPTION]` |
+| `mqtt.list` | none | none; a broker that is down is `connected: false`, not an error |
 | `mqtt.publish` | `server_id` exists in `mqtt.servers[]` AND `topic` is covered by that server's `topics[]`; client connected | `E_MQTT` |
 
 Each `mqtt.servers[]` entry is one `esp_mqtt_client_handle_t`, created up to
@@ -23,10 +23,11 @@ Reports every configured broker and its live state. `id` is the
 that server's `topics[]`. A disconnected broker is still listed, with
 `connected: false`; it is not an error.
 
-`mqtt.list` is the tool-side view. The host command `mqtt.status` reports the same
-entries plus `last_error` (`../04-protocol.md` §4.15); `mqtt.list` does not carry
-that field. No password material is emitted: `[ASSUMPTION]` ids and topic strings
-are the only server-side values in the result (`../06-security.md` §11, S11).
+`mqtt.list` is the tool-side view, and the host command `mqtt.status` reports the
+same three fields (`../04-protocol.md` §4.15); neither carries an error string, so a
+disabled broker is reported as `connected: false` and nothing more. No password
+material is emitted: ids and topic strings are the only server-side values in the
+result (`../06-security.md` §11, S11).
 
 **Arguments**
 
@@ -64,9 +65,11 @@ errors here (`../02-firmware.md` §2, `mqtt`). Refusals arrive in `agent.tool_re
 with `ok: false` and never abort the run (`../04-protocol.md` §3.13).
 
 `payload` is sent as the message body exactly as given; it is not encoded, escaped
-or wrapped. The docs state no size bound for it `[ASSUMPTION]`. `qos` omitted means
-the server's `mqtt.servers[].qos` default. `0` and `1` are the only accepted
-values; QoS 2 is permanently unsupported (`../03-config.md` §mqtt).
+or wrapped. It is bounded at 2048 bytes (`MQTT_PUBLISH_MAX`), and a longer one is
+refused rather than truncated: a broker that received half a message would act on
+a sentence nobody wrote. `qos` omitted means the server's `mqtt.servers[].qos`
+default. `0` and `1` are the only accepted values; QoS 2 is permanently unsupported
+(`../03-config.md` §mqtt).
 
 The host-side command of the same name additionally carries `retain?`
 (`../04-protocol.md` §4.14); the model-facing tool does not expose it.
@@ -77,7 +80,7 @@ The host-side command of the same name additionally carries `retain?`
 |---|---|---|---|
 | `server_id` | string | yes | must equal an `mqtt.servers[].id` |
 | `topic` | string | yes | must be covered by that server's `topics[]`; see below |
-| `payload` | string | yes | sent verbatim; no size bound stated `[ASSUMPTION]` |
+| `payload` | string | yes | sent verbatim, at most 2048 bytes (`MQTT_PUBLISH_MAX`) |
 | `qos` | integer | no | `0` or `1`; defaults to `mqtt.servers[].qos` |
 
 **Result**
