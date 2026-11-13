@@ -212,3 +212,146 @@ TEST_CASE("the hook's frame shape survives the round trip", "[log]")
     TEST_ASSERT_EQUAL_INT64(4242, t_ms);
     json_free(doc);
 }
+
+/* --- the vprintf hook `link.c` installs ----------------------------------- */
+
+/* The hook is only reachable through `esp_log_set_vprintf`, so this drives it the
+ * way the logging task does: install it, log, and assert on the bytes that reach
+ * the writer. `esp_log_set_vprintf` both installs `log_hook` and hands back the
+ * previous handler, so the hook itself can be called with any format — which is
+ * how the pass-through paths are reached without a fake log call. */
+#include <stdarg.h>
+
+#include "esp_log.h"
+
+static vprintf_like_t hook_of(void)
+{
+    /* Install, then take `log_hook` straight back out: the return value is the
+     * handler that was in place, which is the hook once `link_log_install` ran. */
+    link_log_install("info");
+    vprintf_like_t old = esp_log_set_vprintf(NULL);
+    esp_log_set_vprintf(old);
+    return old;
+}
+
+static int call_hook(vprintf_like_t fn, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    int n = fn(fmt, args);
+    va_end(args);
+    return n;
+}
+
+/* Frames the hook emits, counted rather than parsed, so a pass-through is proven
+ * by the absence of a frame. */
+static char s_hook_sent[LINK_TX_MAX + 8];
+static size_t s_hook_len;
+static int s_hook_calls;
+
+static esp_err_t hook_writer(const char *buf, size_t len)
+{
+    if (len > sizeof s_hook_sent) return ESP_ERR_INVALID_SIZE;
+    memcpy(s_hook_sent, buf, len);
+    s_hook_len = len;
+    s_hook_calls++;
+    return ESP_OK;
+}
+
+/* `04-protocol.md` §3.10: an ESP_LOGx line becomes a `log` frame carrying the
+ * level name, the tag, the message and `t_ms` from the line's timestamp. `ts` is 0
+ * because wall time belongs to `sys` and is unset before SNTP. */
+TEST_CASE("an ESP_LOGx line becomes a log frame on the writer", "[log]")
+{
+    vprintf_like_t old = hook_of();
+    TEST_ASSERT_NOT_NULL(old);
+
+    link_set_writer(hook_writer);
+    s_hook_len = 0;
+    s_hook_calls = 0;
+
+    ESP_LOGI("boot", "starting");
+    TEST_ASSERT_EQUAL_INT(1, s_hook_calls);
+    TEST_ASSERT_TRUE(s_hook_len > 2);
+    TEST_ASSERT_EQUAL_CHAR('\r', s_hook_sent[s_hook_len - 2]);
+    TEST_ASSERT_EQUAL_CHAR('\n', s_hook_sent[s_hook_len - 1]);
+
+    json_doc_t *doc = NULL;
+    const char *bad = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      link_frame_parse(s_hook_sent, s_hook_len - 2, &doc, &bad));
+    json_node_t *root = json_root(doc);
+    TEST_ASSERT_EQUAL_STRING("log", json_string(json_get(root, "type")));
+    TEST_ASSERT_EQUAL_STRING("info", json_string(json_get(root, "level")));
+    TEST_ASSERT_EQUAL_STRING("boot", json_string(json_get(root, "tag")));
+    TEST_ASSERT_EQUAL_STRING("starting", json_string(json_get(root, "msg")));
+    int64_t ts = -1, t_ms = -1;
+    TEST_ASSERT_TRUE(json_int(json_get(root, "ts"), &ts));
+    TEST_ASSERT_EQUAL_INT(0, ts);
+    TEST_ASSERT_TRUE(json_int(json_get(root, "t_ms"), &t_ms));
+    TEST_ASSERT_TRUE(t_ms >= 0);
+    json_free(doc);
+
+    esp_log_set_vprintf(old);
+}
+
+/* The hook must not turn arbitrary `printf` output into frames, and a line the
+ * configured level hides is dropped rather than framed: both return the rendered
+ * length so the caller sees success, and neither writes. */
+TEST_CASE("the hook passes through what is not a frame or is filtered out", "[log]")
+{
+    vprintf_like_t old = hook_of();
+    TEST_ASSERT_NOT_NULL(old);
+
+    link_set_writer(hook_writer);
+    s_hook_calls = 0;
+
+    TEST_ASSERT_EQUAL_INT(12, call_hook(old, "hello %s\n", "there"));
+    TEST_ASSERT_EQUAL_INT(0, s_hook_calls);
+
+    /* `configured` is read on every call, so `error` hides an info line. */
+    link_log_install("error");
+    int n = call_hook(old, "I (5) boot: hidden\n");
+    TEST_ASSERT_EQUAL_INT(19, n);
+    TEST_ASSERT_EQUAL_INT(0, s_hook_calls);
+
+    /* A format the C library refuses is not a frame either. */
+    TEST_ASSERT_EQUAL_INT(0, call_hook(old, "%"));
+    TEST_ASSERT_EQUAL_INT(0, s_hook_calls);
+
+    link_log_install("info");
+    esp_log_set_vprintf(old);
+}
+
+/* Re-entrancy guard: a log call made while the hook is formatting — here from the
+ * writer it calls — must go to the previous handler instead of recursing into
+ * another frame. */
+static esp_err_t logging_writer(const char *buf, size_t len)
+{
+    s_hook_calls++;
+    ESP_LOGI("recursive", "inside the writer");
+    return len <= sizeof s_hook_sent ? ESP_OK : ESP_ERR_INVALID_SIZE;
+}
+
+TEST_CASE("a log from inside the hook does not recurse into a frame", "[log]")
+{
+    vprintf_like_t old = hook_of();
+    TEST_ASSERT_NOT_NULL(old);
+    link_set_writer(logging_writer);
+    s_hook_calls = 0;
+
+    ESP_LOGI("outer", "one frame");
+    TEST_ASSERT_EQUAL_INT(1, s_hook_calls);
+
+    esp_log_set_vprintf(old);
+}
+
+/* Installing twice keeps the first saved handler: replacing it with the hook again
+ * would make the hook its own pass-through and lose the real output. */
+TEST_CASE("installing the hook twice keeps the first previous handler", "[log]")
+{
+    void *first = link_log_install("info");
+    void *second = link_log_install("debug");
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_EQUAL_PTR(first, second);
+}

@@ -95,6 +95,187 @@ TEST_CASE("an input budget above the RX line is refused", "[cfg]")
     TEST_ASSERT_NOT_NULL(strstr(why, "max_input_bytes"));
 }
 
+/* The minimal document plus top-level members, so a mutation test still carries the
+ * required keys and pins only the rule it names. */
+/* The schema tests name root members (`"device":{...}`); the `extra_body` tests
+ * name extra_body members (`{"reasoning_effort":"high"}`). Two helpers because the
+ * two jobs splice at different depths, and a single one that guessed from the
+ * argument's first byte would be a rule the tests are not asserting. 768, not 512,
+ * so a member list plus the surrounding document cannot truncate. */
+static esp_err_t validate_root(const char *members, char *why, size_t cap)
+{
+    char src[768];
+    int n = snprintf(src, sizeof src,
+                     "{\"version\":1,"
+                     "\"wifi\":{\"networks\":[{\"ssid\":\"home\","
+                     "\"password_ref\":\"nvs:wifi_psk\"}]},"
+                     "\"llm\":{\"providers\":[{\"id\":\"openai\","
+                     "\"base_url\":\"https://api.example/v1\",\"model\":\"m\","
+                     "\"api_key_ref\":\"nvs:llm_key\"}]},%s}",
+                     members);
+    TEST_ASSERT_LESS_THAN((int)sizeof src, n);
+    return validate(src, why, cap);
+}
+
+static esp_err_t validate_refusal(const char *members, char *why, size_t cap)
+{
+    char src[768];
+    int n = snprintf(src, sizeof src,
+                     "{\"version\":1,"
+                     "\"wifi\":{\"networks\":[{\"ssid\":\"home\","
+                     "\"password_ref\":\"nvs:wifi_psk\"}]},"
+                     "\"llm\":{\"providers\":[{\"id\":\"openai\","
+                     "\"base_url\":\"https://api.example/v1\",\"model\":\"m\","
+                     "\"api_key_ref\":\"nvs:llm_key\","
+                     "\"extra_body\":%s}]}}",
+                     members);
+    TEST_ASSERT_LESS_THAN((int)sizeof src, n);
+    return validate(src, why, cap);
+}
+
+TEST_CASE("a boolean key takes only true or false", "[cfg]")
+{
+    /* `03-config.md` §Full schema: `tools.allow_dangerous` is a bool, and a string
+     * `"true"` would be read as false by a caller that trusts the type. */
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"tools\":{\"allow_dangerous\":true}", why,
+                                     sizeof why));
+    TEST_ASSERT_EQUAL_STRING("", why);
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"tools\":{\"allow_dangerous\":\"true\"}", why,
+                                     sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "allow_dangerous"));
+}
+
+TEST_CASE("a string key's length bound is enforced", "[cfg]")
+{
+    /* `device.name` is 1..32 characters, so neither end is free. */
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"device\":{\"name\":\"\"}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "device.name"));
+
+    const char *long_name =
+        "\"device\":{\"name\":\"0123456789012345678901234567890123\"}"; /* 34 */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root(long_name, why, sizeof why));
+
+    /* The bound is inclusive: 32 is the longest accepted name. */
+    const char *edge =
+        "\"device\":{\"name\":\"01234567890123456789012345678901\"}"; /* 32 */
+    TEST_ASSERT_EQUAL(ESP_OK, validate_root(edge, why, sizeof why));
+}
+
+TEST_CASE("an enum key takes a listed member only", "[cfg]")
+{
+    /* Step 7: membership is matched whole, so a prefix of a member is not a member. */
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"device\":{\"log_level\":\"info\"}", why,
+                                     sizeof why));
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"device\":{\"log_level\":\"none\"}", why,
+                                     sizeof why));
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"device\":{\"log_level\":\"inf\"}", why,
+                                     sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "log_level"));
+
+    /* A number is not a member, and must not be read as a string. */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"device\":{\"log_level\":5}", why, sizeof why));
+}
+
+TEST_CASE("an array element's type and range are enforced", "[cfg]")
+{
+    /* A table row can say "array of 0..8" but not "array of strings". */
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"ntp\":{\"servers\":[\"pool.ntp.org\"]}", why,
+                                     sizeof why));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"ntp\":{\"servers\":[1]}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "ntp.servers"));
+
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"tools\":{\"http_allow_hosts\":[\"a.example\"]}",
+                                     why, sizeof why));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"tools\":{\"http_allow_hosts\":[true]}", why,
+                                     sizeof why));
+
+    /* `wifi.retry_backoff_ms` is an array of 100..60000 ms integers. The whole
+     * document is written out, not spliced: the member lives inside `wifi`, and a
+     * second `wifi` key would be the duplicate cJSON resolves to the first one, so
+     * the test would pass without ever reaching the row it names. */
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate("{\"version\":1,"
+                              "\"wifi\":{\"networks\":[{\"ssid\":\"h\","
+                              "\"password_ref\":\"nvs:k\"}],"
+                              "\"retry_backoff_ms\":[100,60000]},"
+                              "\"llm\":{\"providers\":[{\"id\":\"p\","
+                              "\"base_url\":\"http://h\",\"model\":\"m\","
+                              "\"api_key_ref\":\"nvs:k\"}]}}",
+                              why, sizeof why));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate("{\"version\":1,"
+                              "\"wifi\":{\"networks\":[{\"ssid\":\"h\","
+                              "\"password_ref\":\"nvs:k\"}],"
+                              "\"retry_backoff_ms\":[99]},"
+                              "\"llm\":{\"providers\":[{\"id\":\"p\","
+                              "\"base_url\":\"http://h\",\"model\":\"m\","
+                              "\"api_key_ref\":\"nvs:k\"}]}}",
+                              why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "retry_backoff_ms"));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate("{\"version\":1,"
+                              "\"wifi\":{\"networks\":[{\"ssid\":\"h\","
+                              "\"password_ref\":\"nvs:k\"}],"
+                              "\"retry_backoff_ms\":[1000,\"fast\"]},"
+                              "\"llm\":{\"providers\":[{\"id\":\"p\","
+                              "\"base_url\":\"http://h\",\"model\":\"m\","
+                              "\"api_key_ref\":\"nvs:k\"}]}}",
+                              why, sizeof why));
+}
+
+TEST_CASE("a required key is refused when the whole group is absent", "[cfg]")
+{
+    /* Step 6 runs over the table, not over what the document happens to contain, so
+     * a config with no `wifi` block is refused by name rather than passing as empty. */
+    char why[96] = "";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate("{\"version\":1}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "wifi.networks"));
+}
+
+TEST_CASE("an id is unique and dot-free because it becomes a namespace", "[cfg]")
+{
+    /* `03` §Full schema note 4: `llm.providers[].id` is a wire namespace, so a dot
+     * would make `tool.0.5` ambiguous. */
+    char why[96] = "";
+    const char *dotted =
+        "{\"version\":1,"
+        "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+        "\"llm\":{\"providers\":[{\"id\":\"open.ai\",\"base_url\":\"http://h\","
+        "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]}}";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(dotted, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "llm.providers"));
+
+    const char *twice =
+        "{\"version\":1,"
+        "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+        "\"llm\":{\"providers\":["
+        "{\"id\":\"p\",\"base_url\":\"http://h\",\"model\":\"m\","
+        "\"api_key_ref\":\"nvs:k\"},"
+        "{\"id\":\"p\",\"base_url\":\"http://h\",\"model\":\"m\","
+        "\"api_key_ref\":\"nvs:k\"}]}}";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(twice, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "duplicate"));
+}
+
 TEST_CASE("a bare secret in config.json is refused", "[cfg]")
 {
     /* `03` §config.json rule 3: a credential in the file is a ref or nothing. */
@@ -176,30 +357,20 @@ TEST_CASE("an empty network list is refused", "[cfg]")
  * that the value is an object, so before this the rules were decorative: the device
  * accepted a fifth member, a nested object and a `stream` override, and the provider
  * answered 400 on the next prompt instead of the write naming what was wrong. */
-static esp_err_t validate_extra(const char *extra, char *why, size_t cap)
-{
-    char src[512];
-    snprintf(src, sizeof src,
-             "{\"version\":1,\"wifi\":{\"networks\":[{\"ssid\":\"a\","
-             "\"password_ref\":\"nvs:k\"}]},\"llm\":{\"providers\":[{\"id\":\"p\","
-             "\"base_url\":\"http://h\",\"model\":\"m\",\"api_key_ref\":\"nvs:k\","
-             "\"extra_body\":%s}]}}", extra);
-    return validate(src, why, cap);
-}
 
 TEST_CASE("extra_body accepts one flat member", "[cfg]")
 {
     char why[96] = "";
     TEST_ASSERT_EQUAL(ESP_OK,
-                      validate_extra("{\"reasoning_effort\":\"high\"}", why, sizeof why));
-    TEST_ASSERT_EQUAL(ESP_OK, validate_extra("{\"temperature\":0.2}", why, sizeof why));
+                      validate_refusal("{\"reasoning_effort\":\"high\"}", why, sizeof why));
+    TEST_ASSERT_EQUAL(ESP_OK, validate_refusal("{\"temperature\":0.2}", why, sizeof why));
 }
 
 TEST_CASE("a fifth extra_body member is refused", "[cfg]")
 {
     char why[96] = "";
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      validate_extra("{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5}",
+                      validate_refusal("{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5}",
                                      why, sizeof why));
     TEST_ASSERT_NOT_NULL(strstr(why, "4"));
 }
@@ -213,7 +384,7 @@ TEST_CASE("extra_body refuses the four reserved keys", "[cfg]")
     for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
         char extra[64];
         snprintf(extra, sizeof extra, "{\"%s\":\"x\"}", reserved[i]);
-        TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate_extra(extra, why, sizeof why));
+        TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate_refusal(extra, why, sizeof why));
         TEST_ASSERT_NOT_NULL(strstr(why, reserved[i]));
     }
 }
@@ -225,10 +396,10 @@ TEST_CASE("extra_body refuses a nested member", "[cfg]")
      * `03-config.md` says this field cannot express. */
     char why[96] = "";
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      validate_extra("{\"thinking\":{\"type\":\"enabled\"}}",
+                      validate_refusal("{\"thinking\":{\"type\":\"enabled\"}}",
                                      why, sizeof why));
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      validate_extra("{\"stop\":[\"a\"]}", why, sizeof why));
+                      validate_refusal("{\"stop\":[\"a\"]}", why, sizeof why));
 }
 
 TEST_CASE("redaction replaces every occurrence and never grows the line", "[cfg]")
@@ -294,7 +465,36 @@ TEST_CASE("a set creates a missing object parent", "[cfg]")
 /* The other half of §4.9, and the reason the rule is "object parent" and not
  * "create anything": an array index implies an array whose other elements are not
  * known, and `03-config.md` requires each `wifi.networks[]` entry complete. */
-TEST_CASE("a set never creates an array or an array index", "[cfg]")
+/* `04` §4.9: a set may create a missing object parent, but a numeric segment with
+ * no array behind it creates nothing — the whole write is refused, not partially
+ * applied. Dotted syntax is the only path form the parser accepts. */
+TEST_CASE("a set under an absent array creates nothing at all", "[cfg]")
+{
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse("{\"version\":1}", 13, &doc));
+    json_doc_t *val_doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse("{\"a\":1}", 7, &val_doc));
+
+    TEST_ASSERT_FALSE(cfg_set(doc, "wifi.networks.0.ssid", json_root(val_doc)));
+    /* The refusal is total: `wifi` was not invented as a side effect. */
+    TEST_ASSERT_NULL(json_path_get(doc, "wifi"));
+
+    json_free(val_doc);
+    json_free(doc);
+}
+
+TEST_CASE("an id is unique and dot-free", "[cfg]")
+{
+    char why[96] = "";
+    const char *dotted =
+        "{\"version\":1,"
+        "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+        "\"llm\":{\"providers\":[{\"id\":\"open.ai\",\"base_url\":\"http://h\","
+        "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]}}";
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(dotted, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "llm.providers"));
+}
+TEST_CASE("a set never extends an existing array beyond its last index", "[cfg]")
 {
     json_doc_t *doc = NULL;
     TEST_ASSERT_EQUAL(ESP_OK, json_parse(k_minimal, strlen(k_minimal), &doc));

@@ -2019,3 +2019,352 @@ TEST_CASE("the body with the real tool array parses as one JSON object", "[m4]")
     TEST_ASSERT_EQUAL_CHAR('}', body2[n - 1]);
     json_free(check);
 }
+
+/* --- todo: the refusal paths and the insert order -------------------------- */
+
+/* Tasks are grouped by phase, so a task appended to an earlier phase is inserted in
+ * front of the later phase's tasks rather than at the end (§Result order). */
+TEST_CASE("todo keeps tasks grouped by phase after an append", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"A\",\"items\":[]},"
+        "{\"phase\":\"B\",\"items\":[\"b1\"]}]}"));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"append\",\"phase\":\"A\",\"items\":[\"a1\"]}"));
+
+    TEST_ASSERT_EQUAL_size_t(2, todo_task_total(list));
+    TEST_ASSERT_EQUAL_STRING("a1", list->tasks[0].content);
+    TEST_ASSERT_EQUAL_STRING("b1", list->tasks[1].content);
+    TEST_ASSERT_EQUAL_INT(0, (int)list->tasks[0].phase_index);
+    TEST_ASSERT_EQUAL_INT(1, (int)list->tasks[1].phase_index);
+}
+
+/* §Targeting: no `task` and no `phase` means every task, which is the one op form
+ * that legitimately touches the whole list. */
+TEST_CASE("todo without a target applies to every task", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\",\"b\"]}"));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, "{\"op\":\"done\"}"));
+    TEST_ASSERT_EQUAL_INT(TODO_COMPLETED, status_of(list, "a"));
+    TEST_ASSERT_EQUAL_INT(TODO_COMPLETED, status_of(list, "b"));
+}
+
+/* §Normalization: a rewrite that carries two `in_progress` items leaves exactly one,
+ * so the model cannot end up with two tasks it believes are running. */
+TEST_CASE("todo normalization demotes the second active task", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"P\",\"items\":["
+        "{\"content\":\"first\",\"status\":\"in_progress\"},"
+        "{\"content\":\"second\",\"status\":\"in_progress\"}]}]}"));
+    TEST_ASSERT_EQUAL_size_t(1, active_count(list));
+    TEST_ASSERT_EQUAL_INT(TODO_IN_PROGRESS, status_of(list, "first"));
+    TEST_ASSERT_EQUAL_INT(TODO_PENDING, status_of(list, "second"));
+}
+
+/* Every bound the doc states is refused before the list is touched, in each of the
+ * three op forms that can breach it. The message name the bound, per §Errors. */
+TEST_CASE("todo refuses each bound with its own message", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"keep\"]}"));
+    todo_list_t before = *list;
+    char why[TOOLS_ERR_MAX];
+    char call[4096];
+
+    char long_phase[AGENT_TODO_PHASE_MAX + 2];
+    memset(long_phase, 'p', sizeof long_phase - 1);
+    long_phase[sizeof long_phase - 1] = '\0';
+
+    /* A nested `list` phase longer than the field. */
+    why[0] = '\0';
+    snprintf(call, sizeof call,
+             "{\"op\":\"init\",\"list\":[{\"phase\":\"%s\",\"items\":[\"x\"]}]}",
+             long_phase);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "phase is longer than 40 characters"));
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* `append` with a phase longer than the field. */
+    why[0] = '\0';
+    snprintf(call, sizeof call, "{\"op\":\"append\",\"phase\":\"%s\",\"items\":[\"x\"]}",
+             long_phase);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "phase is longer than 40 characters"));
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* A targeted op with an over-long `phase`, and one with an over-long `task`. */
+    why[0] = '\0';
+    snprintf(call, sizeof call, "{\"op\":\"done\",\"phase\":\"%s\"}", long_phase);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "phase is longer than 40 characters"));
+
+    char long_task[AGENT_TODO_CONTENT_MAX + 2];
+    memset(long_task, 't', sizeof long_task - 1);
+    long_task[sizeof long_task - 1] = '\0';
+    why[0] = '\0';
+    snprintf(call, sizeof call, "{\"op\":\"done\",\"task\":\"%s\"}", long_task);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "item is longer than 120 characters"));
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* Nested `init` with 33 items in total across two phases. */
+    size_t used = (size_t)snprintf(call, sizeof call,
+        "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[");
+    for (int i = 0; i < 17; i++) {
+        used += (size_t)snprintf(call + used, sizeof call - used, "%s\"n%d\"",
+                                 i == 0 ? "" : ",", i);
+    }
+    used += (size_t)snprintf(call + used, sizeof call - used, "]},{\"phase\":\"b\",\"items\":[");
+    for (int i = 0; i < 16; i++) {
+        used += (size_t)snprintf(call + used, sizeof call - used, "%s\"m%d\"",
+                                 i == 0 ? "" : ",", i);
+    }
+    snprintf(call + used, sizeof call - used, "]}]}");
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "at most 32 tasks"));
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* Flat `init` with 33 items, and one with an over-long item. */
+    used = (size_t)snprintf(call, sizeof call, "{\"op\":\"init\",\"phase\":\"a\",\"items\":[");
+    for (int i = 0; i < 33; i++) {
+        used += (size_t)snprintf(call + used, sizeof call - used, "%s\"n%d\"",
+                                 i == 0 ? "" : ",", i);
+    }
+    snprintf(call + used, sizeof call - used, "]}");
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "at most 32 tasks"));
+
+    why[0] = '\0';
+    snprintf(call, sizeof call, "{\"op\":\"init\",\"phase\":\"a\",\"items\":[\"%s\"]}",
+             long_task);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "item is longer than 120 characters"));
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* An op that takes a task or a phase must name one of them. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"block\"}", why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("block needs a task or a phase", why);
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"unblock\"}", why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("unblock needs a task or a phase", why);
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+}
+
+/* §Errors: a refusal inside a multi-target op leaves every target as it was, so a
+ * later refusal cannot be mistaken for a partial success. */
+TEST_CASE("todo refuses a duplicate item and an over-long reason atomically", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"one\"]}"));
+    todo_list_t before = *list;
+    char why[TOOLS_ERR_MAX];
+
+    /* A duplicate of an existing task is named, not merged. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"append\",\"phase\":\"P\",\"items\":[\"one\"]}", why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("duplicate content", why);
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* A duplicate *inside* the new items, under a phase this op would create: the
+     * phase has to be rolled back, or a retry appends to an empty phase. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"append\",\"phase\":\"Fresh\",\"items\":[\"x\",\"x\"]}",
+        why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("duplicate content", why);
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+    TEST_ASSERT_EQUAL_size_t(1, list->phase_count);
+
+    /* Flat `init` with two identical items: `content` is unique across the list. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"same\",\"same\"]}",
+        why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("duplicate content", why);
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+
+    /* `block` with a reason longer than the blocker field: refused, and the task is
+     * not left blocked with a truncated reason. */
+    char long_reason[AGENT_TODO_BLOCKER_MAX + 2];
+    memset(long_reason, 'r', sizeof long_reason - 1);
+    long_reason[sizeof long_reason - 1] = '\0';
+    char call[512];
+    snprintf(call, sizeof call, "{\"op\":\"block\",\"task\":\"one\",\"reason\":\"%s\"}",
+             long_reason);
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call, why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("reason is over 120 characters", why);
+    TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
+    TEST_ASSERT_EQUAL_INT(TODO_IN_PROGRESS, status_of(list, "one"));
+}
+
+/* §Operations: `init` with neither `list` nor `items` is the documented clear, not a
+ * refusal, and `agent_todo_reset` is the same clear on the live tree. */
+TEST_CASE("todo init with no arguments clears the list", "[m4]")
+{
+    todo_list_t *list = agent_todo_phases();
+    todo_list_clear(list);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\"]}"));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, "{\"op\":\"init\"}"));
+    TEST_ASSERT_EQUAL_size_t(0, todo_task_total(list));
+    TEST_ASSERT_EQUAL_size_t(0, list->phase_count);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\"]}"));
+    agent_todo_reset();
+    TEST_ASSERT_EQUAL_size_t(0, todo_task_total(agent_todo_phases()));
+    TEST_ASSERT_EQUAL_size_t(0, agent_todo_phases()->phase_count);
+}
+
+/* --- provider reply: the truncation branches ------------------------------ */
+
+/* `04` §3.14: content longer than the field is copied truncated and the length is
+ * recorded, so the one code path decides what to do with the cut — a silent
+ * truncation would make the loop believe it read the whole answer. */
+TEST_CASE("agent_parse_reply records a truncated content length", "[m4]")
+{
+    static char body[AGENT_TEXT_MAX + 256];
+    size_t n = (size_t)snprintf(body, sizeof body,
+        "{\"choices\":[{\"message\":{\"content\":\"");
+    memset(body + n, 'a', AGENT_TEXT_MAX + 9);
+    n += AGENT_TEXT_MAX + 9;
+    /* `"` closes the string, `}` the message, `}` the choice, `]` the array, `}` the
+     * root. Four of the five closes nothing and the body stops parsing. */
+    snprintf(body + n, sizeof body - n, "\"}}]}");
+
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(AGENT_TEXT_MAX - 1, reply->content_len);
+    TEST_ASSERT_EQUAL_size_t(AGENT_TEXT_MAX - 1, strlen(reply->content));
+    free(reply);
+}
+
+/* §Provider compatibility: an `id` or a call name longer than its field is refused,
+ * because a clamped id no longer matches the `tool_call_id` the result must carry. */
+TEST_CASE("agent_parse_reply refuses an over-long call id or name", "[m4]")
+{
+    static char body[512];
+    static char long_id[80];
+    memset(long_id, 'i', sizeof long_id - 1);
+    long_id[sizeof long_id - 1] = '\0';
+    snprintf(body, sizeof body,
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"%s\",\"function\":{\"name\":\"time.now\",\"arguments\":\"{}\"}}]}}]}",
+        long_id);
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_parse_reply(body, strlen(body), reply));
+
+    static char long_name[80];
+    memset(long_name, 'n', sizeof long_name - 1);
+    long_name[sizeof long_name - 1] = '\0';
+    snprintf(body, sizeof body,
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"%s\",\"arguments\":\"{}\"}}]}}]}",
+        long_name);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(0, reply->call_count);
+    free(reply);
+}
+
+/* A cut arguments string is the output cap, not a provider fault: the call is kept
+ * with empty args and `args_truncated`, so the loop can answer its id with a named
+ * error instead of leaving the assistant turn dangling (§4.1). With any other
+ * finish reason the same body is refused. */
+TEST_CASE("agent_parse_reply keeps a length-cut call and refuses it otherwise", "[m4]")
+{
+    static const char *cut =
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"gpio.write\",\"arguments\":\"{\\\"pin\\\":\"}}]},"
+        "\"finish_reason\":\"length\"}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(cut, strlen(cut), reply));
+    TEST_ASSERT_EQUAL_size_t(1, reply->call_count);
+    TEST_ASSERT_TRUE(reply->calls[0].args_truncated);
+    TEST_ASSERT_EQUAL_STRING("", reply->calls[0].args);
+    TEST_ASSERT_EQUAL_STRING("gpio.write", reply->calls[0].name);
+    TEST_ASSERT_EQUAL_STRING("c1", reply->calls[0].id);
+
+    static const char *stop =
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"gpio.write\",\"arguments\":\"{\\\"pin\\\":\"}}]},"
+        "\"finish_reason\":\"stop\"}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_parse_reply(stop, strlen(stop), reply));
+    free(reply);
+}
+
+/* §Provider compatibility: `arguments` is an object carried as a string. An
+ * already-decoded array or object is refused rather than half-handled, because a
+ * tool that received `[...]` would validate a call the model did not make. */
+TEST_CASE("agent_parse_reply refuses arguments that are not a JSON object", "[m4]")
+{
+    static const char *arr =
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"time.now\",\"arguments\":\"[1,2]\"}}]}}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_parse_reply(arr, strlen(arr), reply));
+
+    /* A decoded object, not a string, is refused too. */
+    static const char *obj =
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"time.now\",\"arguments\":{\"a\":1}}}]}}]}";
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_parse_reply(obj, strlen(obj), reply));
+
+    /* An over-long arguments string is refused, not clamped: a clamped argument is a
+     * different call. */
+    static char body[3200];
+    size_t n = (size_t)snprintf(body, sizeof body,
+        "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":["
+        "{\"id\":\"c1\",\"function\":{\"name\":\"fs.write\",\"arguments\":\"{");
+    for (int i = 0; i < 2048; i++) {
+        body[n++] = (i % 2 == 0) ? 'a' : 'b';
+    }
+    snprintf(body + n, sizeof body - n, "\"}}]}}]}");
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_parse_reply(body, strlen(body), reply));
+    free(reply);
+}
+
+/* §4.2 "Buffer Full" and the zero bound: with `max_history_messages: 0` a run
+ * carries no memory forward, so the first append must still leave a valid array in
+ * a buffer nothing has written yet — and report a buffer too small to hold `[]`. */
+TEST_CASE("history_append with a zero bound writes an empty array once", "[m4]")
+{
+    char history[8];
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, agent_history_append(
+        history, 2, &used, "{\"role\":\"user\"}", 0, false));
+    TEST_ASSERT_EQUAL_size_t(0, used);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(
+        history, sizeof history, &used, "{\"role\":\"user\"}", 0, false));
+    TEST_ASSERT_EQUAL_STRING("[]", history);
+    TEST_ASSERT_EQUAL_size_t(2, used);
+
+    /* A second append is a no-op: the array is already there. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(
+        history, sizeof history, &used, "{\"role\":\"assistant\"}", 0, false));
+    TEST_ASSERT_EQUAL_STRING("[]", history);
+    TEST_ASSERT_EQUAL_size_t(2, used);
+}

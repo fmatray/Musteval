@@ -1,3 +1,4 @@
+#include "skills.h"
 /* Host tests for the pure M3 rules: the clock's sync interval, the network ordering
  * and backoff, the call budget and the request body. Each asserts an observable
  * result of a rule a frozen document states, not that a function was called. */
@@ -165,6 +166,58 @@ TEST_CASE("auth modes map to the wire words", "[m3]")
      * not in the schema. */
     TEST_ASSERT_EQUAL_STRING("unknown", net_auth_name(9));
     TEST_ASSERT_EQUAL_STRING("unknown", net_auth_name(255));
+}
+
+/* `04-protocol.md` §3.9: the four states, and a value the enum does not name cannot
+ * be printed as a word the schema does not have. */
+TEST_CASE("net states map to the wire words", "[m3]")
+{
+    TEST_ASSERT_EQUAL_STRING("off", net_state_name(NET_STATE_OFF));
+    TEST_ASSERT_EQUAL_STRING("connecting", net_state_name(NET_STATE_CONNECTING));
+    TEST_ASSERT_EQUAL_STRING("connected", net_state_name(NET_STATE_CONNECTED));
+    TEST_ASSERT_EQUAL_STRING("failed", net_state_name(NET_STATE_FAILED));
+    /* A value outside the enum falls back to the default. */
+    TEST_ASSERT_EQUAL_STRING("off", net_state_name((net_state_t)99));
+}
+
+/* Rule 3 sorts the survivors, so a list already in reverse signal order has to be
+ * reordered, not just deduplicated. */
+TEST_CASE("a scan in weak-first order is reordered", "[m3]")
+{
+    net_scan_entry_t list[3] = {ap("weak", -90, 3), ap("mid", -60, 3), ap("strong", -30, 3)};
+    size_t count = 3;
+    bool truncated = false;
+    net_scan_condense(list, &count, NET_SCAN_MAX, &truncated);
+    TEST_ASSERT_EQUAL(3, (int)count);
+    TEST_ASSERT_EQUAL_STRING("strong", list[0].ssid);
+    TEST_ASSERT_EQUAL_STRING("mid", list[1].ssid);
+    TEST_ASSERT_EQUAL_STRING("weak", list[2].ssid);
+    TEST_ASSERT_EQUAL_INT32(-30, list[0].rssi);
+    TEST_ASSERT_EQUAL_INT32(-90, list[2].rssi);
+}
+
+/* A quoted frontmatter value loses its quotes, so `version: "1.0"` parses as `1.0`
+ * rather than as a three-character string with quote marks in it. */
+TEST_CASE("a quoted frontmatter value loses its quotes", "[m3]")
+{
+    const char *text = "---\nname: quot\ndescription: \"quoted desc\"\nversion: '1.0'\n---\nbody\n";
+    skill_meta_t meta;
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, skills_parse("quot", text, strlen(text), &meta, &offset));
+    TEST_ASSERT_EQUAL_STRING("quoted desc", meta.description);
+    TEST_ASSERT_EQUAL_STRING("1.0", meta.version);
+    TEST_ASSERT_EQUAL_STRING("body\n", text + offset);
+}
+
+/* `\r`, `\b` and `\f` have JSON short forms and must not be emitted raw: a raw CR in
+ * a JSON string is invalid. */
+TEST_CASE("carriage return, backspace and form feed escape", "[m3]")
+{
+    char out[64];
+    size_t used = 0;
+    TEST_ASSERT_TRUE(llm_escape_json("a\rb\bc\fd", out, sizeof out, &used));
+    TEST_ASSERT_EQUAL_STRING("\"a\\rb\\bc\\fd\"", out);
+    TEST_ASSERT_EQUAL_size_t(strlen(out), used);
 }
 
 /* --- llm budget ----------------------------------------------------------- */

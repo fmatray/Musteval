@@ -516,3 +516,141 @@ TEST_CASE("link_emit_body wraps body in envelope", "[link]")
     json_free(body);
     json_free(doc);
 }
+
+/* --- sink registration and id bounds (`02-firmware.md` §3.3) -------------- */
+
+static int s_sink_calls;
+static void sink_counter(const json_node_t *frame)
+{
+    (void)frame;
+    s_sink_calls++;
+}
+
+TEST_CASE("a registered sink is the one handed back to the reader task", "[link]")
+{
+    /* `link_task` routes through `link_sink_get`, so a registration that did not
+     * take would leave every inbound frame unread and the bridge waiting. */
+    const link_sink_t sink = { .on_frame = sink_counter };
+    TEST_ASSERT_EQUAL(ESP_OK, link_set_sink(&sink));
+    const link_sink_t *got = link_sink_get();
+    TEST_ASSERT_NOT_NULL(got);
+    TEST_ASSERT_EQUAL_PTR(sink_counter, got->on_frame);
+}
+
+TEST_CASE("registering no sink is refused rather than clearing the route", "[link]")
+{
+    /* A NULL sink would silently stop routing; the refusal keeps the previous
+     * registration in place. */
+    const link_sink_t sink = { .on_frame = sink_counter };
+    TEST_ASSERT_EQUAL(ESP_OK, link_set_sink(&sink));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, link_set_sink(NULL));
+    TEST_ASSERT_EQUAL_PTR(sink_counter, link_sink_get()->on_frame);
+}
+
+TEST_CASE("an id buffer below the documented minimum is left alone", "[link]")
+{
+    /* `cap < 8` cannot hold `d-` plus a 32-bit counter and a NUL. Writing anyway
+     * would overflow the caller's buffer. */
+    char buf[4] = { 'x', 'x', 'x', '\0' };
+    link_next_id(buf, sizeof buf);
+    TEST_ASSERT_EQUAL_STRING("xxx", buf);
+}
+
+TEST_CASE("ids advance one per call and never repeat", "[link]")
+{
+    char a[16], b[16], c[16];
+    link_next_id(a, sizeof a);
+    link_next_id(b, sizeof b);
+    link_next_id(c, sizeof c);
+    TEST_ASSERT_EQUAL_STRING_LEN("d-", a, 2);
+    TEST_ASSERT_EQUAL_STRING_LEN("d-", b, 2);
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(a, b));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(b, c));
+}
+
+/* --- status members with nothing to report (`04` §3.9) ------------------- */
+
+TEST_CASE("an idle status reports the honest null for what is absent", "[link]")
+{
+    /* §3.9: `wifi` off, `time` unsynced, `llm` unavailable, `agent` idle. A
+     * fabricated zero would read as a measurement. */
+    link_status_t st = { 0 };
+    json_doc_t *doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_EQUAL(ESP_OK, link_build_status(json_root(doc), &st));
+
+    json_node_t *root = json_root(doc);
+    json_node_t *wifi = json_get(root, "wifi");
+    TEST_ASSERT_NOT_NULL(wifi);
+    TEST_ASSERT_EQUAL_STRING("off", json_string(json_get(wifi, "state")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(wifi, "ssid")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(wifi, "rssi")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(wifi, "ip")));
+
+    json_node_t *llm = json_get(root, "llm");
+    TEST_ASSERT_NOT_NULL(llm);
+    TEST_ASSERT_TRUE(json_is_null(json_get(llm, "provider")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(llm, "model")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(llm, "last_error")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(llm, "limit_hour")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(llm, "limit_day")));
+
+    json_node_t *agent = json_get(root, "agent");
+    TEST_ASSERT_NOT_NULL(agent);
+    TEST_ASSERT_TRUE(json_is_null(json_get(agent, "run_id")));
+
+    json_node_t *time_node = json_get(root, "time");
+    TEST_ASSERT_NOT_NULL(time_node);
+    TEST_ASSERT_EQUAL_STRING("UTC0", json_string(json_get(time_node, "tz")));
+
+    json_free(doc);
+}
+
+TEST_CASE("a connected status reports every member it was given", "[link]")
+{
+    /* The populated arm of every `ADD_NULLABLE` and ternary in §3.9. */
+    link_status_t st = { 0 };
+    st.wifi_state = "connected";
+    st.wifi_ssid = "home";
+    st.wifi_rssi = -55;
+    st.wifi_ip = "10.0.0.9";
+    st.time_synced = true;
+    st.time_unix = 1730563600;
+    st.tz = "UTC";
+    st.llm_provider = "openai";
+    st.llm_model = "gpt";
+    st.llm_available = true;
+    st.llm_limit_hour = 30;
+    st.llm_limit_day = 200;
+    st.agent_run_id = "r-1";
+    st.agent_busy = true;
+
+    json_doc_t *doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_EQUAL(ESP_OK, link_build_status(json_root(doc), &st));
+
+    json_node_t *root = json_root(doc);
+    json_node_t *wifi = json_get(root, "wifi");
+    TEST_ASSERT_EQUAL_STRING("home", json_string(json_get(wifi, "ssid")));
+    TEST_ASSERT_EQUAL_STRING("10.0.0.9", json_string(json_get(wifi, "ip")));
+    int64_t rssi = 0;
+    TEST_ASSERT_TRUE(json_int(json_get(wifi, "rssi"), &rssi));
+    TEST_ASSERT_EQUAL_INT(-55, rssi);
+
+    json_node_t *llm = json_get(root, "llm");
+    TEST_ASSERT_EQUAL_STRING("openai", json_string(json_get(llm, "provider")));
+    TEST_ASSERT_EQUAL_STRING("gpt", json_string(json_get(llm, "model")));
+    int64_t limit = 0;
+    TEST_ASSERT_TRUE(json_int(json_get(llm, "limit_hour"), &limit));
+    TEST_ASSERT_EQUAL_INT(30, limit);
+    TEST_ASSERT_TRUE(json_int(json_get(llm, "limit_day"), &limit));
+    TEST_ASSERT_EQUAL_INT(200, limit);
+
+    json_node_t *agent = json_get(root, "agent");
+    TEST_ASSERT_EQUAL_STRING("r-1", json_string(json_get(agent, "run_id")));
+    bool busy = false;
+    TEST_ASSERT_TRUE(json_bool(json_get(agent, "busy"), &busy));
+    TEST_ASSERT_TRUE(busy);
+
+    json_free(doc);
+}
