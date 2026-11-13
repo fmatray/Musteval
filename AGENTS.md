@@ -82,10 +82,14 @@ Enforcement: `bridge/coverage.sh` for Python and `firmware/test_host/coverage.sh
 | every built-in tool's registry schema equals its `**Schema sent to the model**` fence in `docs/tools/` | docs test |
 | every `config.json` example in `03` satisfies the bounds in its `## config.json` §Full schema table (a test-side schema encodes that table) | docs test |
 | the `05` §6.2 keybinding table equals the `Ctrl` bindings on each screen class | docs test |
-| the `09` grep laws: `textual` only under `bridge/ui/`, `pyserial` only under `bridge/link/` | import-graph test, once `bridge/` exists |
-| the `08` dependency law: no same-layer import except the seven enumerated edges (five at L0, two at L2) | source-scan test, once `firmware/` exists |
+| the `09` grep laws: `textual` only under `bridge/ui/`, `pyserial` only under `bridge/link/` | docs test |
+| the `08` dependency law: no same-layer import except the seven enumerated edges (five at L0, two at L2) | `bridge/tests/test_architecture.py` |
 
-The last two are contracts today and tests the day the directories exist. They are listed so they are not lost at the moment they become checkable.
+The last two were contracts with no enforcement for as long as `bridge/` and
+`firmware/` existed. The bridge pair landed in `test_docs.py` with the docs suite and
+the firmware one now has its own file; the latter was shown to fail on a planted
+`#include "agent.h"` in `link` before it was committed, because a law whose test has
+never failed is a law nobody has checked.
 
 ## Lessons
 

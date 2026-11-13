@@ -380,14 +380,16 @@ records its deleted clock capability: so the next person does not reinvent it.
 The requirement is that the wire half of the bridge works with no TUI present. It
 is met by two grep-checkable laws, not by intent.
 
-1. **`textual` appears only under `bridge/ui/`.** Zero imports elsewhere.
-2. **`pyserial` appears only under `bridge/link/`.** Zero imports elsewhere. (The
-   distribution is `pyserial`; the import name to search for is `serial`).
+1. **`textual` is imported only under `bridge/ui/`.** Zero imports elsewhere. A
+   comment may name it; an `import` may not.
+2. **`pyserial` is imported only under `bridge/link/`.** Zero imports elsewhere. (The
+   distribution is `pyserial`; the import name to search for is `serial`.)
 
 ```sh
-# Both must print nothing.
-grep -rn 'textual' bridge/ --include='*.py' | grep -v '^bridge/ui/'
-grep -rn '^\(import\|from\) serial\b' bridge/ --include='*.py' | grep -v '^bridge/link/'
+# Both must print nothing. Matched on import statements, not on the bare word: a
+# comment that explains the law must not read as breaking it.
+grep -rnE '^(import textual|from textual)' bridge/ --include='*.py' | grep -v '^bridge/ui/'
+grep -rnE '^(import serial|from serial)' bridge/ --include='*.py' | grep -v '^bridge/link/'
 ```
 
 Both laws are enforced by the layering table rather than by discipline: `client`
