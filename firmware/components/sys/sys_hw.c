@@ -106,6 +106,27 @@ esp_err_t sys_gpio_write(int pin, int level)
     return gpio_set_level(pin, level);
 }
 
+esp_err_t sys_gpio_edge_config(int pin, int edge)
+{
+    if (!sys_pin_readable(pin)) return ESP_ERR_INVALID_ARG;
+    /* Only the three documented edges: passing an arbitrary `gpio_int_type_t` would let
+     * a caller request a level-triggered interrupt the scheduler never drains. */
+    if (edge != SYS_EDGE_RISING && edge != SYS_EDGE_FALLING && edge != SYS_EDGE_ANY) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << pin,
+        .mode = GPIO_MODE_INPUT,
+        /* Pull-up: an edge on a floating pin is noise, and every header pin is
+         * open-drain on the sensor boards this targets. */
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = (gpio_int_type_t)edge,
+    };
+    return gpio_config(&cfg);
+}
+
 /* ADC1 only: ADC2 is claimed by the radio while WiFi is up (`tools/adc.md`). */
 esp_err_t sys_adc_read(int pin, int *raw)
 {

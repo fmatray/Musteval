@@ -49,6 +49,17 @@ bool sys_pin_adc(int pin);
 esp_err_t sys_gpio_read(int pin, int *level);
 esp_err_t sys_gpio_write(int pin, int level);
 
+/* Edge names for `sys_gpio_edge_config`. The numbers are `gpio_int_type_t` values, so
+ * the wrapper can pass them straight through. */
+#define SYS_EDGE_RISING  3
+#define SYS_EDGE_FALLING 4
+#define SYS_EDGE_ANY     5
+
+/* Arm a readable pin as an input that reports the given edge. Installs no handler:
+ * `sched` adds its own with `gpio_isr_handler_add()`, which is what keeps `sys` a pin
+ * wrapper with no knowledge of triggers (`02-firmware.md` §sys). */
+esp_err_t sys_gpio_edge_config(int pin, int edge);
+
 /* 12-bit raw sample (`tools/adc.md`). */
 esp_err_t sys_adc_read(int pin, int *raw);
 
