@@ -27,6 +27,11 @@ LAYER = {
     "agent": 3,
 }
 
+# A component directory whose name is not the module's, because ESP-IDF already owns
+# that name: `mqtt` is the `mqtt` module, living in `components/broker/` so its
+# directory does not shadow IDF's own `mqtt` component (`02-firmware.md` §mqtt).
+DIRECTORY_MODULE = {"broker": "mqtt"}
+
 # Named, not inferred: five below L2 and the two L2 edges. A new one is a doc edit.
 PERMITTED_SAME_LAYER = frozenset(
     {
@@ -50,12 +55,15 @@ def _firmware_edges() -> list[tuple[str, str, str]]:
         pytest.skip("firmware/components/ is not present")
     edges: list[tuple[str, str, str]] = []
     for module in sorted(components.iterdir()):
-        if not module.is_dir() or module.name not in LAYER:
+        if not module.is_dir():
+            continue
+        name = DIRECTORY_MODULE.get(module.name, module.name)
+        if name not in LAYER:
             continue
         for path in sorted(list(module.rglob("*.c")) + list(module.rglob("*.h"))):
             for callee in _INCLUDE.findall(path.read_text(encoding="utf-8")):
-                if callee in LAYER and callee != module.name:
-                    edges.append((module.name, callee, str(path.relative_to(REPO))))
+                if callee in LAYER and callee != name:
+                    edges.append((name, callee, str(path.relative_to(REPO))))
     return edges
 
 
