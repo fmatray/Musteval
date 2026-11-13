@@ -611,3 +611,53 @@ async def test_an_enter_in_the_todo_value_field_before_a_verb_does_nothing():
         await pilot.pause(0.05)
         assert editor.phases == before
         assert editor._pending is None
+
+
+async def test_ctrl_n_on_an_empty_tree_adds_the_first_phase():
+    """`05` §7: the editor opens on a device whose list is empty, and the first
+    phase must be addable from there. Refusing every verb with "select a phase or a
+    task first" leaves a tree with nothing to select and no way to seed one."""
+    from bridge.ui.modals import TodoEditor
+
+    async with _host(TodoEditor([])).run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = pilot.app.screen
+        assert editor.query_one("#todo-tree").option_count == 0
+        await pilot.press("ctrl+n")
+        await pilot.pause(0.05)
+        field = editor.query_one("#todo-value")
+        assert field.value == ""
+        field.value = "Build"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert editor.phases == [{"name": "Build", "tasks": []}]
+
+
+async def test_a_find_then_a_second_enter_replaces_every_occurrence():
+    """`05` §5.8.1: the file editor's find bar takes two Enters — the needle, then
+    the replacement. One Enter must not replace with the needle itself, and the
+    second must rewrite every occurrence, not only the one under the cursor."""
+    from bridge.ui.modals import FilePrompt
+
+    async with _host(FilePrompt("/workspace/a.md", "a a a\nb a")).run_test(
+        size=(100, 30)
+    ) as pilot:
+        await pilot.pause(0.1)
+        screen = pilot.app.screen
+        screen.action_find()
+        await pilot.pause(0.05)
+        bar = screen.query_one("#file-find")
+        bar.focus()
+        bar.value = "a"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        # The first Enter armed the replace; nothing is rewritten yet.
+        assert screen.query_one("#file-body").text == "a a a\nb a"
+        bar = screen.query_one("#file-find")
+        bar.value = "z"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert screen.query_one("#file-body").text == "z z z\nb z"
+        # And the bar closed, so the next Enter saves rather than replacing again.
+        assert not bar.has_class("active")
+

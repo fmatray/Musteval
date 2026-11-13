@@ -1154,11 +1154,10 @@ TodoEditor .prompt-box {
     # -- verbs ----------------------------------------------------------
 
     def _begin(self, op: str, where: str, seed: str) -> None:
-        selected = self._selected()
-        if selected is None:
-            self._say("select a phase or a task first")
-            return
-        kind, phase, task = selected
+        # An empty tree has no row to anchor on and the first phase needs none, so
+        # no selection means a blank anchor rather than a refusal: refusing here left
+        # a fresh list with no gesture that could seed it.
+        _, phase, task = self._selected() or ("", "", "")
         field = self.query_one("#todo-value", Input)
         self._armed = None
         self._pending = (op, phase, task, where)
@@ -1182,11 +1181,12 @@ TodoEditor .prompt-box {
         self._begin(self._add_op(), "before", "")
 
     def _add_op(self) -> str:
-        """A phase row adds a phase; a task row adds a task to that task's phase."""
+        """A phase row adds a phase; a task row adds a task to that task's phase.
+
+        `_rebuild` always highlights a row when the tree has one, so no selection
+        means an empty tree — where a phase is the only thing that can be added."""
         selected = self._selected()
-        if selected is None:
-            return "add-phase" if not self.phases else "add-task"
-        return "add-phase" if selected[0] == "phase" else "add-task"
+        return "add-phase" if selected is None or selected[0] == "phase" else "add-task"
 
     def action_drop(self) -> None:
         selected = self._selected()

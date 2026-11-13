@@ -682,7 +682,7 @@ future that is never resolved.
 | Files | `Ctrl+K` | Create a directory at a prompted name, send `sandbox.mkdir` |
 | Todo editor | `Up`/`Down` | Move between phases and tasks; tasks are listed under their phase |
 | Todo editor | `Ctrl+E` | Modify the selected phase's name or the selected task's content, seeded with its current text |
-| Todo editor | `Ctrl+N` / `Ctrl+B` | Add a phase, or a task in the selected task's phase, after / before the selection |
+| Todo editor | `Ctrl+N` / `Ctrl+B` | Add a phase, or a task in the selected task's phase, after / before the selection. On an empty tree both add the first phase, since there is no row to anchor on |
 | Todo editor | `Ctrl+D` | Drop the selection. A phase drop names how many tasks go with it, and needs a second `Ctrl+D`; any other key disarms it |
 | Todo editor | `Ctrl+Up` / `Ctrl+Down` | Move the selection up or down among its siblings; a move past either end is a no-op |
 | Todo editor | `Ctrl+S` | Send the edited tree as one `init`. A tree edited back to what it opened with sends nothing |
