@@ -1226,6 +1226,20 @@ Every screen ends in a **hint line**, and every hint line is built by one functi
 `Enter` and `Esc`, where the screen acts on them, are written into the same line as
 if they were bindings, because from the reader's side they are.
 
+**Sixty columns is the narrowest supported terminal.** Wrapping is what costs rows, so
+the cost has to stop somewhere: at 60×20 the Chat hint takes four of the twenty rows
+and leaves eight for the log, which is still a usable pane, and at 20×8 the same hint
+wants sixteen and the layout has nothing left. Below 60 columns the hint keeps
+wrapping and the content panes shrink past the point of use. That is a stated limit
+rather than a clamp, because clamping is the truncation the third rule forbids.
+
+**A screen whose content fills the pane still ends in one.** Chat, Status, Logs and
+MQTT each end in content — the composer, the grid, the buffer, the traffic log — and
+each bound keys with no row naming them, so the key was discoverable only by reading
+this document. They carry a hint line like Tasks, Settings and Files already did,
+built from their own `BINDINGS`; Chat adds `Enter` as a pair of its own because the
+composer acts on it without declaring it.
+
 **The app's own row is a hint line too.** `Ctrl+Q`, `F1`–`F7` and `Esc` are the
 `BridgeApp` bindings, so the row under the composer is `hint_bar` over those pairs,
 not Textual's `Footer`. The `Footer` clipped mid-word — `Ctrl+R Reconnec` where the

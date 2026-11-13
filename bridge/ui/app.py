@@ -15,9 +15,9 @@ from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from rich.table import Table
 from rich.markdown import Markdown
 from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 
 from textual.widgets import DataTable, Header, Input, RichLog, Static
@@ -153,6 +153,7 @@ class ChatScreen(Vertical):
             suggester=CommandSuggester(),
             highlighter=SlashHighlighter(frozenset(c.name for c in COMMANDS)),
         )
+        yield Static("", id="chat-hint", markup=False)
 
     def on_key(self, event: Any) -> None:
         """Home/End jump to the list's edges, as OMP's picker does.
@@ -228,11 +229,18 @@ class ChatScreen(Vertical):
         # no vertical padding, so one row per candidate keeps `+N more` visible.
         panel.styles.max_height = COMPLETION_ROWS + 1
         panel.display = False
+        self._show_hint()
         self.query_one("#chat-input", Input).focus()
+
+    def _show_hint(self) -> None:
+        self.query_one("#chat-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS, [("Enter", "Send")]))
+        )
 
     def on_show(self) -> None:
         # Coming back to Chat must land in the composer, or a prompt typed after
         # switching screens goes to whichever view held focus.
+        self._show_hint()
         self.query_one("#chat-input", Input).focus()
 
     def write(self, text: str, kind: str = "info") -> None:
@@ -437,9 +445,13 @@ class StatusScreen(VerticalScroll):
         # Focusable so its own bindings fire: the hidden Chat composer would
         # otherwise keep focus and swallow the key.
         self.focus()
+        self.query_one("#status-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS))
+        )
 
     def compose(self) -> ComposeResult:
         yield Static("no status yet: Ctrl+R asks the device", id="status-body")
+        yield Static("", id="status-hint", markup=False)
 
     def action_refetch(self) -> None:
         self.app.run_worker(self.app._request("status"))  # type: ignore[attr-defined]
@@ -556,6 +568,9 @@ class LogsScreen(Vertical):
 
     def on_show(self) -> None:
         self.focus()
+        self.query_one("#log-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS))
+        )
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -565,6 +580,7 @@ class LogsScreen(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("Follow: ON  Filter: -", id="log-header")
         yield RichLog(id="log-body", wrap=True, markup=False, highlight=False, max_lines=2000)
+        yield Static("", id="log-hint", markup=False)
 
     def write(self, line: str) -> None:
         self.buffer.add(line)
@@ -828,13 +844,16 @@ class MqttScreen(Vertical):
         Binding("ctrl+r", "refetch", "Refresh", show=False),
         # Arrows stay: §13.1 bans bare *printable* letters as actions, and an
         # arrow cannot be mistaken for text.
-        Binding("up", "move(-1)", "Up", show=False),
-        Binding("down", "move(1)", "Down", show=False),
+        Binding("up", "move(-1)", "Previous", show=False),
+        Binding("down", "move(1)", "Next", show=False),
     ]
     can_focus = True
 
     def on_show(self) -> None:
         self.focus()
+        self.query_one("#mqtt-hint", Static).update(
+            hint_bar(binding_pairs(self.BINDINGS))
+        )
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -845,6 +864,7 @@ class MqttScreen(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("no brokers reported: Ctrl+R asks the device", id="mqtt-brokers")
         yield RichLog(id="mqtt-traffic", wrap=True, markup=False, highlight=False)
+        yield Static("", id="mqtt-hint", markup=False)
 
     def action_refetch(self) -> None:
         self.app.run_worker(self.app._request("mqtt.status"))  # type: ignore[attr-defined]
@@ -944,8 +964,12 @@ class BridgeApp(App):
        composer off a short terminal. Truncated by `clip` at the call site. */
     #prompt-bar { padding: 0 2; height: 1; color: $text-muted; }
     #mqtt-brokers { padding: 0 2; }
-    #task-hint { padding: 0 2; }
-    #app-hint { padding: 0 2; height: auto; }
+    /* `05` §13.3: the hint wraps rather than clipping, and `height: auto` is what
+       lets it take the second row instead of losing the last key. */
+    #task-hint, #status-hint, #log-hint, #mqtt-hint, #chat-hint,
+    #settings-hint, #files-hint, #app-hint {
+        padding: 0 2; height: auto;
+    }
     """
 
     BINDINGS = [

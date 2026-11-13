@@ -25,6 +25,7 @@ from bridge.client.session import Session
 from bridge.link.fake_transport import FakeTransport
 from bridge.ui.app import BridgeApp, ChatScreen, FilesScreen, MqttScreen
 from bridge.ui.modals import NetworkStep
+from bridge.ui.render import binding_pairs
 
 
 @pytest.fixture(autouse=True)
@@ -510,4 +511,35 @@ async def test_the_global_hint_names_every_key_at_a_narrow_width() -> None:
         # Every label is whole: a truncated line ends mid-word, which is the defect.
         for label in ("Reconnect", "Quit", "Help", "MQTT"):
             assert label in shown, label
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_every_screen_ends_in_a_hint_naming_every_key_it_binds() -> None:
+    """`05` §13.3: every screen ends in a hint line, built from its `BINDINGS`.
+
+    Four screens bound keys and ended in content instead: the composer on Chat, the
+    grid on Status, the buffer on Logs, the traffic log on MQTT. Every key those
+    screens bind was discoverable only by reading the doc.
+    """
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    rows = {
+        "f2": "#chat-hint",
+        "f3": "#status-hint",
+        "f4": "#task-hint",
+        "f5": "#log-hint",
+        "f6": "#mqtt-hint",
+        "f7": "#files-hint",
+    }
+    async with app.run_test(size=(120, 40)) as pilot:
+        for key, selector in rows.items():
+            await pilot.press(key)
+            await pilot.pause()
+            shown = str(app.query_one(selector).content)
+            pairs = binding_pairs(app.query_one(selector).parent.BINDINGS)
+            assert pairs, selector
+            for chord, label in pairs:
+                assert chord in shown, (selector, chord, shown)
+                assert label.split(" ")[0] in shown, (selector, label, shown)
     await session.close()
