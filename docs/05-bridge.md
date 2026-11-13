@@ -1199,6 +1199,16 @@ is the splash gradient, which is the identity mark rather than chrome.
 The chat pane's seven kinds and the colour each one takes are §5.1's table; this
 section owns only the slots those kinds resolve to.
 
+**Device text is escaped before it enters markup, or rendered without markup.** The
+Status grid and the broker list are built as Rich markup because their labels are
+styled, so every value an access point, provider or broker chose is `escape()`d at
+the point it is spliced in. Unescaped, an SSID containing `[/bold]` raised
+`MarkupError` and blanked the screen: the device chose the bytes and the bridge
+crashed on them. A `Static` that shows only device or reader text declares
+`markup=False` instead: the files path, the log filter echo, and every modal title
+that names a path, an id or a question. The chat pane strips control characters from
+every kind it writes, because a raw ESC reaches the terminal as a control sequence.
+
 **A line the device refused is `$error`, and it carries the device's own words.** An
 error line is the only place the reader learns why a run stopped, so it is written
 with `ChatScreen.write(..., error=True)` and it repeats the `code` and `message`

@@ -23,8 +23,21 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
 )
 from bridge.client.session import Session
 from bridge.link.fake_transport import FakeTransport
-from bridge.ui.app import BridgeApp, ChatScreen, FilesScreen, MqttScreen
-from bridge.ui.modals import NetworkStep
+from bridge.ui.app import (
+    BridgeApp,
+    ChatScreen,
+    FilesScreen,
+    LogsScreen,
+    MqttScreen,
+    StatusScreen,
+)
+from bridge.ui.modals import (
+    ConfirmPrompt,
+    FilePrompt,
+    NetworkStep,
+    ValuePrompt,
+    Working,
+)
 from bridge.ui.render import binding_pairs
 
 
@@ -542,4 +555,107 @@ async def test_every_screen_ends_in_a_hint_naming_every_key_it_binds() -> None:
             for chord, label in pairs:
                 assert chord in shown, (selector, chord, shown)
                 assert label.split(" ")[0] in shown, (selector, label, shown)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_a_control_sequence_from_the_device_never_reaches_the_terminal() -> None:
+    """`06` T16: a payload is rendered, never interpreted.
+
+    `agent.error` and `agent.final` carry text the device composed, which can be a
+    provider's error body or an MQTT payload. `sanitize` existed and was applied to
+    MQTT traffic and log lines, but the chat pane wrote the string straight into a
+    rich `Text`, so an ESC went to the terminal as a control sequence.
+    """
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    hostile = "boom\x1b[31mred\x1b[2Jwiped\x07bell"
+    async with app.run_test(size=(120, 40)):
+        app._on_frame(Frame(type="agent.error", id="x", ts=0,
+                            body={"code": "E_LLM", "message": hostile}))
+        # A frame is routed synchronously; the compositor needs one more pass to
+        # lay the line out, which is what makes the escape sequence observable.
+        app.refresh()
+        shown = [s.text for s in app.screen._compositor.render_strips()]
+        assert any("boom" in line for line in shown)
+        for line in shown:
+            assert "\x1b" not in line, repr(line)
+            assert "\x07" not in line, repr(line)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_a_bracket_in_a_device_string_does_not_take_the_screen_down() -> None:
+    """`05` §13.2: the grid is markup, so a value spliced into it must be escaped.
+
+    A `Static` updated with `Text.from_markup` raises `MarkupError` on an unbalanced
+    tag, and every value in the status grid and the broker list comes from the
+    device. An SSID an access point chose was therefore able to blank the Status
+    screen, and a broker id to blank MQTT.
+    """
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("f3")
+        await pilot.pause()
+        app.query_one("#status", StatusScreen).render_status(
+            {
+                "wifi": {"state": "connected", "ssid": "[/bold] x", "rssi": -5, "ip": "i"},
+                "llm": {"provider": "p", "model": "m", "available": True},
+            }
+        )
+        await pilot.pause()
+        assert "[/bold] x" in str(app.query_one("#status-body").content)
+
+        await pilot.press("f6")
+        await pilot.pause()
+        app.query_one("#mqtt", MqttScreen).render_brokers(
+            [{"id": "[bad]", "connected": True, "subscriptions": [1]}]
+        )
+        await pilot.pause()
+        assert "[bad]" in str(app.query_one("#mqtt-brokers").content)
+
+        # A path is device data too: `sandbox.list` names the directories.
+        await pilot.press("f7")
+        await pilot.pause()
+        files = app.query_one("#files", FilesScreen)
+        files.render_entries("/workspace/[/nope]", [{"name": "a", "bytes": 1}])
+        await pilot.pause()
+        assert str(app.query_one("#files-path").content) == "/workspace/[/nope]"
+
+        # The log header echoes the filter the reader typed, which is free text.
+        await pilot.press("f5")
+        await pilot.pause()
+        logs = app.query_one("#logs", LogsScreen)
+        logs.buffer.log_filter.tag = "[/nope]"
+        logs.refresh_view()
+        await pilot.pause()
+        assert "[/nope]" in str(app.query_one("#log-header").content)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_a_bracket_in_a_modal_title_does_not_take_the_screen_down() -> None:
+    """The same rule inside the modals: their titles name device paths and ids.
+
+    `ValuePrompt` shows the path a move or download is about, `FilePrompt` the file
+    it edits, `Working` the action it is waiting on. Each is built from a device
+    reply, and each was a markup `Static`, so a path with a `[` blanked the modal
+    that was asking the reader to confirm the operation.
+    """
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    hostile = "/workspace/[/nope]"
+    async with app.run_test(size=(120, 40)) as pilot:
+        for modal in (
+            ValuePrompt(f"Move {hostile} to", ""),
+            FilePrompt(hostile, "body"),
+            Working(f"moving {hostile}", f"detail {hostile}"),
+            ConfirmPrompt(f"Delete {hostile}?"),
+        ):
+            app.push_screen(modal)
+            await pilot.pause()
+            assert app.screen is modal
+            app.pop_screen()
+            await pilot.pause()
     await session.close()

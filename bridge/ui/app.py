@@ -16,6 +16,7 @@ from textual.css.query import NoMatches
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
@@ -264,6 +265,10 @@ class ChatScreen(Vertical):
             # its own presentation; wrapping it in a `Text` would crash on it.
             log.write(text)
             return
+        # `06` T16 and `05` §13.2: every one of these strings can carry a device or
+        # broker payload, and a raw ESC reaches the terminal as a control sequence.
+        # `sanitize` is the one place that is stripped, before any path renders it.
+        text = sanitize(text)
         if kind in ("user", "assistant"):
             style = theme.accent if kind == "user" else "none"
             rendered = Markdown(text, style=style, code_theme=MARKDOWN_CODE_THEME)
@@ -578,7 +583,8 @@ class LogsScreen(Vertical):
         self.follow = True
 
     def compose(self) -> ComposeResult:
-        yield Static("Follow: ON  Filter: -", id="log-header")
+        # `05` §13.2: the header shows the filter the reader typed, so no markup.
+        yield Static("Follow: ON  Filter: -", id="log-header", markup=False)
         yield RichLog(id="log-body", wrap=True, markup=False, highlight=False, max_lines=2000)
         yield Static("", id="log-hint", markup=False)
 
@@ -709,7 +715,8 @@ class FilesScreen(Vertical):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("/workspace/", id="files-path")
+        # `05` §13.2: a path is device data, so the widget takes no markup at all.
+        yield Static("/workspace/", id="files-path", markup=False)
         yield Static("", id="files-header", markup=False)
         yield DataTable(id="files-table", cursor_type="row", zebra_stripes=True)
         yield Static("", id="files-hint", markup=False)
@@ -892,8 +899,11 @@ class MqttScreen(Vertical):
                 else "[red]disconnected[/red]"
             )
             subs = len(broker.get("subscriptions") or [])
+            # `05` §13.2: the id is a device string spliced into markup, so it is
+            # escaped; unescaped, a `[` in a broker id raised `MarkupError`.
             lines.append(
-                f"[b]{cursor}[/b] {broker.get('id')}  {state}  [dim]{subs} subs[/dim]"
+                f"[b]{cursor}[/b] {escape(str(broker.get('id')))}  {state}  "
+                f"[dim]{subs} subs[/dim]"
             )
         self.query_one("#mqtt-brokers", Static).update(
             Text.from_markup("\n".join(lines))

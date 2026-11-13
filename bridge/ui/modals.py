@@ -109,7 +109,7 @@ class SecretPrompt(PromptBox[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box"):
-            yield Static(f"secret: {self.key}", classes="prompt-title")
+            yield Static(f"secret: {self.key}", classes="prompt-title", markup=False)
             yield Input(password=True, id="secret-input")
             yield Static("Enter: store | Esc: cancel", classes="prompt-hint")
 
@@ -139,7 +139,7 @@ class ConfirmPrompt(PromptBox[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box"):
-            yield Static(self.question, classes="prompt-title")
+            yield Static(self.question, classes="prompt-title", markup=False)
             yield Static("y: confirm | n: cancel", classes="prompt-hint")
 
     def action_confirm(self) -> None:
@@ -179,7 +179,7 @@ class FilterPrompt(PromptBox[str | None]):
             level = getattr(self.current, "min_level", "debug")
             seeded = f"{tag}:{level}" if level != "debug" else tag
         with Vertical(classes="prompt-box"):
-            yield Static(self.title, classes="prompt-title")
+            yield Static(self.title, classes="prompt-title", markup=False)
             yield Input(value=seeded, placeholder=self.placeholder, id="filter-input")
             yield Static("Enter: apply | Esc: cancel", classes="prompt-hint")
 
@@ -205,7 +205,7 @@ class ValuePrompt(PromptBox[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box"):
-            yield Static(self.path, classes="prompt-title")
+            yield Static(self.path, classes="prompt-title", markup=False)
             yield Input(value=self.current, id="value-input")
             yield Static("Enter: apply | Esc: cancel", classes="prompt-hint")
 
@@ -302,13 +302,15 @@ class _StepBox(PromptBox[Any]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box step-box"):
             yield Static(f"First run — {self.TITLE}", classes="step-title")
-            yield Static(self.PATH, classes="step-note")
+            yield Static(self.PATH, classes="step-note", markup=False)
             with VerticalScroll(id="step-body"):
                 for widget in self.fields():
                     yield widget
-            yield Static(self.SUMMARY, classes="step-note")
-            yield Static(self.pass_note(), id="step-pass", classes="step-note")
-            yield Static("", id="step-verdict", classes="step-note")
+            yield Static(self.SUMMARY, classes="step-note", markup=False)
+            yield Static(
+                self.pass_note(), id="step-pass", classes="step-note", markup=False
+            )
+            yield Static("", id="step-verdict", classes="step-note", markup=False)
 
     def on_mount(self) -> None:
         self.query_one("#step-verdict", Static).update(
@@ -630,6 +632,7 @@ class ModelStep(_StepBox):
                 if self.models
                 else "no list; type the model the provider publishes",
                 classes="step-label",
+                markup=False,
             ),
             self._select(
                 self._options(self.models, self.model),
@@ -753,11 +756,12 @@ class ModelPicker(PromptBox[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box"):
-            yield Static(f"model — {self.label}", classes="prompt-title")
+            yield Static(f"model — {self.label}", classes="prompt-title", markup=False)
             if self.models:
                 yield Static(
                     f"{len(self.models)} models from {self.label}",
                     classes="prompt-hint",
+                    markup=False,
                 )
                 yield Select(
                     self._choices(),
@@ -854,7 +858,7 @@ class FilePrompt(PromptBox[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box file-box"):
-            yield Static(self.path, classes="prompt-title")
+            yield Static(self.path, classes="prompt-title", markup=False)
             area = TextArea(self.text, id="file-body")
             area.show_line_numbers = False
             yield area
@@ -986,9 +990,12 @@ class Working(PromptBox[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box working-box"):
-            yield Static(self.action_text, classes="working-action", id="working-action")
+            yield Static(self.action_text, classes="working-action", id="working-action",
+                         markup=False)
             yield LoadingIndicator(id="working-spinner")
-            yield Static(self.detail, classes="prompt-hint", id="working-detail")
+            yield Static(
+                self.detail, classes="prompt-hint", id="working-detail", markup=False
+            )
             yield Static("this cannot be cancelled; the device is answering",
                          classes="prompt-hint")
 

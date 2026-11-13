@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from rich.highlighter import Highlighter
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -157,15 +158,19 @@ def render_status(status: dict[str, Any]) -> list[str]:
     userfs = storage.get("userfs") or {}
     wsfs = storage.get("wsfs") or {}
 
-    brokers = ", ".join(
-        f"{b.get('id')} {'connected' if b.get('connected') else 'down'}" for b in mqtt
+    # `05` §13.2: every value here comes from the device, and the grid is built as
+    # markup, so a provider id or an SSID containing `[`/`]` is escaped before it is
+    # spliced in. Unescaped, `[/bold]` in an SSID raised `MarkupError` and took the
+    # whole screen down.
+    brokers = escape(
+        ", ".join(f"{b.get('id')} {'connected' if b.get('connected') else 'down'}" for b in mqtt)
     ) or "none"
-    geo_line = (
+    geo_line = escape(
         f"{geo.get('lat')}, {geo.get('lon')} (+/-{geo.get('accuracy_m')}m) age {geo.get('age_s')}s"
         if geo
         else "no fix"
     )
-    busy = f"Busy ({agent.get('run_id')})" if agent.get("busy") else "Idle"
+    busy = escape(f"Busy ({agent.get('run_id')})" if agent.get("busy") else "Idle")
 
     def verdict(value: bool | None, good: str = "up", bad: str = "down") -> str:
         """`05` §13.2: a verdict word, coloured where colour is available."""
@@ -174,11 +179,11 @@ def render_status(status: dict[str, Any]) -> list[str]:
         return f"[green]{good}[/green]" if value else f"[red]{bad}[/red]"
 
     return [
-        f"[b]WIFI [/b] {wifi.get('state')} ({wifi.get('ssid')}) "
-        f"| rssi {wifi.get('rssi')}dBm | ip {wifi.get('ip')}",
-        f"[b]TIME [/b] unix {clock.get('unix')} | tz {clock.get('tz')} "
+        f"[b]WIFI [/b] {escape(str(wifi.get('state')))} ({escape(str(wifi.get('ssid')))}) "
+        f"| rssi {wifi.get('rssi')}dBm | ip {escape(str(wifi.get('ip')))}",
+        f"[b]TIME [/b] unix {clock.get('unix')} | tz {escape(str(clock.get('tz')))} "
         f"| synced {verdict(clock.get('synced'), 'yes', 'no')}",
-        f"[b]LLM  [/b] {llm.get('provider')} ({llm.get('model')}) "
+        f"[b]LLM  [/b] {escape(str(llm.get('provider')))} ({escape(str(llm.get('model')))}) "
         f"| available {verdict(llm.get('available'), 'yes', 'no')}",
         f"[b]AGENT[/b] {busy} | queue {agent.get('queue_depth')}/{agent.get('max_queue')}",
         f"[b]MEM  [/b] heap {mem.get('heap_free')} | psram {mem.get('psram_free')}",
@@ -187,7 +192,7 @@ def render_status(status: dict[str, Any]) -> list[str]:
         f"(quota {storage.get('workspace_quota_bytes')})",
         f"[b]MQTT [/b] {brokers}",
         f"[b]GEO  [/b] {geo_line}",
-        f"[b]BOOT [/b] {status.get('boot_id')} | uptime {status.get('uptime_s')}s",
+        f"[b]BOOT [/b] {escape(str(status.get('boot_id')))} | uptime {status.get('uptime_s')}s",
     ]
 
 
