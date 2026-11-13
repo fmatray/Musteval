@@ -183,10 +183,17 @@ esp_err_t tools_declared_compile(const char *stem, const char *body, size_t len,
             if (why) snprintf(why, why_cap, "parameters does not fit");
             goto done;
         }
-        /* Re-slice just the value: `json_emit` wrapped it under "parameters". */
+        /* Re-slice just the value: `json_emit` wrapped it under "parameters", so the
+         * text is `{"parameters":{...}}` and both the wrapper's opening text and its
+         * closing brace have to go. Keeping that brace made every declarative
+         * schema malformed, and `tools_json` answered by emitting the empty fallback
+         * — a tool the model was offered with no parameters at all. */
         const char *colon = strchr(text, ':');
         if (colon != NULL) {
-            snprintf(out->schema, sizeof out->schema, "%s", colon + 1);
+            const char *value = colon + 1;
+            size_t value_len = strlen(value);
+            if (value_len > 0 && value[value_len - 1] == '}') value_len--;
+            snprintf(out->schema, sizeof out->schema, "%.*s", (int)value_len, value);
         } else {
             err = ESP_ERR_INVALID_ARG;
             if (why) snprintf(why, why_cap, "parameters did not emit");
