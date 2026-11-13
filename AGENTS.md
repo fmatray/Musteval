@@ -40,7 +40,7 @@ Five suites, one per kind of thing that can break. Each has an owner, a command,
 | Bridge unit | host | `protocol`, `link`, `client`, `commands`, and the `ui` modules that are pure (`render`, `help`, `files`, `onboard`) | `uv run pytest bridge/tests` |
 | Bridge end to end | host | `link` + `client` + `ui` over a real serial device, no board | `uv run pytest bridge/tests/e2e` (the fixture starts `bridge/tools/test_agent.py`) |
 | Test agent | host | `bridge/tools/test_agent.py`: the `10-test-agent.md` §5 ladder and §6 replies, including every refusal | `uv run pytest bridge/tests/test_test_agent.py` |
-| Firmware host | host, `linux` target | pure logic: NDJSON codec, config schema, tool-argument validation, skill and geo parsing, and the `store` decision helpers (`store_delete_action`, `store_move_verdict`, `store_path_is_under`, `store_is_staging_entry`) | `idf.py --preview set-target linux build`, then run the produced unity binary; coverage via `firmware/test_host/coverage.sh` (gate 80% line) |
+| Firmware host | host, `linux` target | pure logic: NDJSON codec, config schema, tool-argument validation, skill and geo parsing, and the `store` decision helpers (`store_delete_action`, `store_move_verdict`, `store_path_is_under`, `store_is_staging_entry`) | `idf.py --preview set-target linux build`, then run the produced unity binary; coverage via `firmware/test_host/coverage.sh` (gate 97% line) |
 | Firmware on target | XIAO ESP32-S3 | NVS and `secrets`, GPIO and ADC, scheduler timers, WiFi failover, brownout, boot guard | Not built yet: `firmware/test/on_target/` does not exist, so hardware-bound facts are proven today by a scripted board probe over `/dev/ttyACM0` and recorded in the reply. A suite lands with pytest-embedded |
 
 A module that calls ESP-IDF hardware APIs is not forced onto the host: its firmware-side unit test is the on-target suite. Writing a host test for it means testing a stub, which proves nothing about the code that ships.
@@ -49,16 +49,22 @@ A module that calls ESP-IDF hardware APIs is not forced onto the host: its firmw
 
 High coverage is a floor, not a goal. A suite at 95% that has never failed on a real bug is worth less than one at 85% that caught the last regression. Never add a test to move a number.
 
+Every scope is gated at **97% line**. A branch gate applies only where the table says so.
+
 | Scope | Gate | Why this number |
 |---|---|---|
 | `bridge/protocol/` | 100% line and branch | small, pure, and every branch is a protocol rule from `docs/04-protocol.md` |
-| `bridge/link/`, `bridge/client/`, `bridge/commands.py` | 90% line | state machines with named failure paths; the tail is unreachable I/O error branches proven on target |
-| `bridge/ui/` | no line gate | behaviour is asserted through Textual's pilot; line coverage of event handlers is noise |
-| `bridge/tools/test_agent.py` | 90% line | the device double is what e2e trusts; a §5 rung it skips turns a real protocol bug into a mysterious bridge timeout |
-| firmware, host-testable modules | 80% line | C error paths are long; the remaining 20% is usually ESP-IDF glue |
-| hardware-bound modules | no line gate | coverage measured against a stub is a measurement of the stub |
+| `bridge/link/`, `bridge/client/`, `bridge/commands.py` | 97% line and branch | state machines with named failure paths; the remaining 3% is I/O error branches that only a real port can provoke |
+| `bridge/ui/` | 97% line and branch | the pilot drives real event handlers, so an uncovered handler is an untested screen; the tail is Textual dispatch the framework owns |
+| `bridge/tools/` | 97% line | the device double and `build_userfs.py` are what e2e trusts; a skipped rung turns a protocol bug into a mysterious bridge timeout |
+| firmware, host-testable modules | 97% line | C error paths are long, but an untaken branch is still an unread refusal; ESP-IDF glue is the documented exception below |
+| hardware-bound modules | 97% line | measured on the target, not against a stub: the on-target suite is what counts here |
 
-Enforcement: `pytest-cov` for Python, and `firmware/test_host/coverage.sh` for the firmware build, which runs `gcovr --fail-under-line 80` over a build made with `idf.py -DCOVERAGE=ON build`. A gate that is not enforced by a command is a suggestion, so both run in the same step as the suite.
+`bridge/__main__.py` is excluded: it is argument parsing and process setup, and its behaviour is asserted end to end by `bridge/tests/e2e/`.
+
+A scope that cannot reach the gate is not exempted by editing this table. Either the code loses branches that no caller can reach, or the gap is named here with the reason it is unprovable — a silent lower number is how a gate stops meaning anything.
+
+Enforcement: `bridge/coverage.sh` for Python and `firmware/test_host/coverage.sh` for the firmware build, which runs `gcovr --fail-under-line 97` over a build made with `idf.py -DCOVERAGE=ON build`. **Both are commands, not intentions.** A gate that is not enforced by a command is a suggestion, so both run in the same step as the suite, and a change that lowers a scope below its gate fails that step.
 
 ### Non-regression rules
 
@@ -80,6 +86,66 @@ Enforcement: `pytest-cov` for Python, and `firmware/test_host/coverage.sh` for t
 | the `08` dependency law: no same-layer import except the seven enumerated edges (five at L0, two at L2) | source-scan test, once `firmware/` exists |
 
 The last two are contracts today and tests the day the directories exist. They are listed so they are not lost at the moment they become checkable.
+
+## Lessons
+
+Each rule below is a bug this repository has already shipped, caught in review rather
+than by a gate. They are here because the same mistake recurred across separate
+changes; read them as the failure modes this codebase actually has.
+
+- **A report is a hypothesis; the command is the fact.** A delegated slice reported
+  "244 tests pass, coverage 87%". The suite held 238 tests, six of them failing, and
+  coverage was 83%: the slice had edited fixtures it never re-ran. Run the suite
+  yourself before believing any claim about it, including your own from ten minutes
+  ago.
+- **A message string is copied from the source, never from memory.** An acceptance
+  record listed `at most 128 tasks`; the code emits `at most 32 tasks`, and the
+  record also omitted four refusals that existed. `grep` the format string, then
+  transcribe it.
+- **An error path is documented by reading the branch, not by naming the code.**
+  `docs/tools/todo.md` promised `E_TOOL` for an oversize result long after the
+  implementation had changed to a successful result carrying a note — because the
+  documented behaviour was the plausible one, not the coded one.
+- **A documented argument list is derived from what the code reads.** The `04` and
+  `05` catalogue rows for `todo.apply` listed `content`, `from` and `to`, which no
+  firmware function reads, and omitted `list`, which it does. Enumerate the `arg_*`
+  and `json_get` calls, then write the row.
+- **An assertion compares against the real bound, not a literal that fits.** A test
+  declared `char why[96]` for a message the code can make 156 bytes long, so the
+  assertion failed on a correct message. Use the defining constant — `TOOLS_ERR_MAX`
+  — so the test tracks the bound instead of a remembered copy of it.
+- **A comment that explains why an invariant holds goes stale when the invariant
+  moves.** `op_init_nested` carried a comment claiming pre-validation is what makes
+  `init` atomic, while the real mechanism was a scratch commit in `todo_apply`. When
+  atomicity moves, the comment moves in the same change or is deleted.
+- **One owner per file while work is in flight.** Two agents editing
+  `bridge/tools/test_agent.py` at once silently dropped one side's nested-`list`
+  handling, and it had to be found by reading the diff. Claim files explicitly before
+  editing, and review every foreign diff line by line before staging it.
+- **`set-target` belongs to `firmware/test_host/`, not `firmware/`.** Running it under
+  `firmware/` rewrites `sdkconfig` and `dependencies.lock` to the `linux` target and
+  the board build stops matching. The board target is `esp32s3`; only the host suite
+  switches.
+- **An acceptance record is re-run, not preserved.** A recorded `/todo init auth`
+  became a refused command when the verb gained a required phase. When the contract
+  moves, the recorded evidence is re-executed and rewritten, even though the old
+  transcript still looks valid.
+- **A gate with no command is a comment.** `AGENTS.md` specified per-package Python
+  coverage gates that nothing enforced; `pyproject.toml` had no `fail_under` and no
+  script ran `--cov-fail-under`. If a number in this file is not checked by a command
+  you can run, it is not a gate.
+- **A coverage number is measured on the tree that will be committed.** Two runs were
+  read as facts while a file underneath them was being edited: one parsed the new
+  `modals.py` AST against the old bytecode and reported 211 missed lines for a file
+  with 11, and a later `-k`-filtered run measured only what that filter imported. A
+  stale `coverage.json` is discarded, never interpreted — check the file's mtime
+  against the last edit before reading a single number from it.
+- **An unreachable guard costs the gate, and deleting it is the fix.** Four guards in
+  `bridge/ui/modals.py` and one in `client/session.py` could not be entered by any
+  caller: a copy-pasted `_choices`, an attribute written and never read, base-class
+  stubs every subclass overrides, and a `REJECTED` re-check that an earlier `except`
+  already answered. Each was reachable only from a test written to reach it. The gate
+  pays for behaviour, so the branch goes and its reason is named in a comment.
 
 ## Documentation Updates
 
@@ -140,7 +206,10 @@ A step that cannot run yet is named in the commit body, not silently skipped.
    document that exists and a section that answers it.
 4. **Suites.** The affected suites from the Test Strategy table pass, along with the
    coverage gates that apply to the touched packages. A change to a frozen contract
-   runs all four.
+   runs all four. The gates are two commands and both must exit 0: `sh
+   bridge/coverage.sh` from the repo root, and `firmware/test_host/coverage.sh` from
+   `firmware/test_host/` after a `-DCOVERAGE=ON` build. Run them; do not infer a
+   number from a previous run, because the code moved since.
 5. **Fit.** Every change under `firmware/` is followed by `idf.py size`, and the numbers
    go in the reply. The green build already gates fit — `app` depends on
    `app_check_size` (`esptool_py/CMakeLists.txt`, active because
