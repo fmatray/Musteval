@@ -942,6 +942,30 @@ TEST_CASE("i2c tools are offered only when the bus is pinned", "[m4]")
     TEST_ASSERT_TRUE(tools_offered("gpio.read", NULL));
 }
 
+/* A name nothing offers is not offered. Before this arm, `tools_offered` answered
+ * true for every non-`i2c.`/non-`mcp.` name, so a name the model invented passed the
+ * offer gate and was only refused later as "unknown tool" — a gate that gated
+ * nothing. A declarative name is offered exactly when the loaded set carries it. */
+TEST_CASE("a tool nothing defines is not offered", "[m4]")
+{
+    tools_context_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+
+    TEST_ASSERT_FALSE(tools_offered("invented.tool", &ctx));
+    TEST_ASSERT_FALSE(tools_offered("invented.tool", NULL));
+
+    tools_declared_set_t set;
+    memset(&set, 0, sizeof set);
+    snprintf(set.items[0].name, sizeof set.items[0].name, "declared.one");
+    set.count = 1;
+    ctx.declared = &set;
+
+    TEST_ASSERT_TRUE(tools_offered("declared.one", &ctx));
+    TEST_ASSERT_FALSE(tools_offered("declared.two", &ctx));
+}
+
 /* `04-protocol.md` §3.3 allows exactly `E_BUSY`, `E_CONFIG` and `E_PROTOCOL` for a
  * rejected prompt, and §4 makes a missing required argument `E_PROTOCOL`. Before
  * this table existed, `main.c` mapped every unrecognised `esp_err_t` to `E_INTERNAL`
@@ -2011,7 +2035,7 @@ TEST_CASE("the offered tool array is valid JSON", "[m4]")
     TEST_ASSERT_NOT_NULL(doc);
     json_node_t *array = json_new_array(json_root(doc), "tools");
     TEST_ASSERT_NOT_NULL(array);
-    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, NULL, array));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, array));
 
     static char out[TOOLS_MAX_TOTAL * 512];
     size_t written = 0;
@@ -2040,7 +2064,7 @@ TEST_CASE("the body with the real tool array parses as one JSON object", "[m4]")
 
     json_doc_t *doc = json_new_object();
     json_node_t *array = json_new_array(json_root(doc), "tools");
-    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, NULL, array));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, array));
     static char wrapped[TOOLS_MAX_TOTAL * 512];
     size_t written = 0;
     TEST_ASSERT_EQUAL(ESP_OK, json_emit(doc, wrapped, sizeof wrapped, &written));

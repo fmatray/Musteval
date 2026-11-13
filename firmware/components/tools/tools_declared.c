@@ -15,6 +15,39 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cfg.h"
+#include "esp_log.h"
+
+#define TAG "tools"
+
+/* One `http.query` member as `key=value`, appended to a shared template buffer. A
+ * string member is copied verbatim, so a `{{arg}}` placeholder survives to the bind
+ * step; any other scalar is written as its literal text. */
+static bool render_member(char *dst, size_t cap, size_t *used, const char *key,
+                          const json_node_t *value, char *scratch, size_t scratch_cap)
+{
+    const char *text = json_string(value);
+    if (text == NULL) {
+        int64_t integer = 0;
+        double real = 0;
+        if (json_int(value, &integer)) {
+            snprintf(scratch, scratch_cap, "%lld", (long long)integer);
+        } else if (json_double(value, &real)) {
+            snprintf(scratch, scratch_cap, "%.10g", real);
+        } else {
+            bool flag = false;
+            if (!json_bool(value, &flag)) return false;
+            snprintf(scratch, scratch_cap, "%s", flag ? "true" : "false");
+        }
+        text = scratch;
+    }
+    int wrote = snprintf(dst + *used, cap - *used, "%s%s=%s", *used > 0 ? "&" : "",
+                         key != NULL ? key : "", text);
+    if (wrote < 0 || (size_t)wrote >= cap - *used) return false;
+    *used += (size_t)wrote;
+    return true;
+}
+
 static void copy_field(char *dst, size_t cap, const json_node_t *src)
 {
     const char *text = src != NULL ? json_string(src) : NULL;
@@ -154,8 +187,30 @@ esp_err_t tools_declared_compile(const char *stem, const char *body, size_t len,
         }
     }
 
+    /* `http.query` is an object in both shipped files (`weather_now`, `web_search`)
+     * and a string in the schema's own example. An object is flattened here into the
+     * one `k=v&k=v` template the binder expands, because a dropped object meant both
+     * shipped tools sent no query at all. */
     const json_node_t *query = json_get(http, "query");
-    if (json_is_string(query)) copy_field(out->query, sizeof out->query, query);
+    if (json_is_string(query)) {
+        copy_field(out->query, sizeof out->query, query);
+    } else if (json_is_object(query)) {
+        size_t used = 0;
+        out->query[0] = '\0';
+        for (size_t i = 0; i < json_object_len(query) && used < sizeof out->query; i++) {
+            const char *key = json_object_key(query, i);
+            char rendered[128];
+            /* A member that does not fit drops the whole template: a query missing
+             * one parameter reaches the provider as a 400 that names nothing. */
+            if (!render_member(&out->query[0], sizeof out->query, &used, key,
+                               json_object_value(query, i), rendered,
+                               sizeof rendered)) {
+                used = 0;
+                break;
+            }
+        }
+        if (used == 0 && json_object_len(query) > 0) out->query[0] = '\0';
+    }
     const json_node_t *body_tpl = json_get(http, "body");
     if (json_is_string(body_tpl)) copy_field(out->body, sizeof out->body, body_tpl);
 
@@ -214,4 +269,117 @@ esp_err_t tools_declared_compile(const char *stem, const char *body, size_t len,
 done:
     json_free(doc);
     return err;
+}
+
+
+/* --- Binding -------------------------------------------------------------- */
+
+static bool arg_is_declared(const tools_declared_t *tool, const char *key)
+{
+    /* The schema is the authority on what may be bound (`tools/web.md`
+     * §Parameter binding). Walking the emitted text is enough: it is the exact
+     * object the model was shown. */
+    char needle[96];
+    snprintf(needle, sizeof needle, "\"%s\"", key);
+    return strstr(tool->schema, needle) != NULL;
+}
+
+/* Expand `{{name}}` from `args`. A placeholder whose name the schema does not declare
+ * is `E_TOOL`, so a file's typo cannot become an argument injection. */
+esp_err_t tools_bind_text(const tools_declared_t *tool, const char *tpl,
+                          const json_node_t *args, char *out, size_t cap,
+                          char *why, size_t why_cap)
+{
+    size_t used = 0;
+    if (out == NULL || cap == 0) return ESP_ERR_INVALID_ARG;
+    out[0] = '\0';
+    if (tpl == NULL) return ESP_OK;
+
+    for (const char *p = tpl; *p != '\0';) {
+        if (p[0] != '{' || p[1] != '{') {
+            if (used + 1 >= cap) return ESP_ERR_INVALID_SIZE;
+            out[used++] = *p++;
+            out[used] = '\0';
+            continue;
+        }
+        const char *close = strstr(p + 2, "}}");
+        if (close == NULL) return ESP_ERR_INVALID_ARG;
+        char key[48];
+        size_t key_len = (size_t)(close - (p + 2));
+        if (key_len == 0 || key_len >= sizeof key) return ESP_ERR_INVALID_ARG;
+        memcpy(key, p + 2, key_len);
+        key[key_len] = '\0';
+
+        if (!arg_is_declared(tool, key)) {
+            if (why != NULL) snprintf(why, why_cap, "%s: %s is not a declared argument",
+                                      tool->name, key);
+            return ESP_ERR_INVALID_ARG;
+        }
+        /* A placeholder is always a string position in the request, so a numeric
+         * argument is rendered rather than refused: `weather_now` takes
+         * `latitude` and `longitude` as numbers and puts them in the query. */
+        const json_node_t *value = json_get(args, key);
+        const char *text = json_string(value);
+        char rendered[64];
+        if (text == NULL && value != NULL) {
+            int64_t integer = 0;
+            double real = 0;
+            if (json_int(value, &integer)) {
+                snprintf(rendered, sizeof rendered, "%lld", (long long)integer);
+                text = rendered;
+            } else if (json_double(value, &real)) {
+                snprintf(rendered, sizeof rendered, "%.10g", real);
+                text = rendered;
+            }
+        }
+        if (text == NULL) {
+            if (why != NULL) snprintf(why, why_cap, "%s: argument %s is required",
+                                      tool->name, key);
+            return ESP_ERR_INVALID_ARG;
+        }
+        size_t text_len = strlen(text);
+        if (used + text_len >= cap) return ESP_ERR_INVALID_SIZE;
+        memcpy(out + used, text, text_len);
+        used += text_len;
+        out[used] = '\0';
+        p = close + 2;
+    }
+    return ESP_OK;
+}
+
+/* The compiled host, extracted through the same helper the built-in `http.get` gate
+ * uses, so both apply one definition of "host". */
+const char *tools_declared_host(const tools_declared_t *tool, char *buf, size_t cap)
+{
+    if (tool == NULL) return NULL;
+    return tools_url_host(tool->url, buf, cap);
+}
+
+const tools_declared_t *tools_declared_find(const tools_declared_set_t *set,
+                                            const char *name)
+{
+    if (set == NULL || name == NULL) return NULL;
+    for (size_t i = 0; i < set->count; i++) {
+        if (strcmp(set->items[i].name, name) == 0) return &set->items[i];
+    }
+    return NULL;
+}
+
+/* The result's `content`, cut at the model-facing cap. The cap is
+ * `TOOLS_HTTP_BODY_MAX` rather than `TOOLS_RESULT_MAX` because the text is escaped
+ * into a result object that must itself fit `TOOLS_RESULT_MAX` (`02-firmware.md`
+ * §7.1), which is the same reason `http.get` uses it. The cut backs up to a character
+ * boundary so the result is never half a UTF-8 sequence, and reports itself. */
+void tools_result_add_content(json_node_t *root, const char *text)
+{
+    size_t full = strlen(text);
+    size_t kept = full > TOOLS_HTTP_BODY_MAX ? TOOLS_HTTP_BODY_MAX : full;
+    while (kept > 0 && kept < full && (text[kept] & 0xC0) == 0x80) kept--;
+    char *copy = malloc(kept + 1);
+    if (copy == NULL) return;
+    memcpy(copy, text, kept);
+    copy[kept] = '\0';
+    json_add_string(root, "content", copy);
+    free(copy);
+    if (kept < full) json_add_bool(root, "truncated", true);
 }

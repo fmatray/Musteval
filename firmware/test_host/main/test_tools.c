@@ -8,7 +8,14 @@
 
 #include "unity.h"
 
+#include "mcp.h"
 #include "tools.h"
+
+static bool probe_any(const char *key, void *ctx)
+{
+    (void)ctx;
+    return key != NULL && key[0] != '\0';
+}
 
 static bool probe_found(const char *key, void *ctx)
 {
@@ -46,10 +53,11 @@ TEST_CASE("the offered array carries builtins and declarative tools, minus gated
     tools_context_t unset = {0};
     unset.i2c_sda = -1;
     unset.i2c_scl = -1;
+    unset.declared = &declared;
 
     json_doc_t *doc = json_new_object();
     json_node_t *array = json_new_array(json_root(doc), "tools");
-    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&unset, &declared, array));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&unset, array));
 
     size_t count = 0;
     tools_builtins(&count);
@@ -71,10 +79,11 @@ TEST_CASE("the offered array carries builtins and declarative tools, minus gated
     tools_context_t pinned = {0};
     pinned.i2c_sda = 4;
     pinned.i2c_scl = 5;
+    pinned.declared = &declared;
     json_free(doc);
     doc = json_new_object();
     array = json_new_array(json_root(doc), "tools");
-    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&pinned, &declared, array));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&pinned, array));
     TEST_ASSERT_EQUAL_size_t(count + 2, json_array_len(array));
 
     json_free(doc);
@@ -96,10 +105,11 @@ TEST_CASE("a declarative entry embeds its schema and defaults to an empty one", 
     tools_context_t ctx = {0};
     ctx.i2c_sda = -1;
     ctx.i2c_scl = -1;
+    ctx.declared = &declared;
 
     json_doc_t *doc = json_new_object();
     json_node_t *array = json_new_array(json_root(doc), "tools");
-    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, &declared, array));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, array));
 
     size_t n = json_array_len(array);
     json_node_t *with = json_get(json_array_at(array, n - 2), "function");
@@ -131,13 +141,13 @@ TEST_CASE("both builders refuse a node that is not an array", "[tools]")
     tools_context_t ctx = {0};
     json_doc_t *doc = json_new_object();
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      tools_json_build(&ctx, NULL, json_root(doc)));
+                      tools_json_build(&ctx, json_root(doc)));
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      tools_json_build(&ctx, NULL, NULL));
+                      tools_json_build(&ctx, NULL));
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      tools_capability_names(&ctx, NULL, json_root(doc)));
+                      tools_capability_names(&ctx, json_root(doc)));
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
-                      tools_capability_names(&ctx, NULL, NULL));
+                      tools_capability_names(&ctx, NULL));
     json_free(doc);
 }
 
@@ -155,14 +165,15 @@ TEST_CASE("the capability names match the offered set in the same order", "[tool
     tools_context_t ctx = {0};
     ctx.i2c_sda = -1;
     ctx.i2c_scl = -1;
+    ctx.declared = &declared;
 
     json_doc_t *names_doc = json_new_object();
     json_node_t *names = json_new_array(json_root(names_doc), "tools");
-    TEST_ASSERT_EQUAL(ESP_OK, tools_capability_names(&ctx, &declared, names));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_capability_names(&ctx, names));
 
     json_doc_t *full_doc = json_new_object();
     json_node_t *full = json_new_array(json_root(full_doc), "tools");
-    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, &declared, full));
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, full));
 
     TEST_ASSERT_EQUAL_size_t(json_array_len(full), json_array_len(names));
     for (size_t i = 0; i < json_array_len(names); i++) {
@@ -276,4 +287,312 @@ TEST_CASE("a declarative request carries its template, query and default method"
     TEST_ASSERT_EQUAL_CHAR('{', tool.schema[0]);
     TEST_ASSERT_NULL(strstr(tool.schema, "\"parameters\""));
     TEST_ASSERT_NOT_NULL(strstr(tool.schema, "\"q\""));
+}
+
+/* `tools/web.md`: `{{arg}}` in a template is replaced from the call's arguments, and
+ * a placeholder naming an argument the schema does not declare is refused before any
+ * request, so a file's typo cannot become an argument injection. */
+TEST_CASE("a template binds its declared arguments and refuses the rest", "[tools]")
+{
+    tools_declared_t tool;
+    char why[128];
+    const char *body =
+        "{\"description\":\"d\",\"parameters\":{\"type\":\"object\","
+        "\"properties\":{\"q\":{\"type\":\"string\"},\"n\":{\"type\":\"string\"}}},"
+        "\"http\":{\"url\":\"https://api.test/s?q={{q}}&n={{n}}\"}}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, tools_declared_compile(
+        "t", body, strlen(body), NULL, NULL, &tool, why, sizeof why));
+
+    json_doc_t *args = json_new_object();
+    json_add_string(json_root(args), "q", "cats");
+    json_add_string(json_root(args), "n", "5");
+
+    char out[128];
+    TEST_ASSERT_EQUAL(ESP_OK, tools_bind_text(&tool, tool.url, json_root(args), out,
+                                              sizeof out, why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("https://api.test/s?q=cats&n=5", out);
+
+    /* A placeholder the schema does not declare is refused *even when the call
+     * supplies the value*: the file, not the caller, decides what may be
+     * interpolated. Supplying `x` is what makes this test bite — without it the
+     * missing-argument rule would fail the call for the wrong reason. */
+    tools_declared_t narrow;
+    const char *one =
+        "{\"description\":\"d\",\"parameters\":{\"type\":\"object\","
+        "\"properties\":{\"q\":{\"type\":\"string\"}}},"
+        "\"http\":{\"url\":\"https://api.test/s?q={{q}}&x={{x}}\"}}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, tools_declared_compile(
+        "t", one, strlen(one), NULL, NULL, &narrow, why, sizeof why));
+
+    json_doc_t *with_x = json_new_object();
+    json_add_string(json_root(with_x), "q", "cats");
+    json_add_string(json_root(with_x), "x", "5");
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      tools_bind_text(&narrow, narrow.url, json_root(with_x), out,
+                                      sizeof out, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "not a declared argument"));
+    json_free(with_x);
+
+    /* A declared argument the call omitted is refused too, and named. */
+    json_doc_t *partial = json_new_object();
+    json_add_string(json_root(partial), "q", "cats");
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      tools_bind_text(&tool, tool.url, json_root(partial), out,
+                                      sizeof out, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "n"));
+
+    json_free(partial);
+    json_free(args);
+}
+
+/* A tool's host is compiled into its URL, so the allowlist is checked against the
+ * file rather than against anything the model supplies. */
+TEST_CASE("a declarative tool's host comes from its own url", "[tools]")
+{
+    tools_declared_t tool;
+    char why[128];
+    const char *body =
+        "{\"description\":\"d\",\"http\":{\"url\":\"https://api.example.com:8443/s\"}}";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, tools_declared_compile(
+        "t", body, strlen(body), NULL, NULL, &tool, why, sizeof why));
+
+    char host[64];
+    TEST_ASSERT_EQUAL_STRING("api.example.com",
+                             tools_declared_host(&tool, host, sizeof host));
+}
+
+/* Looking a row up by name is what the dispatch arm does; a name the set does not
+ * carry must be NULL rather than the wrong row. */
+TEST_CASE("a compiled set finds a row by name only when it holds one", "[tools]")
+{
+    tools_declared_set_t set = {0};
+    compile_one(&set.items[0], "weather_now",
+                "{\"description\":\"d\",\"http\":{\"url\":\"https://api.test/\"}}");
+    set.count = 1;
+
+    TEST_ASSERT_NOT_NULL(tools_declared_find(&set, "weather_now"));
+    TEST_ASSERT_NULL(tools_declared_find(&set, "weather_later"));
+    TEST_ASSERT_NULL(tools_declared_find(NULL, "weather_now"));
+}
+
+/* The two tools the image ships must compile and must keep their query. Both write
+ * `http.query` as an object, and an object the compiler ignored meant neither tool
+ * sent a single parameter — a call would have reached the provider's base URL with no
+ * `q` and no `latitude`, which the provider answers with a 400. */
+TEST_CASE("a shipped tool keeps the query its file declares", "[tools]")
+{
+    /* `web_search` carries `nvs:brave_key`, so the probe has to resolve it the way a
+     * configured board would; otherwise the file is dropped for the right reason and
+     * this test would be measuring the probe. */
+    static const struct {
+        const char *stem;
+        const char *path;
+        const char *contains;
+        const char *literal;
+    } files[] = {
+        { "weather_now", WEATHER_TOOL_PATH, "latitude={{latitude}}", "current=" },
+        { "web_search", WEB_SEARCH_TOOL_PATH, "q={{query}}", "count=5" },
+    };
+
+    for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+        char body[4096];
+        FILE *f = fopen(files[i].path, "rb");
+        TEST_ASSERT_NOT_NULL_MESSAGE(f, files[i].path);
+        size_t len = fread(body, 1, sizeof body, f);
+        fclose(f);
+        TEST_ASSERT_TRUE(len > 0 && len < sizeof body);
+
+        tools_declared_t tool;
+        char why[128] = "";
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            ESP_OK,
+            tools_declared_compile(files[i].stem, body, len, probe_any, NULL, &tool,
+                                   why, sizeof why),
+            why);
+
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(tool.query, files[i].contains), tool.query);
+        /* A literal member survives beside a placeholder. */
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(tool.query, files[i].literal), tool.query);
+    }
+    /* The one file that carries a secret ref keeps it unresolved in the text. */
+    {
+        char body[4096];
+        FILE *f = fopen(WEB_SEARCH_TOOL_PATH, "rb");
+        TEST_ASSERT_NOT_NULL(f);
+        size_t len = fread(body, 1, sizeof body, f);
+        fclose(f);
+        tools_declared_t tool;
+        char why[128] = "";
+        TEST_ASSERT_EQUAL_INT_MESSAGE(
+            ESP_OK,
+            tools_declared_compile("web_search", body, len, probe_any, NULL, &tool,
+                                   why, sizeof why),
+            why);
+        TEST_ASSERT_NOT_NULL(strstr(tool.headers, "nvs:brave_key"));
+        TEST_ASSERT_NOT_NULL(strstr(tool.headers, "Accept"));
+    }
+}
+
+/* `weather_now` takes numbers and puts them in the query, so binding has to render
+ * them rather than refuse them as "not a string". */
+TEST_CASE("a numeric argument binds into a query template", "[tools]")
+{
+    tools_declared_t tool;
+    char why[128] = "";
+    const char *body =
+        "{\"description\":\"d\",\"parameters\":{\"type\":\"object\","
+        "\"properties\":{\"latitude\":{\"type\":\"number\"},"
+        "\"longitude\":{\"type\":\"number\"}}},"
+        "\"http\":{\"url\":\"https://api.test/f\","
+        "\"query\":{\"latitude\":\"{{latitude}}\",\"n\":\"1\"}}}";
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        ESP_OK,
+        tools_declared_compile("t", body, strlen(body), NULL, NULL, &tool, why,
+                               sizeof why),
+        why);
+    TEST_ASSERT_EQUAL_STRING("latitude={{latitude}}&n=1", tool.query);
+
+    json_doc_t *args = json_new_object();
+    json_add_double(json_root(args), "latitude", 18.4);
+
+    char out[128];
+    TEST_ASSERT_EQUAL(ESP_OK, tools_bind_text(&tool, tool.url, json_root(args), out,
+                                              sizeof out, why, sizeof why));
+    /* The URL itself has no placeholder, so binding it proves only that a template
+     * with none is copied; the query is the interesting one. */
+    TEST_ASSERT_EQUAL(ESP_OK, tools_bind_text(&tool, tool.query, json_root(args), out,
+                                              sizeof out, why, sizeof why));
+    TEST_ASSERT_EQUAL_STRING("latitude=18.4&n=1", out);
+
+    json_free(args);
+}
+
+/* A query member is not always a string. `{"n":1,"temp":18.4,"daily":true}` is a
+ * legal body and the provider reads it as `n=1&temp=18.4&daily=true`, so each scalar
+ * is rendered rather than dropped from the template. */
+TEST_CASE("a literal query member of any scalar type reaches the template", "[tools]")
+{
+    tools_declared_t tool;
+    char why[128] = "";
+    const char *body =
+        "{\"description\":\"d\",\"parameters\":{\"type\":\"object\",\"properties\":{}},"
+        "\"http\":{\"url\":\"https://api.test/f\","
+        "\"query\":{\"n\":1,\"temp\":18.4,\"daily\":true}}}";
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        ESP_OK,
+        tools_declared_compile("t", body, strlen(body), NULL, NULL, &tool, why,
+                               sizeof why),
+        why);
+    TEST_ASSERT_EQUAL_STRING("n=1&temp=18.4&daily=true", tool.query);
+}
+
+/* A query that cannot fit its compiled buffer is dropped whole, not truncated: half a
+ * query template is a request the provider answers with a 400 that names nothing. */
+TEST_CASE("a query too large for its buffer is dropped whole", "[tools]")
+{
+    char body[2048];
+    size_t used = (size_t)snprintf(
+        body, sizeof body,
+        "{\"description\":\"d\",\"parameters\":{\"type\":\"object\",\"properties\":{}},"
+        "\"http\":{\"url\":\"https://api.test/f\",\"query\":{\"a\":\"");
+    /* `render_member` writes through `snprintf`, so an oversized member leaves `used`
+     * short only when the member itself did not fit; one long literal is enough. */
+    for (int i = 0; i < 1100 && used + 4 < sizeof body; i++) body[used++] = 'x';
+    used += (size_t)snprintf(body + used, sizeof body - used, "\"}}}");
+
+    tools_declared_t tool;
+    char why[128] = "";
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        ESP_OK,
+        tools_declared_compile("t", body, used, NULL, NULL, &tool, why, sizeof why),
+        why);
+    TEST_ASSERT_EQUAL_STRING("", tool.query);
+}
+
+/* §7.1's order: MCP tools come last, and `capabilities.tools` names the same set in
+ * the same order. A remote tool reaches the model without a registry row, so an
+ * emitter that only walked the registry would offer a tool `tools_call` can dispatch
+ * and never advertise it. */
+TEST_CASE("mcp tools are offered after the builtins and named last", "[tools]")
+{
+    mcp_tool_t remote[2];
+    memset(remote, 0, sizeof remote);
+    snprintf(remote[0].name, sizeof remote[0].name, "mcp.home.lamp");
+    snprintf(remote[0].description, sizeof remote[0].description, "Lamp.");
+    snprintf(remote[0].schema, sizeof remote[0].schema,
+             "{\"type\":\"object\",\"properties\":{}}");
+    snprintf(remote[1].name, sizeof remote[1].name, "mcp.home.fan");
+    snprintf(remote[1].description, sizeof remote[1].description, "Fan.");
+    snprintf(remote[1].schema, sizeof remote[1].schema,
+             "{\"type\":\"object\",\"properties\":{}}");
+
+    tools_context_t ctx = {0};
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+    ctx.mcp_tools = remote;
+    ctx.mcp_count = 2;
+
+    json_doc_t *doc = json_new_object();
+    json_node_t *array = json_new_array(json_root(doc), "tools");
+    TEST_ASSERT_EQUAL(ESP_OK, tools_json_build(&ctx, array));
+
+    size_t n = json_array_len(array);
+    json_node_t *fn = json_get(json_array_at(array, n - 2), "function");
+    TEST_ASSERT_EQUAL_STRING("mcp.home.lamp", json_string(json_get(fn, "name")));
+    TEST_ASSERT_EQUAL_STRING("Lamp.", json_string(json_get(fn, "description")));
+    TEST_ASSERT_NOT_NULL(json_get(fn, "parameters"));
+    fn = json_get(json_array_at(array, n - 1), "function");
+    TEST_ASSERT_EQUAL_STRING("mcp.home.fan", json_string(json_get(fn, "name")));
+
+    json_doc_t *names_doc = json_new_object();
+    json_node_t *names = json_new_array(json_root(names_doc), "tools");
+    TEST_ASSERT_EQUAL(ESP_OK, tools_capability_names(&ctx, names));
+    TEST_ASSERT_EQUAL_size_t(n, json_array_len(names));
+    TEST_ASSERT_EQUAL_STRING("mcp.home.lamp",
+                             json_string(json_array_at(names, n - 2)));
+    TEST_ASSERT_EQUAL_STRING("mcp.home.fan", json_string(json_array_at(names, n - 1)));
+
+    json_free(names_doc);
+    json_free(doc);
+}
+
+/* `tools/web.md` fixes one cap for a result reaching the model, whichever tool
+ * produced it. A projected reply and a raw one go through the same cut, and the cut
+ * backs up to a character boundary: half a UTF-8 sequence is a provider error that
+ * names nothing about the tool. */
+TEST_CASE("a result is cut at the cap on a character boundary", "[tools]")
+{
+    json_doc_t *doc = json_new_object();
+    json_node_t *root = json_root(doc);
+
+    char short_text[64];
+    snprintf(short_text, sizeof short_text, "hello");
+    tools_result_add_content(root, short_text);
+    TEST_ASSERT_EQUAL_STRING("hello", json_string(json_get(root, "content")));
+    TEST_ASSERT_NULL(json_get(root, "truncated"));
+
+    /* One byte over the cap, with a three-byte sequence straddling it: the cut must
+     * land before the sequence rather than inside it. */
+    const size_t cap = 2048;
+    char *long_text = malloc(cap + 8);
+    TEST_ASSERT_NOT_NULL(long_text);
+    memset(long_text, 'a', cap + 4);
+    long_text[cap - 1] = (char)0xE2;
+    long_text[cap] = (char)0x82;
+    long_text[cap + 1] = (char)0xAC;
+    long_text[cap + 2] = '\0';
+
+    /* A fresh object, because a key that already exists is not replaced. */
+    json_free(doc);
+    doc = json_new_object();
+    root = json_root(doc);
+    tools_result_add_content(root, long_text);
+    const char *kept = json_string(json_get(root, "content"));
+    TEST_ASSERT_NOT_NULL(kept);
+    TEST_ASSERT_EQUAL_size_t(cap - 1, strlen(kept));
+    bool truncated = false;
+    TEST_ASSERT_TRUE(json_bool(json_get(root, "truncated"), &truncated));
+    TEST_ASSERT_TRUE(truncated);
+    free(long_text);
+    json_free(doc);
 }

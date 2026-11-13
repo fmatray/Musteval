@@ -23,4 +23,10 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
     # for the same reason as the doc above.
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         USERFS_SEED_CONFIG_PATH="${CMAKE_CURRENT_LIST_DIR}/../../userfs/config.json")
+    # The two declarative tools the image ships. A query the compiler drops is a tool
+    # that reaches its provider with no parameters, which only reading the real file
+    # catches.
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        WEATHER_TOOL_PATH="${CMAKE_CURRENT_LIST_DIR}/../../userfs/tools/weather_now.json"
+        WEB_SEARCH_TOOL_PATH="${CMAKE_CURRENT_LIST_DIR}/../../userfs/tools/web_search.json")
 endif()

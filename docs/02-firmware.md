@@ -1002,6 +1002,12 @@ its tool list, so `hello_ack.capabilities.tools`, `hello_ack.capabilities.mcp` a
 onto `tools_context_t.mcp_tools`, which is what `tools_json.c` offers and what
 `tools_offered` recognises. Nothing re-derives it per model round.
 
+`tools_offered` is a real gate: a name is offered because the registry defines it, the
+loaded declarative set carries it, or an MCP server listed it this run. A name none of
+the three supplies — the model invented it, or the file behind it was deleted — is not
+offered, and `tools_call` answers `E_TOOL` rather than reaching a dispatch arm that has
+nothing to dispatch to.
+
 ### 6.3 Call
 
 A `mcp.` name is split at the first two dots into server id and tool name. A name whose
@@ -1033,14 +1039,18 @@ the one write carve-out that touches storage internals.
 ### 7.1 Tool definitions sent to the model
 
 `tools_json` is built at run start from three sources, in this order: built-ins,
-declarative `/tools/*.json`, and MCP tools discovered at `tools/list`. At M4 only the
-first exists: `tools_json_build` is called with an empty declarative set, because the
-image that carries `/tools/*.json` is `bridge/tools/build_userfs.py`. Each entry is
+declarative `/tools/*.json`, and MCP tools discovered at `tools/list`. All three are
+live: `tools_declared_loaded()` lists the image's `/tools/` once, compiles every
+`<stem>.json` through `tools_declared_compile` and keeps the rest as
+`tools_context_t.declared`, and `mcp_discovered()` supplies the third. A file the
+loader drops is absent from `tools` and from `capabilities.tools` rather than offered
+and then failing per call; a file costs one tool, never boot. Each entry is
 one `{"type":"function","function":{...}}`. The value `llm` receives is the bare
 array — `[{"type":"function",...}]` — with no enclosing object, because `llm` splices
 it into a member of its own request. A slice that carries the wrapper's closing brace
-closes the request early and every provider refuses the body. Every built-in carries a description and
-a parameter schema of the same shape declarative tools require (`03-config.md`
+closes the request early and every provider refuses the body. Every built-in carries a
+description and a parameter schema of the same shape declarative tools require
+(`03-config.md`
 §Tool schema): `type: "object"`, `properties`, `required`, plus `enum` for a closed
 value set; nothing else.
 

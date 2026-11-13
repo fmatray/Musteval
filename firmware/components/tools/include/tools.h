@@ -101,6 +101,11 @@ typedef struct {
 
 bool tools_host_allowed(const tools_policy_t *policy, const char *host);
 
+/* The host of an absolute URL, without scheme, port or path, written into `buf`.
+ * NULL when there is no host. One definition, because the built-in gate and a
+ * declarative tool's compiled URL must agree about what "host" means. Pure. */
+const char *tools_url_host(const char *url, char *buf, size_t cap);
+
 /* The verdict for one call. ESP_OK, or ESP_ERR_NOT_ALLOWED with the refusal text —
  * the exact wording `tools/gpio.md` and `tools/web.md` quote. `host` may be NULL;
  * a TOOLS_GATE_ALLOWLIST tool with no host is refused, not assumed allowed. */
@@ -147,6 +152,11 @@ typedef struct {
      * (`02-firmware.md` §6 step 1), so it is data on the context. */
     const mcp_tool_t *mcp_tools;
     size_t mcp_count;
+    /* The compiled set of files under `/tools/`, or NULL for a board with none. One
+     * owner: `tools_json_build`, `tools_capability_names`, `tools_offered` and a
+     * call's dispatch all read it here, so what is offered and what is callable
+     * cannot drift apart. */
+    const struct tools_declared_set *declared;
     /* `tools.task_max`: the cap `task.set` enforces, tighter than the schema's own
      * `SCHED_MAX_TASKS` (`tools/tasks.md` §Authority split: the tool is bounded, the
      * bridge commands are not). */
@@ -227,7 +237,7 @@ typedef struct {
     int32_t timeout_ms;
 } tools_declared_t;
 
-typedef struct {
+typedef struct tools_declared_set {
     tools_declared_t items[TOOLS_MAX_DECLARED];
     size_t count;
 } tools_declared_set_t;
@@ -245,19 +255,53 @@ esp_err_t tools_declared_compile(const char *stem, const char *body, size_t len,
                                  tools_secret_probe_t secret_resolves, void *probe_ctx,
                                  tools_declared_t *out, char *why, size_t why_cap);
 
+/* Load every `/tools/<stem>.json`, compiling each into `set`. A file that fails the
+ * `03-config.md` §tools rules is dropped with a log line and does not stop the others
+ * (`tools/web.md`), so a bad file costs one tool, not boot. Board-only: it reads
+ * `userfs`. `set` is the caller's, and `TOOLS_MAX_DECLARED` past it is truncation. */
+esp_err_t tools_declared_load(tools_declared_set_t *set);
+
+/* The set loaded once at first use and shared by every context, or NULL. Board-only;
+ * `tools_context_from_config` points `declared` at it so a call can find its row. */
+const tools_declared_set_t *tools_declared_loaded(void);
+
+/* Expand `{{name}}` in `tpl` from `args`, into `out`. A placeholder whose name the
+ * compiled schema does not declare, or a declared argument that is absent, is
+ * ESP_ERR_INVALID_ARG with `why` naming it, so binding fails before a request.
+ * Pure: a file's typo is a test case rather than a boot. */
+esp_err_t tools_bind_text(const tools_declared_t *tool, const char *tpl,
+                          const json_node_t *args, char *out, size_t cap,
+                          char *why, size_t why_cap);
+
+/* Bind a call's arguments into `tool` and perform its request, writing the result to
+ * `out` as a `{"content": ...}` object. The host is the compiled URL's and must be in
+ * `tools.http_allow_hosts`; the model cannot point a declarative tool elsewhere.
+ * Board-only: it performs the HTTP exchange. */
+esp_err_t tools_declared_call(const tools_declared_t *tool, const json_node_t *args,
+                              const tools_policy_t *policy, json_doc_t **out,
+                              char *why, size_t why_cap);
+
+/* The row named `name` in `set`, or NULL. Pure. */
+const tools_declared_t *tools_declared_find(const tools_declared_set_t *set,
+                                            const char *name);
+
+/* Add a result's `content` to `root`, cut at `TOOLS_HTTP_BODY_MAX` on a UTF-8
+ * boundary with `truncated: true` when the cut happened. One rule for a built-in
+ * `http.get` reply and a declarative tool's reply, because a limit with two
+ * behaviours is two limits. Pure. */
+void tools_result_add_content(json_node_t *root, const char *text);
+
+/* The host a declarative tool would reach, for the allowlist gate. Pure. */
+const char *tools_declared_host(const tools_declared_t *tool, char *buf, size_t cap);
+
 /* Append every offered tool to `out` as one `{"type":"function","function":{…}}`.
  * `out` must be an array node. Built-ins first, then declarative, then MCP — the
- * order `02-firmware.md` §7.1 fixes. `mcp_json` is the MCP block (M5); passing NULL
- * adds none. Pure apart from the read of the caller's set. */
-esp_err_t tools_json_build(const tools_context_t *ctx,
-                           const tools_declared_set_t *declared,
-                           json_node_t *out);
+ * order `02-firmware.md` §7.1 fixes. A NULL context offers built-ins only. Pure. */
+esp_err_t tools_json_build(const tools_context_t *ctx, json_node_t *out);
 
 /* The `hello_ack.capabilities.tools` array: every tool the model may call, in the
  * same order as `tools_json`. Pure. */
-esp_err_t tools_capability_names(const tools_context_t *ctx,
-                                 const tools_declared_set_t *declared,
-                                 json_node_t *out);
+esp_err_t tools_capability_names(const tools_context_t *ctx, json_node_t *out);
 
 /* Resolve a §4.25 target, probe it and summarise. One implementation behind both
  * the host command (`04-protocol.md` §4.25) and the model's `net.ping` tool

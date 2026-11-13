@@ -10,7 +10,7 @@
 
 /* Extract the host from an absolute URL, or NULL. `https://h/p` -> `h`. A port and
  * userinfo are never part of the match: the allowlist names hosts (`tools/web.md`). */
-static const char *url_host(const char *url, char *buf, size_t cap)
+const char *tools_url_host(const char *url, char *buf, size_t cap)
 {
     if (url == NULL) return NULL;
     const char *scheme = "https://";
@@ -97,5 +97,7 @@ const char *tools_gate_host_for(const tools_builtin_t *tool, const json_node_t *
 {
     if (tool == NULL || tool->gate != TOOLS_GATE_ALLOWLIST) return NULL;
     if (strcmp(tool->name, "http.get") != 0) return NULL;
-    return url_host(json_string(json_get(args, "url")), buf, cap);
+    /* A declarative tool carries its host in the compiled URL, so its gate is in
+     * `tools_declared_call`; this arm is `http.get` alone. */
+    return tools_url_host(json_string(json_get(args, "url")), buf, cap);
 }

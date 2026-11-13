@@ -112,11 +112,13 @@ Parameter binding, in the order it matters to whoever calls the tool:
   and no partial body is returned, so a changed upstream shape fails loudly instead
   of feeding the model a fragment. Without `response_path` the raw body is the
   result.
-- The result is capped at 4 KiB before it reaches the model; the rest is dropped and
-  a `truncated: true` note is appended. Truncating a **projected array** cuts it
-  mid-element, which yields invalid JSON, so a projection that can exceed 4 KiB must
-  be bounded upstream through a request parameter -- `web_search` sends `count: 5`
-  for exactly this reason.
+- The result is capped before it reaches the model; the rest is dropped and a
+  `truncated: true` note is appended. The cap is the one `http.get` uses
+  (`../02-firmware.md` 7.1), and a projected reply and a raw one are cut by the same
+  rule (`tools_result_add_content`), so one limit has one behaviour. Truncating a
+  **projected array** cuts it mid-element, which yields invalid JSON, so a projection
+  that can exceed the cap must be bounded upstream through a request parameter --
+  `web_search` sends `count: 5` for exactly this reason.
 - A header value of the exact form `nvs:<key>` is resolved from NVS namespace
   `secrets` by the HTTP layer *after* header assembly. The tool-argument object only
   ever holds the literal ref, so `agent.tool` and `agent.tool_result` show the model

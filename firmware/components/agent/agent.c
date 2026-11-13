@@ -229,9 +229,7 @@ static void build_tools_json(const tools_context_t *ctx)
     if (doc == NULL) return;
     json_node_t *array = json_new_array(json_root(doc), "tools");
     if (array != NULL) {
-        /* Declarative tools land at M5's mcp/sched pass with the loader; the shape is
-         * already the frozen order (built-ins, then declarative, then MCP). */
-        tools_json_build(ctx, NULL, array);
+        tools_json_build(ctx, array);
         size_t written = 0;
         json_doc_t *wrap = json_new_object();
         if (wrap != NULL) {

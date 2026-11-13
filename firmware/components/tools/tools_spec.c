@@ -330,7 +330,15 @@ bool tools_offered(const char *name, const tools_context_t *ctx)
         }
         return false;
     }
-    return true;
+    /* A declarative tool is offered because `/tools/<stem>.json` compiled, so a name
+     * the set does not carry was either deleted after the offer or invented by the
+     * model. Without this arm every unknown name is "offered" and then refused as
+     * unknown at dispatch, which reads as a tool bug rather than E_TOOL. */
+    if (ctx != NULL && ctx->declared != NULL &&
+        tools_declared_find(ctx->declared, name) != NULL) {
+        return true;
+    }
+    return tools_find(name) != NULL;
 }
 
 /* --- `task.set` cap ------------------------------------------------------- */

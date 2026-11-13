@@ -1558,7 +1558,7 @@ static void on_link_frame(const json_node_t *frame)
                                           : NULL;
         tools_context_t ctx;
         tools_context_from_config(&ctx);
-        if (names != NULL) tools_capability_names(&ctx, NULL, names);
+        if (names != NULL) tools_capability_names(&ctx, names);
 
         link_hello_t hello = {
             .device = "musteval",

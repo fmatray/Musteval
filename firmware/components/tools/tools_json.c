@@ -39,9 +39,7 @@ static void push_function(json_node_t *out, const char *name, const char *desc,
     }
 }
 
-esp_err_t tools_json_build(const tools_context_t *ctx,
-                           const tools_declared_set_t *declared,
-                           json_node_t *out)
+esp_err_t tools_json_build(const tools_context_t *ctx, json_node_t *out)
 {
     if (out == NULL || !json_is_array(out)) return ESP_ERR_INVALID_ARG;
 
@@ -52,6 +50,7 @@ esp_err_t tools_json_build(const tools_context_t *ctx,
         push_function(out, builtins[i].name, builtins[i].description, builtins[i].schema);
     }
 
+    const tools_declared_set_t *declared = ctx != NULL ? ctx->declared : NULL;
     if (declared != NULL) {
         for (size_t i = 0; i < declared->count; i++) {
             if (!tools_offered(declared->items[i].name, ctx)) continue;
@@ -73,9 +72,7 @@ esp_err_t tools_json_build(const tools_context_t *ctx,
     return ESP_OK;
 }
 
-esp_err_t tools_capability_names(const tools_context_t *ctx,
-                                 const tools_declared_set_t *declared,
-                                 json_node_t *out)
+esp_err_t tools_capability_names(const tools_context_t *ctx, json_node_t *out)
 {
     if (out == NULL || !json_is_array(out)) return ESP_ERR_INVALID_ARG;
 
@@ -85,6 +82,7 @@ esp_err_t tools_capability_names(const tools_context_t *ctx,
         if (!tools_offered(builtins[i].name, ctx)) continue;
         json_array_push_string(out, builtins[i].name);
     }
+    const tools_declared_set_t *declared = ctx != NULL ? ctx->declared : NULL;
     if (declared != NULL) {
         for (size_t i = 0; i < declared->count; i++) {
             if (!tools_offered(declared->items[i].name, ctx)) continue;

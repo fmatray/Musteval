@@ -1075,6 +1075,13 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         /* The gate already refused an unauthorised caller with `E_TOOL`, because the
          * registry marks this tool `TOOLS_GATE_DANGEROUS`. */
         err = call_task_set(ctx, args, out, wire_code, why, why_cap);
+    } else if (ctx->declared != NULL && tools_declared_find(ctx->declared, name) != NULL) {
+        /* A declarative tool is a name the model was offered from a file, so it is
+         * dispatched only if the set still carries it: a file deleted between the
+         * offer and the call is `E_TOOL`, not a different tool's result. */
+        err = tools_declared_call(tools_declared_find(ctx->declared, name), args,
+                                  &ctx->policy, out, why, why_cap);
+        if (err != ESP_OK && wire_code != NULL) *wire_code = "E_TOOL";
     } else if (strcmp(name, "todo") == 0) {
         /* Through the port, because the tree belongs to `agent` (L3) and calling up
          * would break `08-code-architecture.md` §1.1. */
@@ -1116,6 +1123,29 @@ static int32_t cfg_int_or(const char *path, int32_t fallback)
     return (node != NULL && json_int(node, &value)) ? (int32_t)value : fallback;
 }
 
+/* The compiled `/tools/` set, loaded once. 16 rows of fixed strings is about
+ * 104 KiB, so it is heap — PSRAM first, internal as fallback — and shared by every
+ * context rather than copied per round. */
+static tools_declared_set_t *s_declared;
+static bool s_declared_loaded;
+
+const tools_declared_set_t *tools_declared_loaded(void)
+{
+    if (s_declared_loaded) return s_declared;
+    s_declared_loaded = true;
+
+    s_declared = heap_caps_malloc(sizeof *s_declared, MALLOC_CAP_SPIRAM |
+                                                       MALLOC_CAP_8BIT);
+    if (s_declared == NULL) s_declared = heap_caps_malloc(sizeof *s_declared,
+                                                          MALLOC_CAP_8BIT);
+    if (s_declared == NULL) return NULL;
+    if (tools_declared_load(s_declared) != ESP_OK) {
+        free(s_declared);
+        s_declared = NULL;
+    }
+    return s_declared;
+}
+
 void tools_context_from_config(tools_context_t *ctx)
 {
     if (ctx == NULL) return;
@@ -1134,6 +1164,7 @@ void tools_context_from_config(tools_context_t *ctx)
     /* Read here so `agent`'s round and `hello_ack`'s capability list cannot disagree
      * about which remote tools exist. */
     ctx->mcp_tools = mcp_discovered(&ctx->mcp_count);
+    ctx->declared = tools_declared_loaded();
     /* `todo` is `agent`'s tree, installed by whoever owns it (`tools_todo_port_t`). */
     ctx->todo.apply = NULL;
     ctx->todo.ctx = NULL;
