@@ -24,6 +24,7 @@ SPECS = [
     ("bridge/link/", 98, 98),
     ("bridge/client/", 98, 98),
     ("bridge/commands.py", 98, 98),
+    ("bridge/mermaid.py", 98, 98),
     ("bridge/ui/", 98, 98),
     ("bridge/tools/", 98, None),
 ]

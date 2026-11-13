@@ -1008,3 +1008,42 @@ async def test_an_editor_that_returns_nothing_sends_no_frame():
         assert not [f for f in written if (f.get("args") or {}).get("op") == "init"]
 
     await _run(_device(), body)
+
+
+async def test_an_assistant_fence_is_drawn_as_a_tree_in_the_pane():
+    """`05` 5.1: a fenced `mermaid` block in the answer is drawn, not printed.
+
+    Asserted through the pane the reader sees, because the rewrite could be
+    correct and still land nowhere.
+    """
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") != "prompt":
+            return _device()(line)
+        return [
+            encode(Frame(type="agent.start", id="d-3", ts=0,
+                         body={"run_id": "r-1", "trigger": "manual",
+                               "source": "prompt", "provider": "p", "model": "m",
+                               "input_bytes": 1, "queue_depth": 0},
+                         reply_to=frame["id"])),
+            encode(Frame(type="agent.final", id="d-4", ts=0,
+                         body={"run_id": "r-1",
+                               "text": "Here:\n\n```mermaid\nflowchart LR\n"
+                                       "  H[host] --> D[device]\n```\n",
+                               "usage": {"total_tokens": 1}, "rounds": 1,
+                               "provider": "p", "model": "m", "duration_ms": 1,
+                               "truncated": False, "todo_open": False},
+                         reply_to=frame["id"])),
+        ]
+
+    async def body(app, pilot):
+        app.submit("draw it")
+        await _await_chat(pilot, app, "device")
+        text = _text(app)
+        assert "flowchart LR · 2 nodes · 1 edges" in text
+        assert "host" in text
+        # The arrows are drawn, not spelt: the source's `-->` must be gone.
+        assert "-->" not in text
+
+    await _run(reply, body)

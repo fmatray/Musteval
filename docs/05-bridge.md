@@ -229,6 +229,21 @@ as one rather than as punctuation. Every other kind is terminal text, never
 parsed: a tag a device returned must not become a heading, and a table a log line
 happens to contain must not cost the line its meaning.
 
+**A fenced `mermaid` block in the answer is drawn, not printed.** A terminal has no
+renderer for the diagram, so the alternative is its source with the arrows spelt
+out; the pane draws it as an indented tree instead — one node per line, the edge's
+kind as a glyph, the edge's label after it, and a node reached twice marked
+`(seen)` rather than expanded again. `flowchart` and `graph` are drawn in every
+direction, and `stateDiagram-v2`'s transition list is read as the edges it is.
+Anything else — `sequenceDiagram`, `classDiagram` — is left exactly as the model
+wrote it, because a guessed picture of a sequence diagram is worse than its source
+and the reader can still read the fence. A label longer than the pane wraps under
+its own indent rather than being cut, so a diagram at sixty columns loses nothing.
+
+The rule that a diagram is drawn only in `assistant` text follows from the kind
+table above: the operator's own paste is echoed, not interpreted, and no device
+frame reaches this path at all.
+
 **A turn is separated from the one before it by a dim rule** — a full-width `─`
 line in `$text-muted`, written before the second and every later prompt. The
 first prompt needs none, because there is nothing above it to separate. The rule

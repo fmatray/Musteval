@@ -68,6 +68,13 @@ level mapping and the timezone table are all pure and host-tested, and only the
 `http.client` call itself lives in `ui`, which already owns the thread the reader is
 waiting on. The same split as `transfer.py`, for the same reason.
 
+`bridge/mermaid.py` sits at **L2** beside them: the drawer that turns a fenced
+`mermaid` block in an answer into terminal lines (`05-bridge.md` §5.1). It imports
+the standard library and nothing else from the tree — not Textual, not Rich — so the
+parse, the cycle guard and the wrap are host-tested without a terminal. The `ui`
+layer calls `rewrite()` on the answer's Markdown before Rich parses it, which is why
+nothing here needs to know what a `RichLog` is.
+
 `bridge/tools/` is **off-tree and not a layer.** It holds maintainer scripts
 (`build_userfs.py`, `05-bridge.md` §11) that run on a developer machine, and it may
 import anything or nothing. It ships with neither the app nor the library, so it is
@@ -82,6 +89,7 @@ L2   client/        Session: correlation, heartbeat, backoff
      commands.py    slash command → frames (leaf at L2)
      transfer.py    sandbox tree walk, upload and download (leaf at L2)
      providers.py   LLM catalog, model list, thinking levels, timezones (leaf at L2)
+     mermaid.py     Mermaid fence to terminal tree (leaf at L2)
       |
 L1   link/          Transport ABC, SerialTransport, FakeTransport
       |

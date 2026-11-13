@@ -57,6 +57,7 @@ Every scope is gated at **98% line**. A branch gate applies only where the table
 | `bridge/link/`, `bridge/client/`, `bridge/commands.py` | 98% line and branch | state machines with named failure paths; the remaining 2% is I/O error branches that only a real port can provoke |
 | `bridge/ui/` | 98% line and branch | the pilot drives real event handlers, so an uncovered handler is an untested screen; the tail is Textual dispatch the framework owns |
 | `bridge/tools/` | 98% line | the device double and `build_userfs.py` are what e2e trusts; a skipped rung turns a protocol bug into a mysterious bridge timeout |
+| `bridge/mermaid.py` | 100% line and branch | pure, and the whole point is that a fence it cannot parse is left alone rather than drawn wrong; a missed branch draws a diagram the source does not say |
 | firmware, host-testable modules | 98% line | C error paths are long, but an untaken branch is still an unread refusal; ESP-IDF glue is the documented exception below |
 | hardware-bound modules | 98% line | measured on the target, not against a stub: the on-target suite is what counts here |
 

@@ -26,6 +26,7 @@ from textual.widgets import DataTable, Header, Input, RichLog, Static
 from ..client import LinkState, Session
 from ..client.session import SessionError
 from ..commands import LOCAL_COMMANDS, CommandError, CommandState, parse
+from .. import mermaid
 from .. import providers as providers_mod
 from .. import transfer
 from ..protocol import Frame, new_id
@@ -293,10 +294,17 @@ class ChatScreen(Vertical):
         text = sanitize(text)
         if kind in ("user", "assistant"):
             style = theme.accent if kind == "user" else "none"
-            rendered = Markdown(text, style=style, code_theme=MARKDOWN_CODE_THEME)
-            if kind != "user":
+            if kind == "assistant":
+                # A drawn diagram is a tree of text, so it is laid out to the pane
+                # it lands in rather than to a fixed column count.
+                rendered = Markdown(
+                    mermaid.rewrite(text, max(20, log.size.width - 4)),
+                    style=style,
+                    code_theme=MARKDOWN_CODE_THEME,
+                )
                 log.write(rendered)
                 return
+            rendered = Markdown(text, style=style, code_theme=MARKDOWN_CODE_THEME)
             # `you: ` is its own column rather than a prefix inside the Markdown:
             # glued on, a prompt that opens with a fence or a `#` stops being a
             # fence or a heading, and the reader's own paste renders as noise.
