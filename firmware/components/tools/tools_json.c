@@ -59,6 +59,17 @@ esp_err_t tools_json_build(const tools_context_t *ctx,
                           declared->items[i].schema);
         }
     }
+
+    /* MCP last, the order `02-firmware.md` §7.1 fixes. A remote tool's schema is the
+     * server's own, already in the frozen subset by construction: it is forwarded in
+     * the shape the server advertises, and a server whose schema the provider refuses
+     * fails its own tool rather than the array. */
+    if (ctx != NULL && ctx->mcp_tools != NULL) {
+        for (size_t i = 0; i < ctx->mcp_count; i++) {
+            push_function(out, ctx->mcp_tools[i].name, ctx->mcp_tools[i].description,
+                          ctx->mcp_tools[i].schema);
+        }
+    }
     return ESP_OK;
 }
 
@@ -78,6 +89,11 @@ esp_err_t tools_capability_names(const tools_context_t *ctx,
         for (size_t i = 0; i < declared->count; i++) {
             if (!tools_offered(declared->items[i].name, ctx)) continue;
             json_array_push_string(out, declared->items[i].name);
+        }
+    }
+    if (ctx != NULL && ctx->mcp_tools != NULL) {
+        for (size_t i = 0; i < ctx->mcp_count; i++) {
+            json_array_push_string(out, ctx->mcp_tools[i].name);
         }
     }
     return ESP_OK;

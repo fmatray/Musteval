@@ -30,6 +30,7 @@
 #include "net.h"
 #include "agent.h"
 #include "link.h"
+#include "mcp.h"
 #include "sched.h"
 #include "store.h"
 #include "sys.h"
@@ -80,6 +81,23 @@ static void mqtt_frame_sink(const char *server_id, const char *topic, const char
 
     (void)sched_trigger_mqtt(server_id, topic, payload);
     (void)len;
+}
+
+/* `04` §3.10: the two MCP session events. `message` is NULL on success, which is the
+ * nullable `mcp.error.message` the frame types. */
+static void mcp_event_sink(const char *event, const char *server_id, const char *message)
+{
+    json_doc_t *body = json_new_object();
+    if (body == NULL) return;
+    json_node_t *root = json_root(body);
+    json_add_string(root, "server_id", server_id != NULL ? server_id : "");
+    if (strcmp(event, "mcp.error") == 0) {
+        json_add_string(root, "message", message != NULL ? message : "mcp failure");
+    }
+    char id[32];
+    link_next_id(id, sizeof id);
+    (void)link_emit_body(event, id, clock_now(), NULL, body);
+    json_free(body);
 }
 
 static void start_services(bool safe_mode)
@@ -143,6 +161,21 @@ static void start_services(bool safe_mode)
     err = mqtt_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "boot: mqtt: %s: brokers unavailable", esp_err_to_name(err));
+    }
+
+    /* `mcp` before the tools are offered for the same reason `geo` is: the model's
+     * `tools` array and `hello_ack`'s capability list are built from what discovery
+     * found, so a server that answers after the first request would be invisible.
+     * A server that is down contributes nothing and boot continues. */
+    mcp_set_event(mcp_event_sink);
+    err = mcp_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "boot: mcp: %s: remote tools unavailable", esp_err_to_name(err));
+    } else {
+        err = mcp_discover_all();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "boot: mcp: %s: no server answered", esp_err_to_name(err));
+        }
     }
 
     /* After `link_start`, so a run's first frame has a writer (`02` §3.1). */
@@ -969,6 +1002,17 @@ static void answer_command(const json_node_t *frame)
             mqtt_rows[i].id = brokers[i].id;
             mqtt_rows[i].connected = brokers[i].connected;
         }
+        /* §3.9's `mcp[]` comes from the module for the same reason `mqtt[]` does. */
+        static link_mcp_row_t mcp_status_rows[MCP_MAX_SERVERS];
+        mcp_row_t servers[MCP_MAX_SERVERS];
+        size_t mcp_n = mcp_rows(servers, MCP_MAX_SERVERS);
+        for (size_t i = 0; i < mcp_n; i++) {
+            mcp_status_rows[i].id = servers[i].id;
+            mcp_status_rows[i].enabled = servers[i].enabled;
+            mcp_status_rows[i].state = servers[i].state == MCP_STATE_CONNECTED ? "connected"
+                                       : servers[i].state == MCP_STATE_ERROR ? "error"
+                                                                            : "idle";
+        }
         geo_fix_t fix = {0};
         bool have_geo = geo_cached_fix(&fix);
         link_status_t st = {
@@ -1013,6 +1057,8 @@ static void answer_command(const json_node_t *frame)
             .geo_age_s = have_geo ? (clock_now() - fix.source_ts) : 0,
             .mqtt_rows = mqtt_rows,
             .mqtt_row_count = mqtt_n,
+            .mcp_rows = mcp_status_rows,
+            .mcp_row_count = mcp_n,
         };
         json_node_t *result = json_add_object(root, "result");
         json_add_string(root, "name", "status");

@@ -18,6 +18,7 @@
 
 #include "esp_err.h"
 
+#include "mcp.h"
 #include "net.h"
 #include "store.h"
 
@@ -125,6 +126,10 @@ typedef struct {
     void *ctx;
 } tools_todo_port_t;
 
+/* `MCP_NAME_MAX`, `MCP_DESC_MAX` and `MCP_SCHEMA_MAX` bound one discovered tool;
+ * `tools_context_t` carries `mcp_tool_t` arrays from `mcp.h` rather than a second
+ * copy of the same three fields. */
+
 /* Everything one call needs beyond its arguments. */
 typedef struct {
     tools_policy_t policy;
@@ -136,6 +141,12 @@ typedef struct {
      * the three i2c tools are then absent from `tools_json` (`tools/i2c.md`). */
     int i2c_sda;
     int i2c_scl;
+    /* The MCP servers' discovered tools, already namespaced, in config order.
+     * `mcp_count` 0 is a board with none, which is the shape M4 shipped and stays
+     * valid. `tools` cannot derive the set: it arrives over the network at run start
+     * (`02-firmware.md` §6 step 1), so it is data on the context. */
+    const mcp_tool_t *mcp_tools;
+    size_t mcp_count;
     /* `tools.task_max`: the cap `task.set` enforces, tighter than the schema's own
      * `SCHED_MAX_TASKS` (`tools/tasks.md` §Authority split: the tool is bounded, the
      * bridge commands are not). */

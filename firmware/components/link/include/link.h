@@ -175,6 +175,14 @@ typedef struct {
     bool        connected;
 } link_mqtt_row_t;
 
+/* One `status.mcp[]` row (`04` §3.9): `{id, enabled, state}`. Same adaptation as
+ * `link_mqtt_row_t` and for the same reason: `link` cannot name `mcp_state_t`. */
+typedef struct {
+    const char *id;
+    bool        enabled;
+    const char *state; /* `connected`, `idle` or `error` */
+} link_mcp_row_t;
+
 /* The board facts `status` reports; everything else in §3.9 is either a constant
  * or a subsystem that does not exist yet. */
 typedef struct {
@@ -230,6 +238,9 @@ typedef struct {
      * which is the empty array §3.9 shows for a device with no brokers. */
     const link_mqtt_row_t *mqtt_rows;
     size_t   mqtt_row_count;
+    /* `mcp[]`: one row per configured server. NULL before `mcp_init`. */
+    const link_mcp_row_t *mcp_rows;
+    size_t   mcp_row_count;
 } link_status_t;
 
 /* `status` BODY only (§3.9), the single canonical status object. Subsystems absent

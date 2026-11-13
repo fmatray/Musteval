@@ -387,11 +387,22 @@ TEST_CASE("every refusal frame is a legal envelope on the wire", "[link]")
 
 TEST_CASE("hello_ack builder generates correct shape", "[link]")
 {
+    /* `capabilities.mcp` is the `mcp.` subset of `capabilities.tools` (§3.2), so the
+     * fixture names both kinds and the test asserts which one lands where. */
+    json_doc_t *names_doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(names_doc);
+    json_node_t *names = json_new_array(json_root(names_doc), "tools");
+    TEST_ASSERT_NOT_NULL(names);
+    json_array_push_string(names, "gpio.read");
+    json_array_push_string(names, "mcp.home.home_status");
+    json_array_push_string(names, "mcp.lab.lab_temp");
+
     link_hello_t hello = {
         .device = "test-dev",
         .fw_version = "2.1.0",
         .boot_id = "b-123",
         .time_synced = true,
+        .tools = names,
     };
     json_doc_t *doc = json_new_object();
     TEST_ASSERT_NOT_NULL(doc);
@@ -413,10 +424,20 @@ TEST_CASE("hello_ack builder generates correct shape", "[link]")
 
     json_node_t *caps = json_get(root, "capabilities");
     TEST_ASSERT_NOT_NULL(caps);
-    TEST_ASSERT_NOT_NULL(json_get(caps, "tools"));
-    TEST_ASSERT_NOT_NULL(json_get(caps, "mcp"));
+    json_node_t *tools = json_get(caps, "tools");
+    TEST_ASSERT_NOT_NULL(tools);
+    TEST_ASSERT_EQUAL_INT(3, json_array_len(tools));
+
+    json_node_t *mcp = json_get(caps, "mcp");
+    TEST_ASSERT_NOT_NULL(mcp);
+    /* Only the remote subset, in the order it appears in `tools`. */
+    TEST_ASSERT_EQUAL_INT(2, json_array_len(mcp));
+    TEST_ASSERT_EQUAL_STRING("mcp.home.home_status",
+                             json_string(json_array_at(mcp, 0)));
+    TEST_ASSERT_EQUAL_STRING("mcp.lab.lab_temp", json_string(json_array_at(mcp, 1)));
 
     json_free(doc);
+    json_free(names_doc);
 }
 
 TEST_CASE("status builder generates correct shape", "[link]")
@@ -712,5 +733,50 @@ TEST_CASE("status reports the fix and the brokers, or their absence", "[link]")
     TEST_ASSERT_EQUAL_STRING("lab", json_string(json_get(second, "id")));
     TEST_ASSERT_TRUE(json_bool(json_get(second, "connected"), &up));
     TEST_ASSERT_FALSE(up);
+    json_free(doc);
+}
+
+TEST_CASE("status reports one mcp row per configured server", "[link]")
+{
+    /* §3.9 types an `mcp[]` row as exactly `{id, enabled, state}`, and all three
+     * states the firmware can be in are exercised: an unconfigured board still has
+     * to emit the empty array, not a null. */
+    link_status_t st = { .boot_id = "b-789" };
+    json_doc_t *doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_EQUAL(ESP_OK, link_build_status(json_root(doc), &st));
+    json_node_t *none = json_get(json_root(doc), "mcp");
+    TEST_ASSERT_NOT_NULL(none);
+    TEST_ASSERT_EQUAL_UINT(0, json_array_len(none));
+    json_free(doc);
+
+    link_mcp_row_t rows[3] = {
+        { .id = "home", .enabled = true, .state = "connected" },
+        { .id = "lab", .enabled = true, .state = "error" },
+        { .id = "office", .enabled = false, .state = "idle" },
+    };
+    st.mcp_rows = rows;
+    st.mcp_row_count = 3;
+
+    doc = json_new_object();
+    TEST_ASSERT_NOT_NULL(doc);
+    TEST_ASSERT_EQUAL(ESP_OK, link_build_status(json_root(doc), &st));
+
+    json_node_t *mcp = json_get(json_root(doc), "mcp");
+    TEST_ASSERT_EQUAL_UINT(3, json_array_len(mcp));
+
+    json_node_t *home = json_array_at(mcp, 0);
+    TEST_ASSERT_EQUAL_STRING("home", json_string(json_get(home, "id")));
+    bool enabled = false;
+    TEST_ASSERT_TRUE(json_bool(json_get(home, "enabled"), &enabled));
+    TEST_ASSERT_TRUE(enabled);
+    TEST_ASSERT_EQUAL_STRING("connected", json_string(json_get(home, "state")));
+
+    TEST_ASSERT_EQUAL_STRING("error", json_string(json_get(json_array_at(mcp, 1), "state")));
+
+    json_node_t *office = json_array_at(mcp, 2);
+    TEST_ASSERT_TRUE(json_bool(json_get(office, "enabled"), &enabled));
+    TEST_ASSERT_FALSE(enabled);
+    TEST_ASSERT_EQUAL_STRING("idle", json_string(json_get(office, "state")));
     json_free(doc);
 }

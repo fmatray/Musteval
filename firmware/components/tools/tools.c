@@ -786,6 +786,76 @@ static esp_err_t call_event_emit(const json_node_t *args, json_doc_t **out,
 /* `geo.locate` (`04-protocol.md` §4.13, `docs/tools/geo.md`). The cached fix is returned
  * while fresh; a lookup blocks for up to `geo.timeout_ms` per provider, which is what the
  * tool contract tells the model. */
+/* A tool whose name is in the MCP namespace is the server's, not a built-in's: the
+ * caller's arguments are forwarded as the model produced them, because the only
+ * validator for them is the schema the server published, which is what the model was
+ * shown. Re-validating here would be a second grammar that could disagree.
+ *
+ * `06-security.md` T9: a remote server's text reaches the model as a tool result, so it
+ * is bounded by `MCP_BODY_MAX` upstream and by the result cap here. */
+static esp_err_t call_mcp(const tools_context_t *ctx, const char *name,
+                          const json_node_t *args,
+                          json_doc_t **out, const char **wire_code, char *why,
+                          size_t why_cap)
+{
+    char server[MCP_ID_MAX + 1];
+    char tool[MCP_TOOL_NAME_MAX + 1];
+    if (!mcp_tool_split(name, server, sizeof server, tool, sizeof tool)) {
+        set_why(why, why_cap, "mcp: not a namespaced tool name");
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Offered but not advertised: the model invented a name, or the server dropped the
+     * tool since it was listed. Refused as the caller's mistake, not the socket's. */
+    bool offered = false;
+    if (ctx != NULL && ctx->mcp_tools != NULL) {
+        for (size_t i = 0; i < ctx->mcp_count; i++) {
+            if (strcmp(ctx->mcp_tools[i].name, name) == 0) {
+                offered = true;
+                break;
+            }
+        }
+    }
+    if (!offered) {
+        set_why(why, why_cap, "mcp: that server did not advertise this tool");
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* A remote server's tool is third-party code driven by whatever the model was
+     * told (`06-security.md` T9), so it takes the same gate as `gpio.write`. The
+     * registry cannot carry this row because the name is only known at run time. */
+    if (ctx == NULL || !ctx->policy.allow_dangerous) {
+        if (why != NULL && why_cap > 0) {
+            snprintf(why, why_cap, "%s refused: tools.allow_dangerous is false", name);
+        }
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return ESP_ERR_NOT_ALLOWED;
+    }
+
+    /* Heap, not a local: this frame sits on the agent's 8 KiB task stack, and the
+     * request underneath it is a TLS handshake. `mcp_call` allocates its own bodies
+     * for the same reason. */
+    char *text = heap_caps_malloc(TOOLS_RESULT_MAX, MALLOC_CAP_8BIT);
+    if (text == NULL) {
+        set_why(why, why_cap, "mcp: out of memory");
+        if (wire_code != NULL) *wire_code = MCP_WIRE_CODE;
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = mcp_call(server, tool, args, text, TOOLS_RESULT_MAX, why, why_cap);
+    if (err != ESP_OK) {
+        free(text);
+        if (wire_code != NULL) *wire_code = MCP_WIRE_CODE;
+        return err;
+    }
+    /* Text results become a string member rather than an object: a remote tool's reply
+     * is prose, and inventing a structure for it would be a grammar the server never
+     * agreed to. */
+    *out = json_new_object();
+    if (*out != NULL) json_add_string(json_root(*out), "content", text);
+    free(text);
+    return *out != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
 static esp_err_t call_geo_locate(json_doc_t **out, const char **wire_code, char *why,
                                  size_t why_cap)
 {
@@ -999,6 +1069,8 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         err = call_mqtt_list(out, wire_code, why, why_cap);
     } else if (strcmp(name, "mqtt.publish") == 0) {
         err = call_mqtt_publish(args, out, wire_code, why, why_cap);
+    } else if (strncmp(name, "mcp.", 4) == 0) {
+        err = call_mcp(ctx, name, args, out, wire_code, why, why_cap);
     } else if (strcmp(name, "task.set") == 0) {
         /* The gate already refused an unauthorised caller with `E_TOOL`, because the
          * registry marks this tool `TOOLS_GATE_DANGEROUS`. */
@@ -1059,6 +1131,9 @@ void tools_context_from_config(tools_context_t *ctx)
     ctx->i2c_sda = cfg_int_or("tools.i2c_sda", -1);
     ctx->i2c_scl = cfg_int_or("tools.i2c_scl", -1);
     ctx->task_max = (size_t)cfg_int_or("tools.task_max", SCHED_MAX_TASKS);
+    /* Read here so `agent`'s round and `hello_ack`'s capability list cannot disagree
+     * about which remote tools exist. */
+    ctx->mcp_tools = mcp_discovered(&ctx->mcp_count);
     /* `todo` is `agent`'s tree, installed by whoever owns it (`tools_todo_port_t`). */
     ctx->todo.apply = NULL;
     ctx->todo.ctx = NULL;

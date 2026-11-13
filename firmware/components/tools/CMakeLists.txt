@@ -14,14 +14,14 @@ if(IDF_TARGET STREQUAL "linux")
     # `esp_adc`/`esp_driver_i2c` have no `linux` target at all.
     idf_component_register(SRCS ${srcs}
                            INCLUDE_DIRS "include"
-                           REQUIRES store sched
+                           REQUIRES store sched mcp
                            PRIV_REQUIRES cfg clock net skills sys esp_timer)
 else()
     idf_component_register(SRCS ${srcs}
                            INCLUDE_DIRS "include"
-                           REQUIRES store sched geo broker
+                           REQUIRES store sched geo broker mcp
                            PRIV_REQUIRES cfg clock net skills sys esp_timer
                                         esp_driver_gpio esp_adc esp_driver_i2c llm)
-    # `geo` and `mqtt` are required rather than private because `tools.h` names their
-    # types (`tools_task_set_fits` needs neither, but `tools.c` does).
+    # `geo`, `mqtt` and `mcp` are required rather than private because `tools.h` names
+    # their types: `tools_context_t` carries the discovered MCP tools.
 endif()

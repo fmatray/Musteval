@@ -321,6 +321,15 @@ bool tools_offered(const char *name, const tools_context_t *ctx)
     if (strncmp(name, "i2c.", 4) == 0) {
         return ctx != NULL && ctx->i2c_sda >= 0 && ctx->i2c_scl >= 0;
     }
+    if (strncmp(name, "mcp.", 4) == 0) {
+        /* Advertised means the server listed it this run. `tools_json` only ever
+         * offers from that set, so a name outside it was invented by the model. */
+        if (ctx == NULL || ctx->mcp_tools == NULL) return false;
+        for (size_t i = 0; i < ctx->mcp_count; i++) {
+            if (strcmp(ctx->mcp_tools[i].name, name) == 0) return true;
+        }
+        return false;
+    }
     return true;
 }
 

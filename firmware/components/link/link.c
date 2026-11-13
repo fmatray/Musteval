@@ -653,6 +653,19 @@ esp_err_t link_build_hello_ack(json_node_t *obj, const link_hello_t *hello)
         }
     }
 
+    /* §3.2 lists `mcp` separately from `tools`: the same namespaced set, so the bridge
+     * can show which of the model's tools come from a remote server without
+     * re-parsing the namespace. */
+    if (hello->tools != NULL && mcp != NULL) {
+        size_t n = json_array_len(hello->tools);
+        for (size_t i = 0; i < n; i++) {
+            const char *name = json_string(json_array_at(hello->tools, i));
+            if (name != NULL && strncmp(name, "mcp.", 4) == 0) {
+                json_array_push_string(mcp, name);
+            }
+        }
+    }
+
     bool ok = json_add_string(obj, "device",
                               hello->device != NULL ? hello->device : "musteval") &&
               json_add_string(obj, "fw_version",
@@ -684,6 +697,16 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
     json_node_t *mem = json_add_object(obj, "mem");
     json_node_t *sysn = json_add_object(obj, "sys");
     json_node_t *mcp = json_new_array(obj, "mcp");
+    /* `mcp[]`: one row per configured server (`04` §3.9), empty for a board with
+     * none, which is what the §3.9 example shows. */
+    for (size_t i = 0; i < st->mcp_row_count && st->mcp_rows != NULL; i++) {
+        json_node_t *row = json_array_push_object(mcp);
+        if (row == NULL) break;
+        json_add_string(row, "id", st->mcp_rows[i].id != NULL ? st->mcp_rows[i].id : "");
+        json_add_bool(row, "enabled", st->mcp_rows[i].enabled);
+        json_add_string(row, "state",
+                        st->mcp_rows[i].state != NULL ? st->mcp_rows[i].state : "idle");
+    }
     json_node_t *mqtt = json_new_array(obj, "mqtt");
     /* A fix exists or it does not: the key is an object or a JSON null, never an
      * object with no members. */
