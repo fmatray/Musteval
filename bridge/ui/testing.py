@@ -42,6 +42,22 @@ class ModalCanvas(App[Any]):
     """
 
 
+class WidgetHost(App[Any]):
+    """A bare app showing one widget, for a case that needs a mount and nothing else.
+
+    A test that wants to prove what a screen does before and after it is mounted
+    cannot import `textual` to write the host itself: `09` §6 confines the import
+    to `bridge/ui/`, tests included.
+    """
+
+    def __init__(self, widget: Any) -> None:
+        super().__init__()
+        self.widget = widget
+
+    def compose(self) -> Any:
+        yield self.widget
+
+
 def chat_lines(app: Any) -> list[str]:
     """The chat pane as text, one string per rendered line.
 

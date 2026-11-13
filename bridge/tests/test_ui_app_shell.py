@@ -39,6 +39,7 @@ from bridge.ui.modals import (
     Working,
 )
 from bridge.ui.render import binding_pairs
+from bridge.ui.testing import WidgetHost, chat_lines
 
 
 @pytest.fixture(autouse=True)
@@ -582,6 +583,23 @@ async def test_a_control_sequence_from_the_device_never_reaches_the_terminal() -
             assert "\x1b" not in line, repr(line)
             assert "\x07" not in line, repr(line)
     await session.close()
+
+
+@pytest.mark.asyncio
+async def test_a_line_written_before_the_pane_exists_is_kept() -> None:
+    """`05` §5.1: `_start` writes from a worker, so its first line can precede mount.
+
+    A `NoMatches` out of `#chat-log` proved it: the write ran after the pane had
+    gone. That line is the one that says why the link never came up, so it is
+    buffered and replayed on mount rather than dropped.
+    """
+    screen = ChatScreen()
+    screen.write("transport failed", "error")
+
+    host = WidgetHost(screen)
+    async with host.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert "transport failed" in "\n".join(chat_lines(host))
 
 
 @pytest.mark.asyncio

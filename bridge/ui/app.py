@@ -143,6 +143,12 @@ class ChatScreen(Vertical):
         self._cursor = 0
         #: Prompts opened in this pane, which is what makes the first rule absent.
         self._turns = 0
+        #: `#chat-log` exists once `on_mount` has run, which is after the widget is
+        #: mounted but before `is_mounted` flips. `_start` runs in a worker, so its
+        #: first line can arrive before either; buffering keeps that line instead
+        #: of raising out of the worker or silently losing it.
+        self._ready = False
+        self._pending: list[tuple[Any, str]] = []
 
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
@@ -231,6 +237,10 @@ class ChatScreen(Vertical):
         panel.styles.max_height = COMPLETION_ROWS + 1
         panel.display = False
         self._show_hint()
+        self._ready = True
+        pending, self._pending = self._pending, []
+        for text, kind in pending:
+            self.write(text, kind)
         self.query_one("#chat-input", Input).focus()
 
     def _show_hint(self) -> None:
@@ -258,7 +268,19 @@ class ChatScreen(Vertical):
         prose; every other kind is terminal text and is never parsed, so a tag a
         device returned cannot become a heading.
         """
-        log = self.query_one("#chat-log", RichLog)
+        # A line can arrive from a worker before the pane is laid out: `_start`
+        # awaits the transport, so under load its first line lands after `compose`
+        # and, in a test, after teardown. Buffered rather than dropped, because the
+        # line says why the link never came up.
+        if not self._ready:
+            self._pending.append((text, kind))
+            return
+        # Teardown removes the children before the screen itself, so a reply that
+        # lands mid-shutdown has no pane to reach. There is no reader left to tell.
+        found = self.query("#chat-log")
+        if not found:
+            return
+        log = found.first(RichLog)
         theme = self.app.current_theme
         if not isinstance(text, str):
             # A caller that already built a renderable (`render_json_block`) owns
