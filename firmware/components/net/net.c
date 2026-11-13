@@ -343,7 +343,10 @@ esp_err_t net_connect(void)
             if (esp_wifi_sta_get_ap_info(&record) == ESP_OK) {
                 s_rssi = record.rssi;
             }
-            snprintf(s_ssid, sizeof s_ssid, "%s", ap->ssid);
+            /* The precision is the buffer's own bound: `ap->ssid` is 33 bytes and only
+             * ever written by `snprintf`, so the copy cannot truncate — but `%s` lets
+             * the compiler assume it might, and `-Os` turns that into `-Werror`. */
+            snprintf(s_ssid, sizeof s_ssid, "%.*s", (int)sizeof s_ssid - 1, ap->ssid);
             s_state = NET_STATE_CONNECTED;
             s_attempting = false;
             s_failovers = (int32_t)attempt;

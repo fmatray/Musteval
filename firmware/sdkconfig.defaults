@@ -18,3 +18,10 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESP_TASK_WDT_INIT=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Optimise for size, not for debug: `-Og` produced a 1 190 193-byte image and `-Os`
+# produces 1 082 543, a 9% saving on a part where the app partition is fixed at 3 MiB
+# (`partitions.csv`). ESP-IDF's own guidance lists this as the first lever. The cost
+# is that a crash backtrace has fewer optimisations to unwind, which matters only
+# when debugging on a board that a serial probe can reach anyway.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
