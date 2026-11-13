@@ -42,6 +42,20 @@ static bool copy_arguments(char *dst, size_t cap, const json_node_t *node)
     return ok;
 }
 
+/* Copy one string into the reply's `content` field, truncating at the frame cap.
+ * `04` §3.14 makes truncation a reported fact, not a silent one; the loop shortens
+ * and sets `truncated`. An over-long body is a provider reply the frame cannot carry
+ * either way, so it is copied truncated and the length recorded, letting one code
+ * path decide. */
+static void copy_content(agent_reply_t *out, const char *text)
+{
+    size_t n = strlen(text);
+    if (n >= sizeof out->content) n = sizeof out->content - 1;
+    memcpy(out->content, text, n);
+    out->content[n] = '\0';
+    out->content_len = n;
+}
+
 esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
 {
     if (body == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
@@ -65,19 +79,7 @@ esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
     }
 
     const char *content = json_string(json_get(message, "content"));
-    if (content != NULL) {
-        size_t n = strlen(content);
-        if (n >= sizeof out->content) {
-            /* `04` §3.14 makes truncation a reported fact, not a silent one; the loop
-             * shortens and sets `truncated`. Here, an over-long body is a provider
-             * reply the frame cannot carry either way, so it is copied truncated and
-             * the length recorded, letting one code path decide. */
-            n = sizeof out->content - 1;
-        }
-        memcpy(out->content, content, n);
-        out->content[n] = '\0';
-        out->content_len = n;
-    }
+    if (content != NULL) copy_content(out, content);
 
     /* `finish_reason` tells the loop whether `content` is a prefix and whether a cut
      * `arguments` string is the output cap rather than a provider fault. A reason
@@ -126,6 +128,18 @@ esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
             memcpy(slot->args, "{}", 3);
         }
         out->call_count++;
+    }
+
+    /* A thinking model may put its whole answer in `reasoning_content` and leave
+     * `content` empty, which reached `agent.final` as `text:""` — a blank answer the
+     * reader could not tell from a silent failure. Fall back only when there is no
+     * visible content *and* no tool call: an empty `content` beside `tool_calls` is
+     * the normal shape of a tool round, and borrowing reasoning there would replay it
+     * as the assistant turn. The field is not in the OpenAI spec, so it is read as an
+     * optional extra the providers in `03-config.md` §Provider compatibility add. */
+    if (out->content_len == 0 && out->call_count == 0) {
+        const char *reasoning = json_string(json_get(message, "reasoning_content"));
+        if (reasoning != NULL && reasoning[0] != '\0') copy_content(out, reasoning);
     }
 
     int64_t value = 0;

@@ -722,6 +722,20 @@ The agent process is **serialized**. Only one run is active at a time.
    `args_truncated` set instead of failing the parse, and step 4 answers it with an
    `E_TOOL` result naming the cause, so the run retries the call smaller rather than
    dying. A malformed call under any other finish reason is still a provider fault.
+
+   **A thinking model's answer may arrive in `reasoning_content`.** That member is not
+   in the OpenAI spec; the providers in `03-config.md` §Provider compatibility add it,
+   and a model that reasons before answering can leave `content` empty and put the
+   whole answer there. Read as-is, that reached `agent.final` as `text: ""`, which the
+   bridge renders as a blank turn — an answer the reader cannot tell from a silent
+   failure. `agent_parse_reply` therefore falls back to `reasoning_content` when
+   `content` is empty **and** the reply carries no tool call. The tool-call condition
+   is what keeps the fallback from corrupting a normal tool round, where an empty
+   `content` is expected and the reasoning would otherwise be replayed into history as
+   the assistant turn. Visible `content` always wins: the reasoning is the model's
+   working, and presenting it as the answer when a real answer exists would show the
+   reader the private notes instead.
+
 5. **Close-out check**: Before finalizing, inspect the todo tree via
    `agent_todo_phases()` and the rounds used. The check fails in two cases:
 

@@ -1299,6 +1299,55 @@ TEST_CASE("agent_parse_reply reads content and usage", "[m4]")
     free(reply);
 }
 
+/* A thinking model may return its answer only in `reasoning_content`. Without the
+ * fallback that reached `agent.final` as `text:""`: a blank answer, indistinguishable
+ * from a run that produced nothing. */
+TEST_CASE("agent_parse_reply falls back to reasoning_content when content is empty", "[m4]")
+{
+    static const char *body =
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\","
+        "\"reasoning_content\":\"the pin reads high\"},\"finish_reason\":\"stop\"}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_STRING("the pin reads high", reply->content);
+    TEST_ASSERT_EQUAL_size_t(18, reply->content_len);
+    free(reply);
+}
+
+/* Visible content wins: borrowing reasoning when the model did answer would replace
+ * the reply with its own private notes. */
+TEST_CASE("agent_parse_reply prefers content over reasoning_content", "[m4]")
+{
+    static const char *body =
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"done\","
+        "\"reasoning_content\":\"let me think\"},\"finish_reason\":\"stop\"}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_STRING("done", reply->content);
+    free(reply);
+}
+
+/* An empty `content` beside `tool_calls` is the normal shape of a tool round. Falling
+ * back there would push the model's reasoning into history as the assistant turn. */
+TEST_CASE("agent_parse_reply ignores reasoning_content on a tool round", "[m4]")
+{
+    static const char *body =
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\","
+        "\"reasoning_content\":\"I should check the pin\","
+        "\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\","
+        "\"function\":{\"name\":\"gpio.read\",\"arguments\":\"{\\\"pin\\\":4}\"}}]},"
+        "\"finish_reason\":\"tool_calls\"}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(1, reply->call_count);
+    TEST_ASSERT_EQUAL_size_t(0, reply->content_len);
+    TEST_ASSERT_EQUAL_STRING("", reply->content);
+    free(reply);
+}
+
 /* A tool call carries its id, name and the arguments as the provider sent them. */
 TEST_CASE("agent_parse_reply reads a tool call", "[m4]")
 {
