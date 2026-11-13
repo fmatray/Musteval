@@ -101,6 +101,37 @@ bool cfg_ref_is_valid(const char *ref);
  * `line` is modified; `cap` is its whole buffer including the terminator. */
 bool cfg_redact(char *line, size_t cap, const char *const *secrets, size_t n);
 
+/* --- Redaction of everything that leaves over the link -------------------
+ * `06-security.md` §7 rule T2: a `log` frame must carry no secret value. The log
+ * hook runs on whatever task logged and cannot read NVS per line, so the values are
+ * snapshotted once by `cfg_secrets_reload` and `cfg_redact_line` consults that
+ * snapshot. `cfg` owns the snapshot because it is the only module allowed to open
+ * the `secrets` namespace (`08-code-architecture.md` §3); every other module asks
+ * here rather than resolving a secret itself. */
+
+/* Read every value in the `secrets` namespace into the snapshot. Called by
+ * `cfg_load` and by `cfg_store_secret`, so a `/secret set` is redacted from the
+ * next line on. Cheap to call when the namespace is empty. */
+esp_err_t cfg_secrets_reload(void);
+
+/* Drop the snapshot. For `cfg_unload` and for tests. */
+void cfg_secrets_clear(void);
+
+/* Redact the snapshot's values out of `line` in place. Returns true when anything
+ * was replaced. Safe to call before `cfg_secrets_reload`: an empty snapshot is the
+ * same as no secret being present.
+ *
+ * Storage lives in `cfg_doc.c`, which is the pure half; `cfg_secrets_reload` in
+ * `cfg.c` fills it because reading NVS cannot be host-tested. `link_log.c` calls
+ * this, and `link` is built for the `linux` target, so the function it needs must
+ * live where the host build has it. */
+bool cfg_redact_line(char *line, size_t cap);
+
+/* Add one value to the snapshot, called only by `cfg_secrets_reload`. Returns false
+ * when the snapshot is full or the value is empty; a full snapshot redacts the
+ * secrets it holds rather than failing the log line. */
+bool cfg_secrets_add(const char *value);
+
 /* Write a secret into NVS namespace `secrets` (`04` §4.10). An empty value is
  * ESP_ERR_INVALID_ARG, never a deletion. `*stored` is the byte length written. */
 esp_err_t cfg_store_secret(const char *key, const char *value, size_t *stored);

@@ -460,8 +460,9 @@ static int log_hook(const char *fmt, va_list args)
 
     char *frame = s_log_frame;
     size_t written = 0;
-    esp_err_t err = link_log_frame(tag, msg, level, 0, parts.t_ms, frame,
-                                   sizeof(s_log_frame) - 2, &written);
+    esp_err_t err = link_log_frame(tag, msg, sizeof s_log_msg, level, 0,
+                                   parts.t_ms, frame, sizeof(s_log_frame) - 2,
+                                   &written);
     if (err == ESP_OK) {
         /* Timestamps are the hook's own: `ts` is wall time from NTP, which the
          * sys layer owns and this module cannot read. `ts:0` means unsynced, which

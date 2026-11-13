@@ -115,3 +115,47 @@ bool cfg_is_live_path(const char *path)
      * in config is read when it is used. */
     return path != NULL && strncmp(path, "llm.", 4) == 0;
 }
+
+/* --- Secret snapshot for redaction (`06-security.md` §7 T2) ----------------
+ * `cfg_redact` is pure and takes the values it should scrub; this is the storage
+ * that lets the log hook call it without opening NVS per line. The values are
+ * filled once by `cfg_secrets_reload` (board half, `cfg.c`) and never leave RAM.
+ *
+ * One arena, not eight `CFG_SECRET_MAX` arrays: 8 x 512 would be 4 KiB of static
+ * RAM for a device whose largest realistic secret is a 100-byte API key. The arena
+ * holds `CFG_SECRETS_MAX_BYTES` of values, which is eight 256-byte keys, and a
+ * value that does not fit whole is refused rather than truncated — a truncated
+ * secret would redact its prefix and leave the tail on the wire, which is worse
+ * than not arming that one entry. */
+#define CFG_SECRETS_MAX_BYTES 2048
+#define CFG_SECRET_SLOTS 8
+
+static char s_secret_arena[CFG_SECRETS_MAX_BYTES];
+static const char *s_secret_ptrs[CFG_SECRET_SLOTS];
+static size_t s_secret_used;
+static size_t s_secret_count;
+
+void cfg_secrets_clear(void)
+{
+    if (s_secret_used > 0) s_secret_arena[0] = '\0';
+    s_secret_used = 0;
+    s_secret_count = 0;
+}
+
+bool cfg_secrets_add(const char *value)
+{
+    if (value == NULL || *value == '\0') return false;
+    if (s_secret_count >= CFG_SECRET_SLOTS) return false;
+    size_t n = strlen(value) + 1;
+    if (n > sizeof s_secret_arena - s_secret_used) return false;
+    memcpy(s_secret_arena + s_secret_used, value, n);
+    s_secret_ptrs[s_secret_count] = s_secret_arena + s_secret_used;
+    s_secret_used += n;
+    s_secret_count++;
+    return true;
+}
+
+bool cfg_redact_line(char *line, size_t cap)
+{
+    return cfg_redact(line, cap, s_secret_ptrs, s_secret_count);
+}

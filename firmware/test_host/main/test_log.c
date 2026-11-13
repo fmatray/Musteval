@@ -5,6 +5,7 @@
 
 #include "unity.h"
 
+#include "cfg.h"
 #include "link.h"
 
 TEST_CASE("the configured level decides what is emitted", "[log]")
@@ -51,8 +52,9 @@ TEST_CASE("a log frame matches the documented shape", "[log]")
     char line[512];
     size_t written = 0;
 
-    TEST_ASSERT_EQUAL(ESP_OK, link_log_frame("llm", "provider openai timed out",
-                                             "warn", 1730563700, 812340, line,
+    char msg[] = "provider openai timed out";
+    TEST_ASSERT_EQUAL(ESP_OK, link_log_frame("llm", msg, sizeof msg, "warn",
+                                             1730563700, 812340, line,
                                              sizeof(line), &written));
 
     /* Asserted through the parser rather than a pinned string: the id is the
@@ -92,9 +94,10 @@ TEST_CASE("a newline in a log message cannot break framing", "[log]")
     char line[512];
     size_t written = 0;
 
+    char escaped[] = "line one\nline two\twith tab \"quoted\"";
     TEST_ASSERT_EQUAL(ESP_OK,
-                      link_log_frame("net", "line one\nline two\twith tab \"quoted\"",
-                                     "info", 0, 1, line, sizeof(line), &written));
+                      link_log_frame("net", escaped, sizeof escaped, "info", 0, 1,
+                                     line, sizeof(line), &written));
 
     /* Exactly one `\n` may appear, and only as the none of a frame: there is none,
      * because the frame has no terminator until it is written. */
@@ -120,8 +123,8 @@ TEST_CASE("an over-long log line is refused, not truncated", "[log]")
     char small[64];
     size_t written = 999;
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_SIZE,
-                      link_log_frame("net", big, "info", 0, 0, small, sizeof(small),
-                                     &written));
+                      link_log_frame("net", big, sizeof big, "info", 0, 0, small,
+                                     sizeof(small), &written));
 }
 
 TEST_CASE("an ESP-IDF V1 log line is split into its parts", "[log]")
@@ -198,8 +201,9 @@ TEST_CASE("the hook's frame shape survives the round trip", "[log]")
 
     char frame[512];
     size_t written = 0;
-    TEST_ASSERT_EQUAL(ESP_OK, link_log_frame(tag, msg, level, 0, p.t_ms, frame,
-                                             sizeof(frame) - 2, &written));
+    TEST_ASSERT_EQUAL(ESP_OK, link_log_frame(tag, msg, sizeof msg, level, 0,
+                                             p.t_ms, frame, sizeof(frame) - 2,
+                                             &written));
 
     json_doc_t *doc = NULL;
     const char *bad = NULL;
@@ -354,4 +358,64 @@ TEST_CASE("installing the hook twice keeps the first previous handler", "[log]")
     void *second = link_log_install("debug");
     TEST_ASSERT_NOT_NULL(first);
     TEST_ASSERT_EQUAL_PTR(first, second);
+}
+
+TEST_CASE("a secret value never leaves in a log frame", "[log]")
+{
+    /* `06-security.md` §7 rule T2. Armed the way `cfg_secrets_reload` arms it, then
+     * framed and parsed back through the real builder and the real parser: the
+     * assertion is on what the wire would carry, not on a helper being called. */
+    cfg_secrets_clear();
+    TEST_ASSERT_TRUE(cfg_secrets_add("sk-live-SENTINEL"));
+
+    char msg[] = "POST https://api.example/v1 failed, key=sk-live-SENTINEL";
+    char frame[512];
+    size_t written = 0;
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      link_log_frame("llm", msg, sizeof msg, "error", 0, 12, frame,
+                                     sizeof(frame), &written));
+
+    json_doc_t *doc = NULL;
+    const char *bad = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, link_frame_parse(frame, written, &doc, &bad));
+    const char *out = json_string(json_get(json_root(doc), "msg"));
+    TEST_ASSERT_NOT_NULL(out);
+    TEST_ASSERT_NULL(strstr(out, "sk-live-SENTINEL"));
+    TEST_ASSERT_EQUAL_STRING("POST https://api.example/v1 failed, key=[redacted]",
+                             out);
+    json_free(doc);
+
+    /* Cleared, the same message passes through: the scrub is the snapshot, not an
+     * unconditional rewrite of every frame. */
+    cfg_secrets_clear();
+    char plain[] = "POST failed, key=sk-live-SENTINEL";
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      link_log_frame("llm", plain, sizeof plain, "error", 0, 13,
+                                     frame, sizeof(frame), &written));
+    TEST_ASSERT_EQUAL(ESP_OK, link_frame_parse(frame, written, &doc, &bad));
+    TEST_ASSERT_EQUAL_STRING("POST failed, key=sk-live-SENTINEL",
+                             json_string(json_get(json_root(doc), "msg")));
+    json_free(doc);
+}
+
+TEST_CASE("a secret too large to hold whole is refused, not truncated", "[log]")
+{
+    /* A truncated secret would scrub its prefix and leave the tail on the wire,
+     * which reads as redacted and is not. The snapshot therefore refuses a value it
+     * cannot store whole instead of storing part of it. */
+    cfg_secrets_clear();
+    static char huge[2600];
+    memset(huge, 'q', sizeof huge - 1);
+    huge[sizeof huge - 1] = '\0';
+    TEST_ASSERT_FALSE(cfg_secrets_add(huge));
+
+    /* Nothing was armed, so a sentinel that would otherwise match passes through
+     * unchanged: the refusal is the behaviour, not a side effect. */
+    char msg[] = "qqqq-and-a-tail-SENTINEL";
+    char frame[512];
+    size_t written = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, link_log_frame("net", msg, sizeof msg, "info", 0, 0,
+                                            frame, sizeof(frame), &written));
+    TEST_ASSERT_EQUAL_STRING("qqqq-and-a-tail-SENTINEL", msg);
+    TEST_ASSERT_NOT_NULL(strstr(frame, "SENTINEL"));
 }

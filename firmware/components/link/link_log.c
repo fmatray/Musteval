@@ -8,6 +8,10 @@
 
 #include "link.h"
 
+/* `cfg_redact_line`: the `log` frame is the one path off the device for a log line,
+ * so the scrub lives in the builder (`06-security.md` §7 rule T2). */
+#include "cfg.h"
+
 /* Ranked so a configured level can compare. A higher rank is more verbose; a message
  * is emitted when its rank is at or below the configured one. `none` is rank 0, so
  * it hides everything including errors, which is what `device.log_level` says. */
@@ -160,15 +164,22 @@ bool link_log_parse(const char *line, size_t len, link_log_line_t *out)
     return true;
 }
 
-esp_err_t link_log_frame(const char *tag, const char *msg, const char *level,
-                         int64_t ts, int64_t t_ms, char *out, size_t out_cap,
-                         size_t *written)
+esp_err_t link_log_frame(const char *tag, char *msg, size_t msg_cap,
+                         const char *level, int64_t ts, int64_t t_ms, char *out,
+                         size_t out_cap, size_t *written)
 {
-    if (tag == NULL || msg == NULL || level == NULL || out == NULL ||
-        written == NULL) {
+    if (tag == NULL || msg == NULL || msg_cap == 0 || level == NULL ||
+        out == NULL || written == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     *written = 0;
+
+    /* `06-security.md` §7 rule T2: a `log` frame carries no secret value. Done here,
+     * on the one path out, rather than at each call site: the values are snapshotted
+     * by `cfg_secrets_reload`, so this costs a substring scan of a short line and no
+     * NVS read. The tag is not scrubbed: it is a module name the firmware chose, not
+     * a value a provider supplied. */
+    cfg_redact_line(msg, msg_cap);
 
     /* Built through the document builder rather than snprintf so a quote or a
      * newline in `msg` is escaped: §1.1 rule 1 forbids a literal newline in a

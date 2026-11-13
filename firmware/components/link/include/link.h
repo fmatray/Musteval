@@ -94,12 +94,16 @@ void link_next_id(char *out, size_t cap);
 const char *link_log_filter(char level_letter, const char *configured);
 
 /* Build one `log` frame (§3.10) into `out`. `tag` is the module name and `msg` the
- * rendered line, already redacted by `cfg` (`08` §3: no module formats its own log
- * line around secrets). Returns ESP_ERR_INVALID_SIZE when the frame would exceed
- * `out_cap`, never a truncated frame. */
-esp_err_t link_log_frame(const char *tag, const char *msg, const char *level,
-                         int64_t ts, int64_t t_ms, char *out, size_t out_cap,
-                         size_t *written);
+ * rendered line. `msg` is mutable, is `msg_cap` bytes including its terminator, and
+ * is redacted in place before it is framed
+ * (`06-security.md` §7 rule T2): a `log` frame is the only path a log line takes off
+ * the device, so making this the single choke point means no caller can forget the
+ * scrub, and the host suite proves the scrub through the real builder. Returns
+ * ESP_ERR_INVALID_SIZE when the frame would exceed `out_cap`, never a truncated
+ * frame. */
+esp_err_t link_log_frame(const char *tag, char *msg, size_t msg_cap,
+                         const char *level, int64_t ts, int64_t t_ms, char *out,
+                         size_t out_cap, size_t *written);
 
 /* One ESP-IDF V1 log line, split back into its parts. V1 bakes the prefix into the
  * format string (`log/include/esp_log_format.h`: `LOG_FORMAT`), so a composed line

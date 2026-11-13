@@ -68,6 +68,10 @@ esp_err_t cfg_load_degraded(char *degraded, size_t degraded_cap)
     }
 
     cfg_adopt(doc);
+    /* The document names which secrets exist, and the redaction snapshot must hold
+     * their values from the first line after boot. Refreshed here rather than at
+     * `link_log_install` so a `reload` after `/secret set` picks up a new key. */
+    cfg_secrets_reload();
     return ESP_OK;
 }
 
@@ -104,6 +108,10 @@ esp_err_t cfg_store_secret(const char *key, const char *value, size_t *stored)
     if (err == ESP_OK) {
         /* A key, a length, never the value (`06-security.md` §secret handling). */
         ESP_LOGI(TAG, "secret %s stored (%u bytes)", key, (unsigned)*stored);
+        /* The new value must be scrubbed from the next log line, not the next
+         * boot: a secret that is typed and then echoed by a failing request is
+         * exactly the case T2 exists for. */
+        cfg_secrets_reload();
     }
     return err;
 }
@@ -184,4 +192,38 @@ esp_err_t cfg_validate_refs(json_doc_t *doc, char *why, size_t why_cap)
     if (why == NULL) why_cap = 0;
     if (why_cap > 0) why[0] = '\0';
     return walk_refs(json_root(doc), why, why_cap);
+}
+
+/* --- Secret snapshot (`06-security.md` §7 T2) -----------------------------
+ * `cfg_doc.c` owns the storage; this is the board half that fills it, because
+ * enumerating the `secrets` namespace is an NVS call and cannot be host-tested.
+ * Only the values go in: the key names are allowed in diagnostics
+ * (`06-security.md` §7), the values are not. */
+esp_err_t cfg_secrets_reload(void)
+{
+    cfg_secrets_clear();
+
+    char key[16];
+    for (size_t index = 0;; index++) {
+        esp_err_t err = store_nvs_key_at(CFG_SECRETS_NAMESPACE, index, key,
+                                         sizeof key);
+        if (err == ESP_ERR_NOT_FOUND) {
+            /* End of the namespace, not a fault: a device with no secret set yet
+             * has nothing to redact and still has to boot. */
+            return ESP_OK;
+        }
+        if (err != ESP_OK) return err;
+
+        char value[CFG_SECRET_MAX];
+        size_t len = 0;
+        if (store_nvs_get_str(CFG_SECRETS_NAMESPACE, key, value, sizeof value,
+                              &len) != ESP_OK || len == 0) {
+            continue;
+        }
+        if (!cfg_secrets_add(value)) {
+            /* Snapshot full: stop rather than read values it cannot hold. The
+             * secrets already stored are still scrubbed from every log line. */
+            return ESP_OK;
+        }
+    }
 }

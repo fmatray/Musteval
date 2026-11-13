@@ -58,6 +58,15 @@ functions return `esp_err_t`.
 - `cfg_get_str(key, buf, len)`: Get value from `config.json`.
 - `cfg_resolve_secret(ref, buf, len)`: Resolve `nvs:<key>` to plaintext via
   NVS namespace `secrets`.
+- `cfg_secrets_reload()` / `cfg_secrets_clear()` / `cfg_redact_line(line, cap)`:
+  the RAM snapshot that lets a log line be scrubbed without an NVS read on the
+  logging task's stack. `cfg_load` and `cfg_store_secret` call `cfg_secrets_reload`,
+  so a `/secret set` is redacted from the next line on rather than the next boot.
+  The snapshot holds values only (never key names) and never leaves RAM. `cfg` owns
+  it because it is the only module allowed to open the `secrets` namespace
+  (`08-code-architecture.md` §3); `link` asks here rather than resolving a secret
+  itself. The storage half is `cfg_doc.c`, pure and host-tested; only the NVS
+  enumeration is in `cfg.c`.
 
 ### `store` — Storage
 Two LittleFS partitions, two VFS mounts (`docs/01-hardware.md` §4). The agent's
@@ -443,6 +452,15 @@ module hands it a JSON body built with the `store` helpers.
   filled by `app`.
 - `ping` is answered inside `link_task` and never reaches the sink, so the
   keepalive costs no handler round-trip.
+- `link_log_frame(tag, msg, msg_cap, level, ts, t_ms, out, out_cap, written)`
+  redacts `msg` in place before framing it (`06-security.md` §7 rule T2, `04` §3.10).
+  The builder is the one path a log line takes off the device, so the scrub sits
+  there rather than at each call site: a caller cannot forget it, and the host suite
+  proves it through the real builder and the real parser. `msg_cap` is the buffer's
+  whole size, because the mask is longer than a short secret. The scrub reads the
+  snapshot `cfg_secrets_reload` fills at `cfg_load` and after each `secret.set`, so
+  the log hook does no NVS work on the logging task's stack. `tag` is not scrubbed:
+  it is a module name the firmware chose, never a provider-supplied value.
 
 ### `sched` — Scheduler
 - `sched_init()`: Load `/tasks.json` and start timers.
