@@ -144,6 +144,21 @@ changes; read them as the failure modes this codebase actually has.
   with 11, and a later `-k`-filtered run measured only what that filter imported. A
   stale `coverage.json` is discarded, never interpreted — check the file's mtime
   against the last edit before reading a single number from it.
+- **A value the device chose is data, not markup.** The Status grid, the broker
+  list and every modal title are Rich markup `Static`s, and the SSID, provider id and
+  filesystem path in them come from the device or from an access point. An SSID
+  containing `[/bold]` raised `MarkupError` inside the compositor and blanked the
+  screen; the bridge chose to interpret bytes it did not own. Escape what is spliced
+  into markup, declare `markup=False` where the widget shows nothing else, and strip
+  control characters from any device string bound for a `RichLog`.
+- **The doc's rule applies to the widget that was exempted.** `05` §13.3 has said
+  every screen ends in a hint line built by `hint_bar` since the first screen shipped,
+  and it was obeyed by every screen but the two that mattered: the app row was a
+  Textual `Footer` that clipped mid-word and advertised an unbound `Ctrl+P`, and four
+  screens bound keys with no row at all. A rule stated once and implemented per screen
+  is a rule with as many chances to be skipped as there are screens; the test derives
+  the expected rows from each screen's own `BINDINGS` so a new binding cannot land
+  undocumented.
 - **An unreachable guard costs the gate, and deleting it is the fix.** Four guards in
   `bridge/ui/modals.py` and one in `client/session.py` could not be entered by any
   caller: a copy-pasted `_choices`, an attribute written and never read, base-class
