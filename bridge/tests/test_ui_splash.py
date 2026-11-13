@@ -181,3 +181,62 @@ def test_narration_says_creates_when_there_is_no_array_yet():
 
 def test_onboard_is_a_local_command_so_it_sends_no_frame():
     assert "onboard" in LOCAL_COMMANDS
+
+
+# -- the splash screen itself (`05` §5.9) --------------------------------
+
+
+async def test_the_splash_shows_until_a_key_closes_it(monkeypatch):
+    """A reader on a real terminal sees the panel first; any key dismisses it and
+    hands focus to the composer. Under `run_test` the app is headless, so the flag
+    is what decides — this drives the interactive branch."""
+    from bridge.client import Session
+    from bridge.link import FakeTransport
+    from bridge.ui import BridgeApp
+    from bridge.ui.app import SplashScreen
+
+    from .test_ui import _reply
+
+    monkeypatch.setattr(type(BridgeApp(None)), "is_headless", False, raising=False)
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(60):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        splash = app.query_one("#splash", SplashScreen)
+        assert splash.display, "the panel was not shown on a non-headless run"
+        assert not app.query_one("#chat").display
+
+        await pilot.press("space")
+        await pilot.pause(0.2)
+        assert not splash.display, "a key did not dismiss the panel"
+        assert app.query_one("#chat").display
+        await session.close()
+
+
+async def test_a_second_key_does_not_re_hide_the_screen(monkeypatch):
+    """`_gone` latches: the timer and a key both arrive, and only the first acts."""
+    from bridge.client import Session
+    from bridge.link import FakeTransport
+    from bridge.ui import BridgeApp
+    from bridge.ui.app import SplashScreen
+
+    from .test_ui import _reply
+
+    monkeypatch.setattr(type(BridgeApp(None)), "is_headless", False, raising=False)
+    session = Session(FakeTransport(on_write=_reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(60):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        splash = app.query_one("#splash", SplashScreen)
+        await pilot.press("space")
+        await pilot.pause(0.2)
+        splash.action_close_splash()  # the timer firing after the key
+        assert not splash.display
+        assert app.query_one("#chat").display
+        await session.close()

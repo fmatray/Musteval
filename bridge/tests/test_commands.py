@@ -215,6 +215,13 @@ def test_wifi_subcommands_map_to_their_commands():
         assert frame.body["name"] == f"wifi.{verb}"
 
 
+def test_wifi_scan_asks_the_radio_not_the_station():
+    """`05-bridge.md` §7: `scan` is the only verb answered by the radio, so it is the
+    one that can list a network the station never joined."""
+    (frame,) = parse("/wifi scan")
+    assert frame.body["name"] == "wifi.scan"
+
+
 def test_wifi_refuses_an_unknown_verb():
     with pytest.raises(CommandError):
         parse("/wifi bogus")

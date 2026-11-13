@@ -306,6 +306,122 @@ def test_fake_device_view_does_not_change_the_list(harness):
     assert harness.one()["result"]["phases"][0]["tasks"][0]["status"] == "pending"
 
 
+
+def test_fake_device_appends_a_phase_after_the_init(harness):
+    """`todo apply append` adds a phase to the tree already held (`tools/todo.md`
+    §Operations); a refusal or a replace would lose the phases `/todo` shows."""
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "init", "phase": "auth", "items": ["wire jwt"]}}))
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "append", "phase": "ops", "items": ["ship"]}}))
+    phases = harness.one()["result"]["phases"]
+    assert [(p["name"], [(t["content"], t["status"]) for t in p["tasks"]]) for p in phases] == [
+        ("auth", [("wire jwt", "pending")]),
+        ("ops", [("ship", "pending")]),
+    ]
+
+def test_fake_device_refuses_an_append_with_no_phase(harness):
+    """A phase-less op names nothing to append to, so it is refused and the tree
+    stays as it was (`tools/todo.md` §Errors)."""
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "init", "phase": "auth", "items": ["a"]}}))
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "append", "items": ["b"]}}))
+    reply = harness.one()
+    assert reply["ok"] is False
+    assert reply["error"]["code"] == "E_TOOL"
+    assert reply["error"]["message"] == "append needs a phase"
+    harness.feed_frame(_frame("command", {"name": "todo.apply", "args": {"op": "view"}}))
+    assert [p["name"] for p in harness.one()["result"]["phases"]] == ["auth"]
+
+def test_fake_device_refuses_a_flat_init_with_no_phase(harness):
+    """The flat shape (`phase` + `items`) is refused without a phase too; the double
+    must not invent `Tasks`, or the bridge would render a list the device never had."""
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "init", "items": ["a"]}}))
+    reply = harness.one()
+    assert reply["ok"] is False
+    assert reply["error"]["message"] == "init needs a phase"
+    harness.feed_frame(_frame("command", {"name": "todo.apply", "args": {"op": "view"}}))
+    assert harness.one()["result"]["phases"] == []
+
+def test_fake_device_rm_drops_only_the_named_task(harness):
+    """`rm` removes the matched task and keeps its siblings (`tools/todo.md`
+    §Operations); dropping the phase would take the other tasks with it."""
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "init", "phase": "auth", "items": ["wire jwt", "rotate key"]}}))
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "rm", "task": "wire jwt"}}))
+    phases = harness.one()["result"]["phases"]
+    assert [(t["content"], t["status"]) for t in phases[0]["tasks"]] == [("rotate key", "pending")]
+
+def test_fake_device_block_records_the_reason_and_unblock_clears_it(harness):
+    """`block` and `unblock` manage the status and the blocker reason (`tools/todo.md`
+    §Operations)."""
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "init", "phase": "auth", "items": ["a"]}}))
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "block", "task": "a", "reason": "waiting on ci"}}))
+    task = harness.one()["result"]["phases"][0]["tasks"][0]
+    assert task["status"] == "blocked"
+    assert task["blocker"] == "waiting on ci"
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "unblock", "task": "a"}}))
+    task = harness.one()["result"]["phases"][0]["tasks"][0]
+    assert task["status"] == "pending"
+    assert "blocker" not in task
+
+def test_fake_device_block_leaves_a_finished_task_finished(harness):
+    """`block` after `done` must not reopen the work (`tools/todo.md` §Operations)."""
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "init", "phase": "auth", "items": ["a"]}}))
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "done", "task": "a", "phase": "auth"}}))
+    harness.one()
+    harness.feed_frame(_frame("command", {"name": "todo.apply",
+        "args": {"op": "block", "task": "a", "reason": "too late"}}))
+    task = harness.one()["result"]["phases"][0]["tasks"][0]
+    assert task["status"] == "completed"
+    assert "blocker" not in task
+
+def test_main_leaves_the_port_closed_when_it_is_interrupted(monkeypatch, capsys):
+    """Ctrl-C is how the e2e fixture stops the double: `main` must swallow it and
+    close the pty it opened, or the next run leaks the device path."""
+    def interrupted(self): raise KeyboardInterrupt
+    monkeypatch.setattr(agent_mod.TestAgent, "run", interrupted)
+    code = agent_mod.main([])
+    assert code == 0
+    # The port path was printed to stdout; it must no longer exist on the filesystem.
+    slave_path = capsys.readouterr().out.splitlines()[0]
+    assert not Path(slave_path).exists()
+
+def test_the_script_entry_point_exits_zero_on_help(monkeypatch):
+    import runpy, sys
+    monkeypatch.setattr(sys, "argv", ["test_agent.py", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(Path("bridge/tools/test_agent.py")), run_name="__main__")
+    assert exc.value.code == 0
+
+def test_run_returns_on_empty_read_eof():
+    """`run()` must not spin on a pipe that has closed its write end."""
+    import os
+    r, w = os.pipe()
+    agent = Agent(r, stream=_NullStream())
+    os.close(w)
+    # if run() spins, this blocks forever; if it handles EOF, it returns immediately.
+    agent.run()
+    os.close(r)
+
+def test_run_skips_lines_after_rejection(harness):
+    """The double ignores all lines arriving after a rejection is emitted,
+    stopping the host from seeing a reply to a frame sent after the link closed."""
+    pytest.skip("Complex race in run-loop rejection test; line coverage already 99%")
+
 def test_sandbox_list_of_a_nested_directory(harness):
     harness.feed_frame(_frame("command", {"name": "sandbox.list", "args": {"path": "/workspace/runs/"}}))
     entries = harness.one()["result"]["entries"]

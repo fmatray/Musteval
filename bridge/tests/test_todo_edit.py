@@ -151,6 +151,7 @@ def test_deleting_the_last_phase_clears_the_list():
     ({"op": "modify-task", "task": "sketch", "value": "tag"}, "duplicate content: tag"),
     ({"op": "modify-phase", "phase": "design", "value": "ship"}, "duplicate phase name: ship"),
     ({"op": "modify-phase", "value": "x"}, r"unknown phase: \(none\)"),
+    ({"op": "modify-phase", "phase": "design", "value": "  "}, "modify-phase needs a value"),
     ({"op": "delete-task", "task": "ghost"}, "unknown task: ghost"),
     ({"op": "delete-phase", "phase": "ghost"}, "unknown phase: ghost"),
     ({"op": "move-task", "task": "sketch", "where": "left"}, "up|down"),
@@ -168,3 +169,10 @@ def test_the_callers_tree_is_never_mutated():
     todo_edit(phases, op="modify-task", task="sketch", value="redraw")
     todo_edit(phases, op="move-phase", phase="ship", where="up")
     assert phases == snapshot
+
+
+def test_moving_the_first_phase_up_leaves_the_tree_alone():
+    """`05` §7: a move off either end is a no-op, not a rotation. Wrapping would move
+    the phase the reader asked to keep first to the bottom."""
+    phases = todo_edit(_phases(), op="move-phase", phase="design", where="up")
+    assert [p["phase"] for p in _tree(phases)] == ["design", "ship"]

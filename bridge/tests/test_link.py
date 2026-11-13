@@ -534,3 +534,42 @@ async def test_serial_transport_close_survives_a_port_that_refuses_to_close(monk
 def test_serial_transport_exposes_the_port_it_was_built_with():
     """`__main__` and the tests both need the path back; it never changes."""
     assert SerialTransport("/dev/ttyUSB9").port == "/dev/ttyUSB9"
+
+
+async def test_a_line_that_already_ends_in_a_newline_is_written_once(monkeypatch):
+    """`04` §2: framing is one line per frame. Appending a second `\\n` would put a
+    blank line on the wire, which the device reads as a malformed frame."""
+    written: list[bytes] = []
+
+    class Port:
+        in_waiting = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def write(self, data):
+            written.append(data)
+
+        def flush(self):
+            pass
+
+        def read(self, size):
+            return b""
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", Port)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.02)
+    await transport.open()
+    await transport.write_line(b"frame\n")
+    assert written == [b"frame\n"]
+    await transport.close()
+
+
+async def test_closing_a_transport_that_was_never_opened_is_not_an_error():
+    """`__main__` closes on every exit path, including the one where the port never
+    opened; a missing handle is the normal case there, not a failure."""
+    transport = SerialTransport("/dev/never-opened")
+    await transport.close()
+    assert transport._serial is None

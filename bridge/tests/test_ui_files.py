@@ -14,7 +14,7 @@ from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode
 from bridge.ui import BridgeApp
 from bridge.ui.app import FilesScreen, SANDBOX_ROOT
-from bridge.ui.modals import FilePrompt, FilterPrompt
+from bridge.ui.modals import ConfirmPrompt, FilePrompt, FilterPrompt, ValuePrompt
 
 from .test_ui import _reply
 from .test_ui_input import _connected
@@ -541,3 +541,154 @@ async def test_the_header_counts_entries_and_not_the_parent_row():
         await app.browse("/workspace/runs")
         await pilot.pause(0.2)
         assert "1 entry" in str(screen.query_one("#files-header").content)
+
+
+# -- the screen's own actions (`05` §5.8, §5.8.1) ------------------------
+
+
+def _select(screen: FilesScreen, name: str) -> None:
+    table = screen.query_one("#files-table")
+    for row in range(table.row_count):
+        if str(table.get_row_at(row)[1]) == name:
+            table.move_cursor(row=row)
+            return
+    raise AssertionError(f"{name} not in {_names(screen)}")
+
+
+async def _await_screen(pilot, app, kind) -> None:
+    for _ in range(80):
+        if isinstance(app.screen, kind):
+            return
+        await pilot.pause(0.02)
+    raise AssertionError(f"{kind.__name__} never opened; screen is {app.screen!r}")
+
+
+def _chat_text(app) -> str:
+    log = app.query_one("#chat-log")
+    return "\n".join(str(line.text) for line in log.lines)
+
+
+async def test_deleting_a_directory_names_what_it_holds_before_asking():
+    """`05` §5.8: a populated directory is never removed on one keypress, and the
+    confirmation says the child count so "delete runs" and "delete runs and its 47
+    files" do not look the same."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        _select(screen, "runs")
+        app.run_worker(app.delete_entry())
+        await _await_screen(pilot, app, ConfirmPrompt)
+        question = app.screen.question
+        assert "runs" in question
+        assert "1" in question  # the child count, not a bare name
+        await pilot.press("n")
+        await pilot.pause(0.2)
+        assert _device.deleted == []  # cancelling removed nothing
+        await app.session.close()
+
+
+async def test_confirming_a_delete_sends_the_path():
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        _select(screen, "notes.txt")
+        app.run_worker(app.delete_entry())
+        await _await_screen(pilot, app, ConfirmPrompt)
+        await pilot.press("y")
+        await pilot.pause(0.3)
+        assert ("/workspace/notes.txt", False) in _device.deleted
+        await app.session.close()
+
+
+async def test_editing_a_directory_reads_nothing():
+    """`Ctrl+E` is a file verb: on a directory it must not try to read one."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        _select(screen, "runs")
+        await app.edit_file()
+        await pilot.pause(0.2)
+        assert not any(w.get("path") == "/workspace/runs" for w in _device.writes)
+        await app.session.close()
+
+
+async def test_downloading_the_workspace_root_is_refused_by_name():
+    """`05` §5.8.1: the root itself is not downloadable, and saying so beats an
+    empty tree written to the host."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        # The refusal names the root, so reach it the way a user would: walk into a
+        # directory and select `..`, which resolves back to `/workspace`.
+        await app.browse("/workspace/runs")
+        await pilot.pause(0.2)
+        _select(screen, "..")
+        await app.download_entry()
+        await pilot.pause(0.2)
+        assert "not downloadable" in _chat_text(app)
+        await app.session.close()
+
+
+async def test_downloading_a_file_writes_it_to_the_host(tmp_path):
+    """The file's own bytes land on the host, under the path the prompt returned."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        _select(screen, "notes.txt")
+        target = tmp_path / "notes.txt"
+        app.run_worker(app.download_entry())
+        await _await_screen(pilot, app, ValuePrompt)
+        app.screen.query_one("#value-input").value = str(target)
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert target.read_text() == "hello world"
+        assert "downloaded 1 file" in _chat_text(app)
+        await app.session.close()
+
+
+async def test_a_truncated_read_is_refused_instead_of_copying_a_prefix(tmp_path):
+    """A read above the cap returns a prefix; copying it silently would leave the
+    host with a file that looks complete and is not."""
+    app = _app()
+    _device.truncated = {"/workspace/notes.txt"}  # type: ignore[attr-defined]
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        _select(screen, "notes.txt")
+        target = tmp_path / "prefix.txt"
+        app.run_worker(app.download_entry())
+        await _await_screen(pilot, app, ValuePrompt)
+        app.screen.query_one("#value-input").value = str(target)
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert not target.exists()
+        assert "above the" in _chat_text(app)
+        await app.session.close()
+
+
+async def test_uploading_a_missing_source_reports_it_and_creates_nothing():
+    app = _app()
+    async with app.run_test() as pilot:
+        await _open_files(pilot, app)
+        app.run_worker(app.upload_entry())
+        await _await_screen(pilot, app, ValuePrompt)
+        app.screen.query_one("#value-input").value = "/definitely/absent/file.txt"
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert _device.writes == []
+        assert "uploaded" not in _chat_text(app)
+        await app.session.close()
+
+
+async def test_uploading_a_host_file_reaches_the_browsed_directory(tmp_path):
+    source = tmp_path / "up.txt"
+    source.write_text("payload")
+    app = _app()
+    async with app.run_test() as pilot:
+        await _open_files(pilot, app)
+        app.run_worker(app.upload_entry())
+        await _await_screen(pilot, app, ValuePrompt)
+        app.screen.query_one("#value-input").value = str(source)
+        await pilot.press("enter")
+        await pilot.pause(0.5)
+        assert _device.buffers.get("/workspace/up.txt") == b"payload"  # type: ignore[attr-defined]
+        await app.session.close()

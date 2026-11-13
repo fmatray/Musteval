@@ -187,3 +187,152 @@ def test_the_seed_skill_satisfies_the_frontmatter_schema():
 
 def test_the_seed_ships_no_tasks_json():
     assert not (Path("firmware/userfs/tasks.json")).exists()
+
+def _littlefs_python() -> str:
+    """Finds a littlefs-compatible interpreter or skips the test."""
+    try:
+        return builder.find_python()
+    except builder.ToolError as exc:
+        pytest.skip(f"littlefs-python not installed: {exc}")
+
+def test_a_missing_partition_table_is_a_loud_error(tmp_path):
+    with pytest.raises(builder.ToolError, match="partition table not found"):
+        builder.partition("userfs", path=tmp_path / "partitions.csv")
+
+def test_a_missing_sdkconfig_asks_for_a_firmware_build(tmp_path):
+    with pytest.raises(builder.ToolError, match="build the firmware once first"):
+        builder.obj_name_len(path=tmp_path / "sdkconfig")
+
+def test_an_sdkconfig_without_the_object_name_length_is_refused(tmp_path):
+    sdk = tmp_path / "sdkconfig"
+    sdk.write_text("CONFIG_LITTLEFS_SOMETING=1\n")
+    with pytest.raises(builder.ToolError, match="does not set CONFIG_LITTLEFS_OBJ_NAME_LEN"):
+        builder.obj_name_len(path=sdk)
+
+def test_the_probe_treats_a_non_executable_path_as_no_littlefs(tmp_path):
+    # A path that is gone or not executable is a "no" from the probe.
+    assert builder._imports_littlefs(str(tmp_path / "absent")) is False
+
+def test_an_explicit_interpreter_is_the_only_one_tried():
+    # --python is an answer or an error; no fallbacks are used.
+    assert list(builder._candidates("/opt/esp/python")) == ["/opt/esp/python"]
+
+def test_find_python_refuses_an_explicit_interpreter_without_littlefs(tmp_path):
+    # Assert the refusal names the explicit path and suggests the install command.
+    # we use sys.executable as it's guaranteed to exist but lacks littlefs in .venv.
+    py = sys.executable
+    with pytest.raises(builder.ToolError) as exc:
+        builder.find_python(explicit=py)
+    assert f"Tried: {py}" in str(exc.value)
+    assert "pip install littlefs-python==0.15.0" in str(exc.value)
+
+def test_esptool_prefers_the_one_beside_the_interpreter(tmp_path):
+    py = tmp_path / "python"
+    py.write_text("")
+    sibling = tmp_path / "esptool.py"
+    sibling.write_text("")
+    assert builder.esptool(str(py)) == str(sibling)
+
+def test_esptool_falls_back_to_path_and_refuses_when_absent(tmp_path, monkeypatch):
+    # Case 1: sibling absent, but esptool is on PATH.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    found = bin_dir / "esptool"
+    found.write_text("")
+    found.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert builder.esptool(str(tmp_path / "python")) == str(found)
+    # Case 2: neither available.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(builder.ToolError, match="esptool.py not found"):
+        builder.esptool(str(tmp_path / "python"))
+
+def test_list_image_reports_what_the_filesystem_holds(tmp_path):
+    py = _littlefs_python()
+    src = tmp_path / "src"; src.mkdir()
+    (src / "a.txt").write_text("a")
+    (src / "sub").mkdir(); (src / "sub" / "b.md").write_text("b")
+    image = builder.build_image(src, tmp_path / "img.bin", 0x4000, 64, python=py)
+    assert sorted(builder.list_image(py, image)) == ["/a.txt", "/sub", "/sub/b.md"]
+
+def test_build_image_refuses_a_source_that_is_not_a_directory(tmp_path):
+    out = tmp_path / "img.bin"
+    with pytest.raises(builder.ToolError, match="source directory not found"):
+        builder.build_image(tmp_path / "gone", out, 0x2000, 64)
+    assert not out.exists()
+
+def test_build_image_refuses_an_image_that_is_not_the_partition_size(tmp_path, monkeypatch):
+    # Guards against a misbehaving tool that produces a short image.
+    def fake_run(*args, **kwargs):
+        # The tool uses subprocess.run for both the littlefs probe and the build.
+        cmd = args[0] if isinstance(args[0], list) else args
+        if len(cmd) > 5 and "littlefs" in cmd and "create" in cmd:
+            Path(cmd[5]).write_bytes(b"\0" * 10)
+        return type('obj', (object,), {'returncode': 0, 'stdout': b'', 'stderr': b''})
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    src = tmp_path / "src"; src.mkdir()
+    with pytest.raises(builder.ToolError) as exc:
+        builder.build_image(src, tmp_path / "img.bin", 0x2000, 64)
+    assert "8192" in str(exc.value)
+
+def test_flash_uses_the_partition_offset_and_fails_on_a_dead_port(tmp_path, capfd):
+    py = _littlefs_python()
+    try:
+        builder.esptool(py)
+    except builder.ToolError:
+        pytest.skip("esptool not available beside the interpreter")
+    image = tmp_path / "img.bin"
+    image.write_bytes(b"\0" * 0x2000)
+    with pytest.raises(subprocess.CalledProcessError):
+        builder.flash(image, "/dev/does-not-exist", 460800, python=py)
+    err = capfd.readouterr().err
+    assert "does-not-exist" in err
+
+def test_main_builds_and_lists_without_flashing(tmp_path, capfd):
+    py = _littlefs_python()
+    src = tmp_path / "src"; src.mkdir()
+    (src / "a.txt").write_text("hello")
+    out = tmp_path / "build" / "userfs.bin"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    code = builder.main(["--source", str(src), "-o", str(out), "--python", py])
+    assert code == 0
+    _, size = builder.partition("userfs")
+    assert out.stat().st_size == size
+    out_text = capfd.readouterr().out
+    assert "/a.txt" in out_text
+    assert "no --port: image built, flash not written" in out_text
+
+def test_main_returns_two_when_no_interpreter_can_import_littlefs(tmp_path, capfd):
+    code = builder.main(["--python", str(tmp_path / "gone")])
+    assert code == 2
+    assert "pip install littlefs-python" in capfd.readouterr().err
+
+def test_main_reports_a_build_failure_and_returns_one(tmp_path, capfd):
+    code = builder.main(["--source", str(tmp_path / "gone"), "-o", str(tmp_path / "i.bin")])
+    assert code == 1
+    assert "image build failed: source directory not found" in capfd.readouterr().err
+
+def test_main_refuses_contradictory_flags():
+    with pytest.raises(SystemExit) as exc:
+        builder.main(["--build-only", "--port", "/dev/ttyUSB0"])
+    assert exc.value.code == 2
+
+def test_main_reports_a_flash_failure_as_exit_one(tmp_path, capfd):
+    py = _littlefs_python()
+    src = tmp_path / "src"; src.mkdir(); (src / "a.txt").write_text("a")
+    code = builder.main(["--source", str(src), "-o", str(tmp_path / "i.bin"),
+                         "--port", "/dev/does-not-exist", "--python", py])
+    assert code == 1
+    assert "flash failed" in capfd.readouterr().err
+
+def test_the_script_entry_point_builds_and_exits_zero(tmp_path, monkeypatch):
+    import runpy, sys
+    src = tmp_path / "src"; src.mkdir(); (src / "a.txt").write_text("a")
+    out = tmp_path / "i.bin"
+    monkeypatch.setattr(sys, "argv", ["build_userfs.py", "--build-only", "--source", str(src), "-o", str(out)])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(Path("bridge/tools/build_userfs.py")), run_name="__main__")
+    assert exc.value.code == 0
+    assert out.stat().st_size == builder.partition("userfs")[1]
+

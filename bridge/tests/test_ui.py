@@ -929,3 +929,123 @@ async def test_every_chat_line_is_classified_and_markdown_is_prose_only():
             str(s.style) for s in styled["refused"]._segments
         )
     await session.close()
+
+
+# -- task and file screen actions (`05` §5.3, §5.5) ----------------------
+
+
+async def test_running_the_selected_task_sends_the_command():
+    """`05` §13.1: `Ctrl+X` runs the row under the cursor through the same
+    `tasks.run` path Enter does, so the two cannot drift."""
+    from bridge.ui import BridgeApp
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        sent.append(frame)
+        return _reply(line)
+
+    session = Session(FakeTransport(on_write=reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        app.submit("/tasks")
+        await pilot.pause(0.2)
+        app.action_show("tasks")
+        await pilot.pause(0.1)
+        app.query_one("#task-table").move_cursor(row=0)
+        await app.run_selected_task()
+        await pilot.pause(0.1)
+        runs = [f for f in sent if f.get("name") == "tasks.run"]
+        assert runs and runs[0]["args"] == {"id": "t1"}
+        await session.close()
+
+
+async def test_running_with_no_task_selected_says_so_and_sends_nothing():
+    """An empty table is a refusal in the chat, not a `tasks.run` with a made-up id."""
+    from bridge.ui import BridgeApp
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        sent.append(json.loads(line))
+        return _reply(line)
+
+    session = Session(FakeTransport(on_write=reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        app.action_show("tasks")
+        await pilot.pause(0.1)
+        before = len([f for f in sent if f.get("name") == "tasks.run"])
+        await app.run_selected_task()
+        await pilot.pause(0.1)
+        assert len([f for f in sent if f.get("name") == "tasks.run"]) == before
+        log = app.query_one("#chat-log")
+        assert "no task selected" in "\n".join(str(line.text) for line in log.lines)
+        await session.close()
+
+
+async def test_deleting_and_toggling_the_selected_task_send_their_commands():
+    """`delete_task` removes and `toggle_task` flips `enabled`; each is refused on an
+    empty table rather than sending a request the device would reject."""
+    from bridge.ui import BridgeApp
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        sent.append(json.loads(line))
+        return _reply(line)
+
+    session = Session(FakeTransport(on_write=reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        app.action_show("tasks")
+        await pilot.pause(0.1)
+        await app.delete_task()
+        await app.toggle_task()
+        await pilot.pause(0.1)
+        assert not any(f.get("name") in {"tasks.delete", "tasks.set"} for f in sent)
+        await session.close()
+
+
+async def test_toggling_the_selected_task_flips_enabled():
+    """The row's own `enabled` is inverted and sent back whole, so the device is not
+    asked to merge a partial task."""
+    from bridge.ui import BridgeApp
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        sent.append(json.loads(line))
+        return _reply(line)
+
+    session = Session(FakeTransport(on_write=reply), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.session.state.value == "connected":
+                break
+            await pilot.pause(0.02)
+        app.submit("/tasks")
+        await pilot.pause(0.2)
+        app.action_show("tasks")
+        await pilot.pause(0.1)
+        app.query_one("#task-table").move_cursor(row=0)
+        await app.toggle_task()
+        await pilot.pause(0.1)
+        set_frames = [f for f in sent if f.get("name") == "tasks.set"]
+        assert set_frames, "tasks.set was not sent"
+        assert set_frames[0]["args"]["task"]["enabled"] is False
+        await session.close()

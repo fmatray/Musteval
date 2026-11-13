@@ -665,3 +665,53 @@ async def test_a_rejection_during_the_connect_attempt_closes_the_port():
     assert await session.connect() is LinkState.REJECTED
     assert transport._opened is False
     await session.close()
+
+
+async def test_a_ping_sent_as_a_request_does_not_count_as_a_command_in_flight():
+    """`04` §2.4: the heartbeat must not hold the command window. A ping that counted
+    would pause the heartbeat it *is*, and a `request`-shaped ping would starve it."""
+
+    session = Session(FakeTransport(on_write=_agent()), **{**FAST, "ping_interval": 99})
+    await session.connect()
+    try:
+        assert session._commands_in_flight == 0
+        await session.request(Frame(type="ping", id=new_id("b"), ts=0, body={}), timeout=1)
+        assert session._commands_in_flight == 0
+    finally:
+        await session.close()
+
+
+async def test_failing_pending_leaves_a_future_that_already_answered():
+    """A rejection can race an answer that has already landed; overwriting it with an
+    exception would turn a delivered reply into a spurious failure."""
+    session = Session(FakeTransport(on_write=_agent()), **{**FAST, "ping_interval": 99})
+    await session.connect()
+    try:
+        done = asyncio.get_running_loop().create_future()
+        done.set_result("answered")
+        session._pending["b-1"] = done
+        session._fail_pending(SessionError("link rejected"))
+        assert done.result() == "answered"
+        assert session._pending == {}
+    finally:
+        await session.close()
+
+
+async def test_a_supervisor_that_never_starts_still_lets_the_first_attempt_resolve():
+    """`connect` awaits the first attempt; a session closed before the loop turns
+    must not leave that wait hanging."""
+    session = Session(FakeTransport(on_write=_agent()), **FAST)
+    session._stopping = True
+    await session._supervise()
+    assert session._first_attempt.is_set()
+
+
+async def test_the_loops_exit_without_touching_the_transport_once_stopping():
+    """`close` sets `_stopping` first and cancels the tasks; a loop that runs anyway
+    reads or writes a released port."""
+    transport = FakeTransport(on_write=_agent())
+    session = Session(transport, **FAST)
+    session._stopping = True
+    await session._read_loop()
+    await session._ping_loop()
+    assert transport.written == []
