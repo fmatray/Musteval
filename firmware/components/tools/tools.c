@@ -6,6 +6,7 @@
  * and only an executed one needs a board. */
 
 #include "tools.h"
+#include "sched.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -727,6 +728,59 @@ static esp_err_t call_sys_diagnostics(const json_node_t *args, json_doc_t **out,
 
 /* --- Dispatcher ----------------------------------------------------------- */
 
+/* --- Events (`tools/events.md`) ------------------------------------------ */
+
+/* The two destinations are both reached here and both are outside this module: the
+ * scheduler owns the match and the frames (`08-code-architecture.md` §1.1 makes
+ * `tools` → `sched` one of the seven permitted edges), and `sched` answers with the
+ * hit count the tool reports. A call with no hits is a success, not an error. */
+/* `tools/tasks.md` §`task.list`: the stored task objects, read through `sched` so the
+ * tool and `/tasks.json` cannot disagree. `sched_emit_json` writes the same document
+ * the whole-file rewrite does, and the array is copied out under its lock. */
+static esp_err_t call_task_list(json_doc_t **out, const char **wire_code, char *why,
+                                size_t why_cap)
+{
+    json_doc_t *doc = NULL;
+    esp_err_t err = sched_stored_json(&doc);
+    if (err != ESP_OK) {
+        set_why(why, why_cap, "task.list: the schedule is unavailable");
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return err;
+    }
+    const json_node_t *tasks = json_get(json_root(doc), "tasks");
+    *out = json_new_object();
+    if (*out == NULL) {
+        json_free(doc);
+        return ESP_ERR_NO_MEM;
+    }
+    json_node_t *root = json_root(*out);
+    if (tasks != NULL) {
+        json_add_node(root, "tasks", tasks);
+    } else {
+        json_new_array(root, "tasks");
+    }
+    json_free(doc);
+    return ESP_OK;
+}
+
+static esp_err_t call_event_emit(const json_node_t *args, json_doc_t **out,
+                                 const char **wire_code, char *why, size_t why_cap)
+{
+    const char *type = json_string(json_get(args, "type"));
+    const char *data = json_string(json_get(args, "data"));
+    if (!tools_event_args_ok(type, data, why, why_cap)) {
+        if (wire_code != NULL) *wire_code = "E_TOOL";
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t hits = sched_trigger_event(type, data);
+    *out = json_new_object();
+    if (*out == NULL) return ESP_ERR_NO_MEM;
+    json_node_t *root = json_root(*out);
+    json_add_bool(root, "ok", true);
+    add_int(root, "task_hits", (int64_t)hits);
+    return ESP_OK;
+}
+
 esp_err_t tools_call(const tools_context_t *ctx, const char *name,
                      const json_node_t *args, json_doc_t **out,
                      const char **wire_code, char *why, size_t why_cap)
@@ -760,6 +814,10 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         err = call_memory(name, ctx, args, out, why, why_cap);
     } else if (strcmp(name, "sys.diagnostics") == 0) {
         err = call_sys_diagnostics(args, out, why, why_cap);
+    } else if (strcmp(name, "task.list") == 0) {
+        err = call_task_list(out, wire_code, why, why_cap);
+    } else if (strcmp(name, "event.emit") == 0) {
+        err = call_event_emit(args, out, wire_code, why, why_cap);
     } else if (strcmp(name, "todo") == 0) {
         /* Through the port, because the tree belongs to `agent` (L3) and calling up
          * would break `08-code-architecture.md` §1.1. */

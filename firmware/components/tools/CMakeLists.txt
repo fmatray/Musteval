@@ -14,12 +14,12 @@ if(IDF_TARGET STREQUAL "linux")
     # `esp_adc`/`esp_driver_i2c` have no `linux` target at all.
     idf_component_register(SRCS ${srcs}
                            INCLUDE_DIRS "include"
-                           REQUIRES store
+                           REQUIRES store sched
                            PRIV_REQUIRES cfg clock net skills sys esp_timer)
 else()
     idf_component_register(SRCS ${srcs}
                            INCLUDE_DIRS "include"
-                           REQUIRES store
+                           REQUIRES store sched
                            PRIV_REQUIRES cfg clock net skills sys esp_timer
                                         esp_driver_gpio esp_adc esp_driver_i2c llm)
 endif()

@@ -28,6 +28,7 @@
 #include "net.h"
 #include "agent.h"
 #include "link.h"
+#include "sched.h"
 #include "store.h"
 #include "sys.h"
 #include "tools.h"
@@ -71,11 +72,22 @@ static void start_services(bool safe_mode)
                                               : esp_err_to_name(err));
     }
 
+    if (net_connected()) {
+        /* `02-firmware.md` §3.1 step 5: the trigger fires on the transition it names,
+         * so it is raised here rather than inside `net`, which does not know `sched`
+         * exists (`08-code-architecture.md` §1.1). */
+        (void)sched_trigger_bare(SCHED_TRIGGER_WIFI_CONNECTED);
+    }
+
     err = clock_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
         ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
     }
-    if (net_connected() && clock_sync() != ESP_OK) {
+    if (net_connected() && clock_sync() == ESP_OK) {
+        /* Step 6: `ntp_synced` is the same transition, and a run it fires is the first
+         * one whose timestamps mean anything. */
+        (void)sched_trigger_bare(SCHED_TRIGGER_NTP_SYNCED);
+    } else if (net_connected()) {
         ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(ESP_ERR_INVALID_STATE));
     }
 
@@ -154,6 +166,20 @@ static esp_err_t emit_failure_detail(const char *name, const char *reply_to,
 static esp_err_t emit_failure(const char *name, const char *reply_to, const char *code, const char *msg)
 {
     return emit_failure_detail(name, reply_to, code, msg, NULL, -1);
+}
+
+/* `02-firmware.md` §2.1: `sched_set_submit()` is the one port that lets a fired task
+ * start a run, and `main` owns it because only `main` may call `agent_submit`. A
+ * refusal is the agent's to report, so it is logged here and the fire still counts
+ * (`04` §3.16 reports the attempt with no `run_id`). */
+static esp_err_t sched_submit(const char *prompt, size_t len, const char *source,
+                              char *run_id_out, size_t run_id_cap)
+{
+    agent_source_t kind = AGENT_SOURCE_TASK;
+    if (source != NULL && strcmp(source, "template") == 0) kind = AGENT_SOURCE_TEMPLATE;
+    esp_err_t err = agent_submit(prompt, len, kind, NULL, run_id_out, run_id_cap);
+    if (err != ESP_OK) ESP_LOGW(TAG, "task run refused: %s", esp_err_to_name(err));
+    return err;
 }
 
 static const char *wire_code(esp_err_t err)
@@ -1137,23 +1163,32 @@ static void answer_command(const json_node_t *frame)
                         strcmp(name, "tasks.run") == 0 ||
                         strcmp(name, "tasks.set") == 0 ||
                         strcmp(name, "tasks.delete") == 0)) {
-        /* `07-roadmap.md` M5 delivers `sched` and `tasks.json` execution; until it
-         * lands there is no task store to read, and inventing an empty list would
-         * tell the bridge "no tasks" about a device that has never read one. The
-         * honest answer is the one the catalog gives a missing dependency: the
-         * command is named, the reason is stated. */
-        /* `02-firmware.md` §safe mode: `tasks.run` needs the scheduler and is
-         * refused with `E_SAFE_MODE` there. Answered before the unwired message so
-         * the reason names the real blocker; a run that cannot exist yet is still
-         * a different answer than "this device is in safe mode". */
+        /* `02-firmware.md` §3.2: `tasks.run` needs the scheduler and is refused in safe
+         * mode; the other three read or rewrite the file, which the recovery path
+         * needs. */
         if (s_safe_mode && strcmp(name, "tasks.run") == 0) {
             emit_failure(name, reply_to, "E_SAFE_MODE",
                          "safe mode: repair config, then reload");
             json_free(body); return;
         }
-        emit_failure(name, reply_to, "E_INTERNAL",
-                     "tasks are not wired yet: the scheduler lands in M5");
-        json_free(body); return;
+        json_doc_t *result = NULL;
+        char why[96] = "";
+        esp_err_t r = sched_command(name, args, &result, why, sizeof why);
+        if (r != ESP_OK) {
+            /* `04` §4.4: a bad task object or a full file is `E_CONFIG`, and the
+             * detail names the key. A missing id is the same refusal class. */
+            char message[96];
+            snprintf(message, sizeof message, "%s", why[0] ? why : "command refused");
+            emit_failure(name, reply_to,
+                         r == ESP_ERR_NO_MEM ? "E_STORAGE" : "E_CONFIG", message);
+            json_free(body); return;
+        }
+        if (result != NULL) {
+            const json_node_t *nodes = json_root(result);
+            json_add_node(json_root(body), "result", nodes);
+            json_free(result);
+        }
+        built = ESP_OK;
     } else if (name && (strcmp(name, "mqtt.publish") == 0 ||
                         strcmp(name, "mqtt.status") == 0)) {
         /* M6 (`07-roadmap.md`). Neither `E_MQTT` nor `E_GEO` fits: both are
@@ -1236,12 +1271,24 @@ static void answer_command(const json_node_t *frame)
         } else {
             ESP_LOGW(TAG, "boot counter not cleared on reload");
         }
+        /* `04` §4.2 re-reads the files, so the schedule is re-read with the config.
+         * Outside the safe-mode branch above: a `reload` that clears safe mode has
+         * just started the services, and this is the only place `/tasks.json` is read
+         * after boot. A refused file leaves the armed schedule in place. */
+        bool tasks_ok = true;
+        if (!s_safe_mode && sched_reload() != ESP_OK) {
+            tasks_ok = false;
+            ESP_LOGW(TAG, "reload: /tasks.json was refused; the armed schedule stands");
+        }
         json_node_t *result = json_add_object(root, "result");
         json_add_string(root, "name", "reload");
         json_add_bool(root, "ok", true);
         if (result) {
             json_node_t *list = json_new_array(result, "reloaded");
-            if (list) json_array_push_string(list, "config");
+            if (list) {
+                json_array_push_string(list, "config");
+                if (tasks_ok && !s_safe_mode) json_array_push_string(list, "tasks");
+            }
             json_node_t *warnings = json_new_array(result, "warnings");
             if (warnings && degraded[0] != '\0') {
                 /* `04` §4.2: the config loaded, and this is why it is not fully
@@ -1300,6 +1347,11 @@ static void on_link_frame(const json_node_t *frame)
 
     if (strcmp(type, "hello") == 0) {
         const char *reply_to = json_string(json_get(frame, "id"));
+        /* `04` §4.11: `serial_connected` fires on the `LINK_WAIT` → `LINK_UP`
+         * transition, and `hello` is that transition — the host opened the port and
+         * said so. Fired before the reply so a task's run is queued ahead of anything
+         * the bridge asks next. */
+        (void)sched_trigger_bare(SCHED_TRIGGER_SERIAL_CONNECTED);
         /* `§3.2`: the set callable *now*. Built from the same registry and the same
          * `tools_offered` predicate `tools_json` uses, so a tool the model cannot
          * call cannot be advertised either. */
@@ -1534,8 +1586,33 @@ void app_main(void)
     }
     link_log_install("info");
 
+    /* `02-firmware.md` §3.1 step 9, split in two: `sched_init` allocates and reads
+     * nothing, `sched_start` loads `/tasks.json`, arms the timer and fires `boot`. Safe
+     * mode skips the second (`§3.2`: the file is not loaded or fired) while
+     * `tasks.list` and `tasks.delete` still answer, which is the recovery path. */
+    err = sched_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "sched: init failed: %s: nothing is scheduled",
+                 esp_err_to_name(err));
+    } else {
+        sched_set_submit(sched_submit);
+    }
+
     start_services(safe_mode);
 
-    ESP_LOGW(TAG, "boot stops before the scheduler: counter stays at %" PRId32,
-             count);
+    if (!safe_mode && err == ESP_OK) {
+        esp_err_t r = sched_start();
+        if (r != ESP_OK) ESP_LOGW(TAG, "sched: start failed: %s", esp_err_to_name(r));
+    }
+
+    /* `02-firmware.md` §3.1 step 10: reaching idle is what clears the guard, so a boot
+     * that panics between here and the next reset still counts. Safe mode is left out
+     * on purpose: it is a state the operator exits explicitly with `reload` (§3.2),
+     * and clearing here would end it on the next reset without a repair. */
+    if (!safe_mode) {
+        if (store_nvs_set_int("boot_failures", 0) != ESP_OK) {
+            ESP_LOGW(TAG, "boot guard: counter not cleared at idle");
+        }
+    }
+    ESP_LOGI(TAG, "boot: idle");
 }

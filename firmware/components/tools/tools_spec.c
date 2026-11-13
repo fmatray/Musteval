@@ -336,10 +336,51 @@ const char *tools_unbuilt_reason(const char *name)
     if (name == NULL) return NULL;
     if (strcmp(name, "geo.locate") == 0) return "geo.locate is not implemented before M6";
     if (strncmp(name, "mqtt.", 5) == 0) return "mqtt is not implemented before M6";
-    if (strncmp(name, "task.", 5) == 0 || strcmp(name, "event.emit") == 0) {
-        return "the scheduler is not implemented before M5";
+    if (strcmp(name, "task.list") == 0) {
+        /* `tools/tasks.md`: the list is a plain read of `/tasks.json`, so it ships with
+         * the scheduler. `task.set` writes the file and needs `tools.task_max`, which
+         * is M6 (`07-roadmap.md`). */
+        return NULL;
+    }
+    if (strcmp(name, "task.set") == 0) {
+        return "task.set is not implemented before M6";
     }
     return NULL;
+}
+
+/* --- `event.emit` arguments (`tools/events.md` §`event.emit`) --------------- */
+
+/* `type` is 1..32 bytes of `[a-z0-9._-]` and `data` is at most 512. Both bounds are
+ * prose in the tool contract rather than schema keywords, so the tool enforces them
+ * and this predicate is where that rule is host-tested. The charset is the one the
+ * `event` trigger's `name` uses (`03-config.md` §tasks), so any emitted type is a
+ * possible trigger name. */
+bool tools_event_args_ok(const char *type, const char *data, char *why, size_t why_cap)
+{
+    if (type == NULL || type[0] == '\0') {
+        if (why != NULL && why_cap > 0) snprintf(why, why_cap, "type: required string");
+        return false;
+    }
+    size_t n = strlen(type);
+    if (n > 32) {
+        if (why != NULL && why_cap > 0) snprintf(why, why_cap, "type: longer than 32 chars");
+        return false;
+    }
+    for (const char *c = type; *c != '\0'; c++) {
+        bool ok = (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '.' ||
+                  *c == '_' || *c == '-';
+        if (!ok) {
+            if (why != NULL && why_cap > 0) {
+                snprintf(why, why_cap, "type: only [a-z0-9._-] is allowed");
+            }
+            return false;
+        }
+    }
+    if (data != NULL && strlen(data) > 512) {
+        if (why != NULL && why_cap > 0) snprintf(why, why_cap, "data: longer than 512 chars");
+        return false;
+    }
+    return true;
 }
 
 /* --- Wire error code (`04-protocol.md` §5) -------------------------------- */
