@@ -1426,3 +1426,35 @@ async def test_the_model_picker_lists_the_stored_name_when_the_provider_omits_it
         app.modal.action_submit()
         await pilot.pause()
     assert app.dismissed["value"] == "gemma4:cloud"
+
+
+async def test_an_empty_base_url_falls_back_to_the_chosen_provider_row():
+    """`05` §7.2: the provider choice fills the address, and a reader who clears the
+    field has not asked for a provider with no address — the row's own is used, so
+    `writes_provider` still has the `base_url` `03` requires."""
+    entries, _ = providers.catalog()
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(ProviderStep({}, entries))
+        assert await _mounted(pilot, "#step-provider")
+        app.screen.query_one("#step-provider").value = "openrouter"
+        await pilot.pause(0.2)
+        app.screen.query_one("#step-base-url").value = ""
+        answered = app.screen.answer()
+    assert answered.base_url == next(
+        p.base_url for p in entries if p.id == "openrouter"
+    )
+    assert answered.provider == "openrouter"
+
+
+async def test_a_provider_with_no_row_offers_no_thinking_level():
+    """`05` §7.1: a level is only offered when the provider can express it. An `id`
+    the table does not name has no levels, so the step must show none rather than an
+    empty `Select` over a member the request would reject."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(ModelStep(models=["m"], provider="nobody"))
+        assert await _mounted(pilot, "#step-model-select")
+        assert not app.screen.query("#step-thinking")
+        assert app.screen.answer()["thinking"] == "none"
+

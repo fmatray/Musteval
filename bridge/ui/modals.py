@@ -701,8 +701,6 @@ class ModelStep(_StepBox):
         levels = _thinking_levels(
             self.entries, self.provider, self.thinking, model, self.efforts
         )
-        if not levels:
-            return
         widget = self.query_one("#step-thinking", Select)
         current = widget.value if isinstance(widget.value, str) else ""
         widget.set_options((level, level) for level in levels)

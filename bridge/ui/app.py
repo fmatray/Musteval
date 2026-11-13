@@ -1240,9 +1240,9 @@ class BridgeApp(App):
             self._chat().write(f"{exc}", kind="error")
             return
         # A listing path is always a directory, so it is shown with its `/`
-        # (`sandbox_display`), and `normalise` strips it again on the way out.
-        if not path.endswith("/"):
-            path += "/"
+        # (`sandbox_display`). `normalise` never returns one, so this appends it
+        # unconditionally rather than testing a condition that is always true.
+        path += "/"
         self._files_path = path
         await self._request("sandbox.list", {"path": path})
 

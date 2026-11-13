@@ -1,6 +1,6 @@
 """`app.py`'s frame routing and the arms no slash command reaches directly.
 
-`02` §? no — `05` §10: a push frame arrives with no request behind it, and a
+`05` §10: a push frame arrives with no request behind it, and a
 `command.result` is routed by its `name`. Both are pure dispatch, so each case is
 driven by feeding the frame the device would send and asserting the surface the
 reader sees. The rest is `action_back`/`action_reconnect`, which are bindings
@@ -302,3 +302,20 @@ async def test_a_broker_list_with_no_servers_says_so():
     await _run(_device(), body)
 
 
+async def test_a_frame_type_the_bridge_does_not_route_is_ignored():
+    """`05` §10 names the frames the bridge acts on, and the device may add one
+    before the bridge learns it. An unhandled type must leave every pane as it was
+    rather than raise inside the reader loop and drop the link."""
+    async def body(app, pilot):
+        await app._start()
+        before = _text(app)
+        app._on_frame(Frame(type="brownout.warn", id="d-1", ts=0, body={"mv": 2600}))
+        await pilot.pause(0.1)
+        assert _text(app) == before
+        # And the app still routes what it does know.
+        app._on_frame(Frame(type="log", id="d-2", ts=0,
+                            body={"level": "warn", "tag": "net", "msg": "after"}))
+        await pilot.pause(0.1)
+        assert any("after" in line for line in app._logs().buffer.visible())
+
+    await _run(_device(), body)

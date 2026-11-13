@@ -97,7 +97,10 @@ def _device(line: bytes) -> list[bytes]:
             {"result": {"from": args["from"], "to": args["to"], "moved": True}}
         )
     _device.deleted.append((args["path"], args.get("recursive", False)))
-    return result({"result": {"path": args["path"], "deleted": True, "entries": 0}})
+    # The count is what the device actually removed, so the chat line's "and N
+    # entries" is driven by the tree rather than by a literal in the double.
+    entries = len(TREE.get(args["path"].rstrip("/"), [])) if args.get("recursive") else 0
+    return result({"result": {"path": args["path"], "deleted": True, "entries": entries}})
 
 
 _device.writes = []  # type: ignore[attr-defined]

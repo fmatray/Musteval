@@ -396,3 +396,17 @@ async def test_a_directory_delete_names_the_count_and_recurses_only_when_there_i
         frames = [f for f in _sandbox_frames(app) if f.get("name") == "sandbox.delete"]
         assert frames[-1]["args"] == {"path": "/workspace/runs", "recursive": True}
         assert "1 entries" in asked[-1]
+
+
+async def test_a_delete_reply_reports_how_many_entries_it_took():
+    """`04` §4.19: the device names the count in `result.entries`, and the chat line
+    repeats it — a bare "ok" leaves the reader unable to tell a one-file delete from
+    a directory that took forty with it."""
+    app = _app()
+    async with app.run_test() as pilot:
+        screen = await _open_files(pilot, app)
+        screen.selected_entry = lambda: ("/workspace/runs", "dir")  # type: ignore[assignment]
+        app.push_screen_wait = _answering(True)  # type: ignore[method-assign]
+        await app.delete_entry()
+        await pilot.pause(0.3)
+        assert "and 1 entries" in _text(app)

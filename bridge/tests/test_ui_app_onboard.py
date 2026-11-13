@@ -9,6 +9,8 @@ is under test here is the decision `app.py` takes on its answer.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from bridge import providers
@@ -463,3 +465,34 @@ async def test_a_malformed_provider_file_is_named_once_not_once_per_step(tmp_pat
         await app.onboard()
         text = "\n".join(chat_lines(app))
         assert text.count("providers.json") == 1
+
+
+async def test_a_truncated_scan_says_so_before_the_network_form():
+    """`05` §7.2: `wifi.scan` caps the list, and a form that silently shows a prefix
+    reads as "these are all the networks" — the SSID that was cut looks absent."""
+    device = _Device()
+    inner = device.__call__
+
+    def scan_too(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("name") != "wifi.scan":
+            return inner(line)
+        device.seen.append(frame)
+        return [json.dumps({
+            "v": 1, "type": "command.result", "id": "d-9", "ts": 0,
+            "reply_to": frame["id"], "name": "wifi.scan", "ok": True,
+            "result": {"networks": [{"ssid": "A"}, {"ssid": "B"}], "truncated": True},
+            "duration_ms": 0,
+        }).encode() + b"\n"]
+
+    app = BridgeApp(Session(FakeTransport(on_write=scan_too), ack_timeout=1,
+                            ping_interval=99))
+    async with app.run_test() as pilot:
+        async def cancel(_screen):
+            return None
+
+        app.push_screen_wait = cancel  # type: ignore[method-assign]
+        await app._onboard_network()
+        await pilot.pause(0.1)
+        assert "2 networks shown; the list was truncated" in chat_lines(app)
+        await app.session.close()
