@@ -604,7 +604,7 @@ reads are never refused.
 | `wifi.connect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
 | `wifi.disconnect` | `{}` | wifi object (§3.9), `state: "off"` | `E_WIFI` (radio did not leave), `E_BUSY` (run in flight or a connect already in flight) | yes |
 | `wifi.reconnect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
-| `todo.apply` | `{op, task?, phase?, items?, content?, reason?, from?, to?}` | `{phases:[{name, tasks:[{content,status,blocker?}]}]}` | `E_TOOL` (schema violation, no task matches, or a bound breach), `E_INTERNAL` | yes |
+| `todo.apply` | `{op, task?, phase?, items?, list?, reason?}` | `{phases:[{name, tasks:[{content,status,blocker?}]}]}` | `E_TOOL` (schema violation, `no task matches "<target>"`, or a bound breach), `E_INTERNAL` | yes |
 | `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
 
 

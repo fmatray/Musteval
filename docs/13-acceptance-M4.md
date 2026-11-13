@@ -385,13 +385,18 @@ need no provider. Recover from safe mode first if the board is in it.
       alone and set `blocker` on the other; `rm` deleted one task and kept the phase;
       a target naming nothing answered `E_TOOL` with the list untouched; and bare
       `init` cleared it. Re-driven through `bin/bridge --send`, the real command path:
-      `/todo init auth`, `/todo append auth "wire jwt" "rotate key"`, and `/todo start
-      wire jwt` each built the tree they name, while `/todo append` and `/todo append
-      auth` were both refused host-side with the usage string instead of a frame.
+      `/todo init auth "wire jwt" "rotate key"` and `/todo start wire jwt` each built
+      the tree they name, while `/todo init auth`, `/todo append` and `/todo append
+      auth` were all refused host-side with the usage string instead of a frame.
       Every refusal names what is wrong rather than the old generic `todo refused`:
-      `append needs a phase`, `append needs items`, `start needs a task`, `duplicate
-      content`, `item is longer than 120 characters`, `phase is longer than 40
-      characters`, `at most 8 phases`, `duplicate phase name`, `unknown task status`.
+      `init needs a phase`, `phase is longer than 40 characters`, `item is longer than
+      120 characters`, `at most 8 phases`, `at most 32 tasks`, `duplicate phase
+      name`, `item needs content`, `unknown task status`, `too many phases`,
+      `duplicate content`, `blocker is over 120 characters`, `append needs a phase`,
+      `append needs items`, `start needs a task`, `<op> needs a task or a phase`,
+      `op is required`, `unknown op`, `no task matches "<target>"`, `no task matches
+      "<target>" (not an id; use the task text)`, `no task matches "<target>" (list is
+      empty)`.
       The command is the `todo` tool's own apply path, so `/todo done 3` and the
       model's `{"op":"done","task":"3"}` are one code path — asserted by
       construction, not by comparison.

@@ -53,6 +53,13 @@ static void why_phase_long(char *why, size_t why_cap)
     }
 }
 
+/* A phase that is absent and one that is too long are different mistakes, and
+ * `arg_ok_len` cannot tell them apart: NULL is not "long". */
+static void why_no_phase(char *why, size_t why_cap)
+{
+    if (why != NULL) snprintf(why, why_cap, "init needs a phase");
+}
+
 static void why_too_many_tasks(char *why, size_t why_cap)
 {
     if (why != NULL) {
@@ -278,6 +285,10 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
         const char *name = json_string(json_get(entry, "phase"));
         const json_node_t *items = json_get(entry, "items");
         size_t inner = json_array_len(items);
+        if (name == NULL || name[0] == '\0') {
+            why_no_phase(why, why_cap);
+            return ESP_ERR_INVALID_ARG;
+        }
         if (!arg_ok_len(name, AGENT_TODO_PHASE_MAX)) {
             why_phase_long(why, why_cap);
             return ESP_ERR_INVALID_ARG;
@@ -314,8 +325,8 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
         }
     }
 
-    /* Validated in full before the first insert, so a bad entry in the last phase
-     * cannot leave the first phases applied. */
+    /* Safe because `todo_apply` hands this op `s_scratch` and commits it with
+     * `*list = s_scratch` only on success, not because of the pass above. */
     todo_list_clear(list);
     for (size_t i = 0; i < n; i++) {
         const json_node_t *entry = json_array_at(phases, i);
@@ -351,12 +362,15 @@ static esp_err_t op_init_nested(todo_list_t *list, const json_node_t *args,
     return ESP_OK;
 }
 
-/* `init` from flat `items` plus an optional `phase`, defaulting to "Tasks". */
+/* `init` from flat `items` plus a required `phase`. */
 static esp_err_t op_init_flat(todo_list_t *list, const json_node_t *args,
                               char *why, size_t why_cap)
 {
     const char *phase_name = arg_string(args, "phase");
-    if (phase_name == NULL) phase_name = "Tasks";
+    if (phase_name == NULL || phase_name[0] == '\0') {
+        why_no_phase(why, why_cap);
+        return ESP_ERR_INVALID_ARG;
+    }
     if (!arg_ok_len(phase_name, AGENT_TODO_PHASE_MAX)) {
         why_phase_long(why, why_cap);
         return ESP_ERR_INVALID_ARG;
@@ -448,6 +462,19 @@ static esp_err_t op_append(todo_list_t *list, const json_node_t *args,
 
 /* `start`, `done`, `drop`, `rm`, `block`, `unblock` — the targeted ops, whose only
  * differences are which statuses they skip and what they write. */
+/* A target shaped like `task-7` can only be a task id, and no such id exists: the
+ * hint says what to pass instead. */
+static bool target_looks_like_id(const char *target)
+{
+    if (target == NULL || strncmp(target, "task-", 5) != 0 || target[5] == '\0') {
+        return false;
+    }
+    for (const char *p = target + 5; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') return false;
+    }
+    return true;
+}
+
 static esp_err_t op_targeted(todo_list_t *list, const json_node_t *args,
                              const char *op, char *why, size_t why_cap)
 {
@@ -477,7 +504,16 @@ static esp_err_t op_targeted(todo_list_t *list, const json_node_t *args,
     bool marks[AGENT_TODO_MAX_TASKS];
     size_t hits = resolve_targets(list, task, phase, marks);
     if (hits == 0) {
-        if (why != NULL) snprintf(why, why_cap, "no task matches");
+        const char *target = task ? task : (phase ? phase : "");
+        if (why != NULL) {
+            if (target_looks_like_id(target)) {
+                snprintf(why, why_cap, "no task matches \"%s\" (not an id; use the task text)", target);
+            } else if (list->task_count == 0) {
+                snprintf(why, why_cap, "no task matches \"%s\" (list is empty)", target);
+            } else {
+                snprintf(why, why_cap, "no task matches \"%s\"", target);
+            }
+        }
         return ESP_ERR_INVALID_ARG;
     }
 

@@ -245,9 +245,61 @@ def test_fake_device_keeps_a_todo_list_across_ops(harness):
     assert harness.one()["result"]["phases"][0]["tasks"][0]["status"] == "completed"
 
 
-def test_fake_device_view_does_not_change_the_list(harness):
+def test_fake_device_keeps_the_statuses_a_nested_init_carries(harness):
+    """`/todo edit` sends the whole tree as `init` `list`, so the double has to read
+    the item objects rather than flattening them: a rewrite that lost a status would
+    turn the editor's reorder into data loss, and the echo would hide it."""
     harness.feed_frame(
-        _frame("command", {"name": "todo.apply", "args": {"op": "init", "items": ["a"]}})
+        _frame(
+            "command",
+            {
+                "name": "todo.apply",
+                "args": {
+                    "op": "init",
+                    "list": [
+                        {
+                            "phase": "auth",
+                            "items": [
+                                {"content": "wire jwt", "status": "completed"},
+                                {"content": "rotate key", "status": "blocked", "blocker": "no kms"},
+                                "plain",
+                            ],
+                        },
+                        {"phase": "ops", "items": []},
+                    ],
+                },
+            },
+        )
+    )
+    phases = harness.one()["result"]["phases"]
+    assert [(p["name"], [(t["content"], t["status"]) for t in p["tasks"]]) for p in phases] == [
+        ("auth", [("wire jwt", "completed"), ("rotate key", "blocked"), ("plain", "pending")]),
+        ("ops", []),
+    ]
+    assert phases[0]["tasks"][1]["blocker"] == "no kms"
+
+
+def test_fake_device_refuses_a_nested_init_entry_with_no_phase(harness):
+    """A phase-less `init` is refused in both shapes (`tools/todo.md` §Errors)."""
+    harness.feed_frame(
+        _frame(
+            "command",
+            {"name": "todo.apply", "args": {"op": "init", "list": [{"items": ["a"]}]}},
+        )
+    )
+    reply = harness.one()
+    assert reply["ok"] is False
+    assert reply["error"]["message"] == "init needs a phase"
+
+
+def test_fake_device_view_does_not_change_the_list(harness):
+    # The device refuses a phase-less `init` (`tools/todo.md` §Errors), so the double
+    # does too; naming the phase is what makes `view` a no-op rather than a refusal.
+    harness.feed_frame(
+        _frame(
+            "command",
+            {"name": "todo.apply", "args": {"op": "init", "phase": "auth", "items": ["a"]}},
+        )
     )
     harness.one()
     harness.feed_frame(_frame("command", {"name": "todo.apply", "args": {"op": "view"}}))

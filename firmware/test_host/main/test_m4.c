@@ -96,7 +96,7 @@ TEST_CASE("todo init accepts flat items under a default phase", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK,
-        todo_op(list, "{\"op\":\"init\",\"items\":[\"one\",\"two\"]}"));
+        todo_op(list, "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"one\",\"two\"]}"));
     TEST_ASSERT_EQUAL_size_t(1, list->phase_count);
     TEST_ASSERT_EQUAL_STRING("Tasks", list->phases[0]);
     TEST_ASSERT_EQUAL_size_t(2, todo_task_total(list));
@@ -114,7 +114,7 @@ TEST_CASE("todo normalizes to exactly one in_progress task", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
-        "{\"op\":\"init\",\"items\":[\"a\",\"b\",\"c\"]}"));
+        "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"a\",\"b\",\"c\"]}"));
     /* After init the first task is already active. */
     TEST_ASSERT_EQUAL_size_t(1, active_count(list));
     TEST_ASSERT_EQUAL_INT(TODO_IN_PROGRESS, status_of(list, "a"));
@@ -135,7 +135,7 @@ TEST_CASE("todo block skips completed and abandoned tasks", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
-        "{\"op\":\"init\",\"items\":[\"a\",\"b\",\"c\"]}"));
+        "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"a\",\"b\",\"c\"]}"));
     TEST_ASSERT_EQUAL_INT(ESP_OK,
         todo_op(list, "{\"op\":\"done\",\"task\":\"a\"}"));
     TEST_ASSERT_EQUAL_INT(ESP_OK,
@@ -172,7 +172,7 @@ TEST_CASE("todo promotion skips blocked tasks", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
-        "{\"op\":\"init\",\"items\":[\"a\",\"b\"]}"));
+        "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"a\",\"b\"]}"));
     TEST_ASSERT_EQUAL_INT(ESP_OK,
         todo_op(list, "{\"op\":\"block\",\"task\":\"a\",\"reason\":\"x\"}"));
     TEST_ASSERT_EQUAL_INT(ESP_OK,
@@ -190,7 +190,7 @@ TEST_CASE("todo refuses a target that matches nothing", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK,
-        todo_op(list, "{\"op\":\"init\",\"items\":[\"a\"]}"));
+        todo_op(list, "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"a\"]}"));
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
         todo_op(list, "{\"op\":\"done\",\"task\":\"not in the list\"}"));
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
@@ -209,7 +209,7 @@ TEST_CASE("todo bounds refuse and leave the list unchanged", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
-        "{\"op\":\"init\",\"items\":[\"a\",\"b\"]}"));
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\",\"b\"]}"));
     todo_list_t before = *list;
 
     /* 33 tasks in one append: refused, nothing partially inserted. */
@@ -238,7 +238,7 @@ TEST_CASE("todo bounds refuse and leave the list unchanged", "[m4]")
     /* A ninth phase is refused. `init` already created one ("Tasks"), so there is
      * room for `AGENT_TODO_MAX_PHASES - 1` appends and the next one is the breach. */
     TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
-        "{\"op\":\"init\",\"items\":[\"keep\"]}"));
+        "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"keep\"]}"));
     for (int p = 0; p < AGENT_TODO_MAX_PHASES; p++) {
         char phase[128];
         snprintf(phase, sizeof phase,
@@ -270,7 +270,9 @@ TEST_CASE("todo refusal messages are helpful", "[m4]")
 {
     todo_list_t *list = agent_todo_phases();
     todo_list_clear(list);
-    char why[96];
+    /* 160, not 96: a 120-char target plus the empty-list hint is 156 bytes, and the
+     * point of the size assertion below is that `snprintf` does not truncate it. */
+    char why[TOOLS_ERR_MAX];
 
     /* append missing phase. */
     why[0] = '\0';
@@ -323,6 +325,53 @@ TEST_CASE("todo refusal messages are helpful", "[m4]")
     TEST_ASSERT_NOT_NULL(strstr(why, "item needs content"));
 
     /* A misspelt status is refused rather than silently stored as `pending`. */
+
+    /* `init` with items but no phase is refused. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"items\":[\"a\"]}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "init needs a phase"));
+    TEST_ASSERT_EQUAL_size_t(0, todo_task_total(list));
+
+    /* `init` with nested list entry omitting phase is refused. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"init\",\"list\":[{\"items\":[\"a\"]}]}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "init needs a phase"));
+    TEST_ASSERT_EQUAL_size_t(0, todo_task_total(list));
+
+    /* A targeting op naming a task that matches nothing. */
+    todo_op(list, "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"one\"]}");
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"done\",\"task\":\"none\"}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "no task matches \"none\""));
+
+    /* A target shaped like `task-7` triggers the id-shape hint. */
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"done\",\"task\":\"task-7\"}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "no task matches \"task-7\" (not an id; use the task text)"));
+
+    /* An empty list triggers the empty-list hint. */
+    todo_list_clear(list);
+    why[0] = '\0';
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
+        "{\"op\":\"done\",\"task\":\"any\"}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "no task matches \"any\" (list is empty)"));
+
+    /* A 120-char target on empty list does not truncate. */
+    why[0] = '\0';
+    char long_target[AGENT_TODO_CONTENT_MAX + 1];
+    memset(long_target, 'x', AGENT_TODO_CONTENT_MAX);
+    long_target[AGENT_TODO_CONTENT_MAX] = '\0';
+    char call_buf[256];
+    snprintf(call_buf, sizeof call_buf, "{\"op\":\"done\",\"task\":\"%s\"}", long_target);
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list, call_buf, why, sizeof why));
+
+    TEST_ASSERT_NOT_NULL(strstr(why, long_target));
+    TEST_ASSERT_NOT_NULL(strstr(why, "(list is empty)"));
+    TEST_ASSERT_LESS_THAN(160, strlen(why));
     why[0] = '\0';
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, todo_op_why(list,
         "{\"op\":\"init\",\"list\":[{\"phase\":\"a\","
@@ -426,7 +475,7 @@ TEST_CASE("todo init refuses an unknown status without touching the list", "[m4]
 {
     todo_list_t *list = agent_todo_phases();
     todo_list_clear(list);
-    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, "{\"op\":\"init\",\"items\":[\"keep me\"]}"));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list, "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"keep me\"]}"));
     todo_list_t before = *list;
 
     char why[96] = "";
@@ -455,7 +504,7 @@ TEST_CASE("todo view echoes without normalizing", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK,
-        todo_op(list, "{\"op\":\"init\",\"items\":[\"a\",\"b\"]}"));
+        todo_op(list, "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\",\"b\"]}"));
     list->tasks[0].status = TODO_PENDING;
     list->tasks[1].status = TODO_PENDING;
 
@@ -475,7 +524,7 @@ TEST_CASE("todo rm drops the task from the render", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, todo_op(list,
-        "{\"op\":\"init\",\"items\":[\"a\",\"b\"]}"));
+        "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\",\"b\"]}"));
     TEST_ASSERT_EQUAL_INT(ESP_OK,
         todo_op(list, "{\"op\":\"rm\",\"task\":\"a\"}"));
     TEST_ASSERT_EQUAL_INT(-1, status_of(list, "a"));
@@ -491,7 +540,7 @@ TEST_CASE("close-out fails while a task is open", "[m4]")
     todo_list_clear(list);
 
     TEST_ASSERT_EQUAL_INT(ESP_OK,
-        todo_op(list, "{\"op\":\"init\",\"items\":[\"a\"]}"));
+        todo_op(list, "{\"op\":\"init\",\"phase\":\"P\",\"items\":[\"a\"]}"));
     TEST_ASSERT_EQUAL_INT(CLOSEOUT_OPEN_TASKS, agent_closeout_check(list, 1, true));
 
     TEST_ASSERT_EQUAL_INT(ESP_OK,
@@ -1771,7 +1820,7 @@ TEST_CASE("todo init refuses a bad nested entry without touching the list", "[m4
     todo_list_t *list = agent_todo_phases();
     todo_list_clear(list);
     TEST_ASSERT_EQUAL_INT(ESP_OK,
-        todo_op(list, "{\"op\":\"init\",\"items\":[\"keep me\"]}"));
+        todo_op(list, "{\"op\":\"init\",\"phase\":\"Tasks\",\"items\":[\"keep me\"]}"));
     TEST_ASSERT_EQUAL_size_t(1, todo_task_total(list));
 
     /* A duplicate content string: `task_add` refuses the second copy, after `init`

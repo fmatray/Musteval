@@ -419,10 +419,18 @@ static void history_push_tool_result(const agent_tool_call_t *call, bool ok,
         if (json_emit(result, s_result_text, sizeof s_result_text, &rendered) == ESP_OK) {
             json_add_string(root, "content", s_result_text);
         } else {
-            /* A `role:"tool"` message without `content` is refused by providers; an
-             * oversize result is reported as an error the model can act on. */
-            json_add_string(root, "content",
-                            "{\"error\":{\"code\":\"E_TOOL\",\"message\":\"tool result too large\"}}");
+            /* A `role:"tool"` message without `content` is refused by providers. The
+             * call itself succeeded, so this is reported as a successful result that
+             * omits the payload — not as an error: an `error` body for a mutation
+             * that already committed invites the model to retry it, and a retried
+             * `done` on a completed task is a second write. */
+            char note[192];
+            snprintf(note, sizeof note,
+                     "{\"ok\":true,\"note\":\"result omitted: over %d bytes; the "
+                     "operation was applied, read the state back with "
+                     "{\\\"op\\\":\\\"view\\\"}\"}",
+                     (int)TOOLS_RESULT_MAX);
+            json_add_string(root, "content", note);
         }
     } else {
         char text[TOOLS_ERR_MAX + 64];

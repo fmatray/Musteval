@@ -264,7 +264,9 @@ def _todo(rest: list[str]) -> list[Frame]:
     make `/todo done auth` fail as an unknown task, and resolving it here would be
     a second opinion of what a target means.
 
-    `append` takes a phase then its items, and flat `init` takes items (none clears).
+    `append` and `init` both take a phase then their items: the device refuses a
+    phase-less `init` (`tools/todo.md` §Errors) and refuses `append` the same way,
+    so the command asks for the same argument the tool does. Bare `init` clears.
     The nested `list[]` `init` form stays model-only: flat `init` plus `append`
     reaches any multi-phase tree, so the command needs no second spelling for it.
     A required argument is refused here, so a malformed op costs no round trip.
@@ -292,8 +294,13 @@ def _todo(rest: list[str]) -> list[Frame]:
         args["phase"] = tail[0]
         args["items"] = tail[1:]
     elif op == "init":
+        # Bare `init` clears the list. With items, the phase is required rather
+        # than defaulted, so `/todo init auth "a" "b"` cannot silently land in a
+        # phase the caller never named.
         if tail:
-            args["items"] = tail
+            _require(tail, 2, "/todo init <phase> <item> [item...]")
+            args["phase"] = tail[0]
+            args["items"] = tail[1:]
     elif op == "start":
         _require(tail, 1, "/todo start <task>")
         args["task"] = " ".join(tail)

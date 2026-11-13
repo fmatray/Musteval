@@ -580,12 +580,22 @@ class TestAgent:
             # `10-test-agent.md` §6: a list the double actually holds, so `done` after
             # `start` is observable. An echo of `args` would let a broken bridge pass:
             # every assertion would read its own request back.
+            todo = self._todo_apply(args)
+            if isinstance(todo, str):
+                self.reply(
+                    "command.result",
+                    {"name": name, "ok": False,
+                     "error": {"code": "E_TOOL", "message": todo},
+                     "duration_ms": 0},
+                    reply_to=frame.id,
+                )
+                return
             self.reply(
                 "command.result",
                 {
                     "name": name,
                     "ok": True,
-                    "result": self._todo_apply(args),
+                    "result": todo,
                     "duration_ms": 0,
                 },
                 reply_to=frame.id,
@@ -617,7 +627,7 @@ class TestAgent:
             reply_to=frame.id,
         )
 
-    def _todo_apply(self, args: dict) -> dict:
+    def _todo_apply(self, args: dict) -> dict | str:
         """`tools/todo.md` §Operations, enough of it to be worth asserting against.
 
         The double keeps the tree so a `done` is visible in the reply after the
@@ -628,13 +638,47 @@ class TestAgent:
         op = args.get("op", "view")
         target = args.get("task")
         if op == "init":
-            self._todo = [{"name": args.get("phase") or "Tasks", "tasks": []}]
-            for item in args.get("items") or []:
-                self._todo[0]["tasks"].append({"content": item, "status": "pending"})
+            # `tools/todo.md` §Errors: the device refuses an `init` that names no
+            # phase, in either shape, so the double does too rather than inventing
+            # `Tasks`. Nested items keep their own status, so a rewrite is lossless.
+            if "list" in args:
+                tree = []
+                for entry in args.get("list") or []:
+                    phase = entry.get("phase")
+                    if not phase:
+                        return "init needs a phase"
+                    tasks = []
+                    for item in entry.get("items") or []:
+                        # §Arguments: an item is a bare content string or
+                        # `{content, status?, blocker?}`.
+                        if isinstance(item, str):
+                            tasks.append({"content": item, "status": "pending"})
+                            continue
+                        task = {
+                            "content": item["content"],
+                            "status": item.get("status", "pending"),
+                        }
+                        if task["status"] == "blocked" and item.get("blocker"):
+                            task["blocker"] = item["blocker"]
+                        tasks.append(task)
+                    tree.append({"name": phase, "tasks": tasks})
+                self._todo = tree
+            else:
+                phase = args.get("phase")
+                if not phase:
+                    return "init needs a phase"
+                self._todo = [{"name": phase, "tasks": []}]
+                for item in args.get("items") or []:
+                    self._todo[0]["tasks"].append(
+                        {"content": item, "status": "pending"}
+                    )
         elif op == "append":
+            phase = args.get("phase")
+            if not phase:
+                return "append needs a phase"
             self._todo.append(
                 {
-                    "name": args.get("phase") or "Tasks",
+                    "name": phase,
                     "tasks": [
                         {"content": item, "status": "pending"}
                         for item in args.get("items") or []

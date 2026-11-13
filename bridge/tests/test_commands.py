@@ -241,11 +241,22 @@ def test_todo_bare_and_view_send_view():
     assert frame.body["args"] == {"op": "view"}
 
 
-def test_todo_init_takes_flat_items():
+def test_todo_init_takes_a_phase_then_its_items():
     (frame,) = parse("/todo init")
     assert frame.body["args"] == {"op": "init"}
-    (frame,) = parse('/todo init "wire jwt" "rotate key"')
-    assert frame.body["args"] == {"op": "init", "items": ["wire jwt", "rotate key"]}
+    (frame,) = parse('/todo init auth "wire jwt" "rotate key"')
+    assert frame.body["args"] == {
+        "op": "init",
+        "phase": "auth",
+        "items": ["wire jwt", "rotate key"],
+    }
+
+
+def test_todo_init_without_a_phase_is_refused_host_side():
+    # The device refuses a phase-less `init` (`tools/todo.md` §Errors), so sending
+    # one would cost a round trip to learn what the usage string already says.
+    with pytest.raises(CommandError, match="init <phase> <item>"):
+        parse('/todo init "wire jwt"')
 
 
 def test_todo_append_takes_a_phase_then_its_items():

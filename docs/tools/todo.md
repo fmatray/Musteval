@@ -26,7 +26,7 @@ because the list was never written to flash.
 
 | Op | Targets | Effect |
 |----|---------|--------|
-| `init` | whole list | Replaces the list, from `list` or from flat `items` plus optional `phase`. `list: []` clears everything. An item object carries its own `status` and `blocker`, so a full rewrite is lossless. |
+| `init` | whole list | Replaces the list, from `list` or from flat `items` plus a required `phase`. `list: []` clears everything. An item object carries its own `status` and `blocker`, so a full rewrite is lossless. |
 | `start` | one task (required) | Marks that task `in_progress`; any other `in_progress` task is demoted to `pending`, so exactly one task is ever active. |
 | `done` | task, phase, or all | Marks targets `completed`. |
 | `drop` | task, phase, or all | Marks targets `abandoned`. |
@@ -112,6 +112,24 @@ returns the current tree unchanged, without writing it.
 A `blocked` task carries its blocker as one more member:
 `{"content":"flash the board","status":"blocked","blocker":"waiting on the serial adapter"}`.
 
+**Result size ceiling**
+
+`TOOLS_RESULT_MAX` is 4096 bytes (`firmware/components/tools/include/tools.h`),
+and a legal maximum tree does not fit: 32 tasks of 120 characters in 8 phases of
+40 characters serialises to 5604 bytes, and 32 tasks using 32 quote characters each
+reach 9468 once JSON escaping doubles them. When the serialised result does not fit,
+`history_push_tool_result` (`firmware/components/agent/agent.c`) replaces the tree
+with `{"ok":true,"note":"result omitted: over 4096 bytes; the operation was applied,
+read the state back with {\"op\":\"view\"}"}`. That body is deliberately not an
+`error`: the op has already committed, and an error would invite the model to retry
+a mutation that landed — a second `done` on a completed task is a second write.
+`todo.apply` (`../04-protocol.md` §4.27) is unaffected, because it answers over the
+command path rather than the tool-result path, so `/todo view` always renders the
+real tree. In practice the ceiling is far away: a handful of phases with task text
+under 60 characters serialises to well under half the bound, and only the artificial
+maximum approaches it.
+
+
 **Schema sent to the model**
 
 ```json
@@ -134,19 +152,25 @@ A `blocked` task carries its blocker as one more member:
 
 **Relationship to oh-my-pi**
 
-The op set, parameter shape, state model, targeting rules and normalization are
-taken from oh-my-pi's `todo` tool, so a model that knows one already knows the
-semantics of the other. What differs is the surface around it. Four differences are
-deliberate and are not oversights:
+The targeting rules, the normalization to a single active task, and the
+all-or-nothing apply are taken from oh-my-pi's `todo` tool. The op set, the
+parameter shape and the status vocabulary have diverged since, so a model that
+knows one tool does not know the other from memory. Each difference below is
+deliberate, not an oversight:
 
 | Area | oh-my-pi | here | Why |
 |---|---|---|---|
+| Op set | 7: `init`, `start`, `done`, `drop`, `rm`, `append`, `view` | 9: those plus `block` and `unblock` | The device waits on hardware, so "not now, and here is the reason" is a state the plan needs |
+| Status vocabulary | 4: `pending`, `in_progress`, `completed`, `abandoned`; its own source maps a stale `blocked` to `pending` when reading an old session | 5, `blocked` included | The same hardware wait needs a reason, and `blocker` carries it |
+| `init` items | a string array, every item forced to `pending` | a string or `{content, status?, blocker?}`; `items: []` is a legal empty phase | A rewrite that dropped status would reset a plan, so reordering would be data loss |
+| `append` without a phase | inferred: the active task's phase, else the last phase, else a phase named `Tasks` | refused with `append needs a phase` | An inferred phase makes a typo look like success, and the model cannot see which phase it hit |
+| Bounds | none enforced | 8 phases, 32 tasks, and 40 / 120 / 120 characters | The list lives in a fixed heap arena on an embedded target |
 | Failure surface | `isError: true` plus a text summary prefixed `Errors: ...`, with `details.phases` still populated | `ok: false` with `E_TOOL` in `agent.tool_result` | One error convention across every tool on this device; a structured code is what the bridge and the run loop already read |
 | Result payload | text summary for the model, `details.{phases, storage, op, completedTasks}` for the host | bare `{"phases": [...]}` | The device has no host-side detail channel inside a tool result, and the text summary would duplicate the tree the model already receives |
 | Op inference | `lenientArgValidation` infers `op` from `list`/`items` | omitted `op` is `E_TOOL` | Inference makes a malformed call silently succeed; the schema already requires `op` |
 | Persistence | `session` file when one exists, else memory | memory only | No session file exists on the device; `storage` would always be `"memory"`, so the field is omitted rather than constant |
 
-A fifth deliberate divergence is enforcement. oh-my-pi leaves close-out to the
+Enforcement is one further deliberate divergence. oh-my-pi leaves close-out to the
 model, whereas the device loop refuses to finalize while the close-out check fails:
 a task is still `pending`, `in_progress` or `blocked`, or the run has taken two or
 more tool rounds without opening a list at all. It re-prompts and takes another
@@ -164,25 +188,32 @@ nothing discards every mutation it made, and `view` never writes.
 - Unknown `op`, or an `op` outside the nine names.
 - A field of the wrong type.
 - A required field missing for the op: `list`/`items` for `init`, `task` for
-  `start`, `phase` and `items` for `append`, `task` or `phase` for `block` and
-  `unblock`.
-- A task or phase name that matches nothing: the message is `no task matches`. Tasks
-  are addressed by exact content, not by an id or an index, so the model re-reads the
+- A task or phase name that matches nothing: the message quotes the target that
+  failed — `no task matches "<target>"` — with ` (not an id; use the task text)`
+  appended when the target is shaped like `task-<n>`, and ` (list is empty)` when
+  the list holds no tasks at all. The id hint wins when both apply. Tasks are
+  addressed by exact content, not by an id or an index, so the model re-reads the
   list and passes the text it saw.
 - Duplicate content anywhere in the list on `append`.
 - A duplicate phase name on `init`.
 - Any of the four bound breaches above.
 
-Missing arguments and bound breaches name what is wrong rather than falling back to a
-generic line, because the fallback hides which of four bounds was hit: `append needs a
-phase`, `append needs items`, `start needs a task`, `block needs a task or a phase`,
-`item is longer than 120 characters`, `phase is longer than 40 characters`,
-`reason is over 120 characters`, `at most 32 tasks`, `too many phases`,
-`duplicate content`, `no task matches`, `op is required`, `unknown op`, `at most 8
-phases`, `duplicate phase name`, `item needs content`, `unknown task status`,
-`blocker is over 120 characters`. The last five are nested `list` `init`'s own: an
-item is a bare content string or `{content, status?, blocker?}`, `items: []` is a
-legal empty phase, and a repeated phase name is refused.
+Missing arguments and bound breaches name what is wrong rather than falling back to
+a generic line, because the fallback hides which of four bounds was hit: `init needs a
+phase`, `append needs a phase`, `append needs items`, `start needs a task`,
+`block needs a task or a phase`, `item is longer than 120 characters`, `phase is
+longer than 40 characters`, `reason is over 120 characters`, `at most 32 tasks`,
+`too many phases`, `duplicate content`, `no task matches "<target>"`, `op is
+required`, `unknown op`, `at most 8 phases`, `duplicate phase name`, `item needs
+content`, `unknown task status`, `blocker is over 120 characters`.
+
+A missing argument names itself: the nested `list` form of `init` used to answer
+`phase is longer than 40 characters` for an absent `phase`, and the flat form used
+to default the name to `Tasks`. Both now answer `init needs a phase`, and an
+over-long name still answers `phase is longer than 40 characters`. The last five
+are nested `list` `init`'s own: an item is a bare content string or
+`{content, status?, blocker?}`, `items: []` is a legal empty phase, and a repeated
+phase name is refused.
 
 Every one of these leaves the list unchanged, including a failure in the middle of a
 multi-target op. The refusal travels as `ok:false` with `E_TOOL` in
