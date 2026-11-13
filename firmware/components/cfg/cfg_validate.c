@@ -81,6 +81,11 @@ static const cfg_rule_t k_rules[] = {
     { "tools.allow_dangerous",  CFG_BOOL, NONE, false, NULL, NULL },
     { "tools.http_allow_hosts", CFG_ARRAY, 0, 8, false, NULL, NULL },
     { "tools.memory_max_bytes", CFG_INT, 256, 4096, false, NULL, NULL },
+    /* The pin allowlist is not a range — GPIO3 sits between two usable pins and is
+     * excluded — so only the outer bound is here and `check_cross` holds the set. */
+    { "tools.i2c_sda",          CFG_INT, 1, 9, false, NULL, NULL },
+    { "tools.i2c_scl",          CFG_INT, 1, 9, false, NULL, NULL },
+    { "tools.task_max",         CFG_INT, 1, 16, false, NULL, NULL },
 
     { "sys",                    CFG_OBJECT, NONE, false, NULL, NULL },
     { "sys.safe_mode_after",    CFG_INT, 2, 10, false, NULL, NULL },
@@ -146,6 +151,9 @@ static bool starts_with(const char *s, const char *prefix)
 static esp_err_t check_rule(const json_node_t *node, const cfg_rule_t *rule,
                             char *why, size_t cap)
 {
+    /* `03-config.md` §Default / reject matrix: an optional key may be `null`, which
+     * reads as absent. A required key may not, and falls through to its own refusal. */
+    if (json_is_null(node) && !rule->required) return ESP_OK;
     switch (rule->kind) {
     case CFG_INT: {
         int64_t v = 0;
@@ -319,6 +327,35 @@ static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
             }
         }
     }
+
+    /* `03-config.md` §tools: the I2C pins are a set, not a range — GPIO3 sits between
+     * two usable pins and is excluded as a strapping pin (`01-hardware.md` §6.1) —
+     * and the two must differ, or the bus has one wire. */
+    const int i2c_allowed[] = {1, 2, 4, 5, 6, 7, 8, 9};
+    int64_t sda = -1, scl = -1;
+    json_node_t *sda_node = json_path_get(doc, "tools.i2c_sda");
+    json_node_t *scl_node = json_path_get(doc, "tools.i2c_scl");
+    bool has_sda = sda_node != NULL && json_int(sda_node, &sda);
+    bool has_scl = scl_node != NULL && json_int(scl_node, &scl);
+    for (int which = 0; which < 2; which++) {
+        bool present = which == 0 ? has_sda : has_scl;
+        if (!present) continue;
+        int64_t pin = which == 0 ? sda : scl;
+        bool ok = false;
+        for (size_t i = 0; i < RULE_COUNT(i2c_allowed); i++) {
+            if (pin == i2c_allowed[i]) ok = true;
+        }
+        if (!ok) {
+            return fail(why, cap, "tools.i2c_%s: not a usable header pin",
+                        which == 0 ? "sda" : "scl");
+        }
+    }
+    if (has_sda != has_scl) {
+        return fail(why, cap, "tools.i2c_sda and tools.i2c_scl must be set together", NULL);
+    }
+    if (has_sda && sda == scl) {
+        return fail(why, cap, "tools.i2c_sda and tools.i2c_scl must differ", NULL);
+    }
     return ESP_OK;
 }
 
@@ -352,6 +389,9 @@ static esp_err_t walk(const json_node_t *obj, const char *prefix,
 
         const cfg_rule_t *rule = find_rule(path);
         if (rule == NULL) return fail(why, cap, "unknown key %s", path);
+        /* `null` reads as absent (§Default / reject matrix), so there is nothing to
+         * descend into and nothing to type-check. */
+        if (json_is_null(c) && !rule->required) continue;
         if (rule->kind == CFG_OBJECT) {
             esp_err_t err = walk(c, path, why, cap);
             if (err != ESP_OK) return err;

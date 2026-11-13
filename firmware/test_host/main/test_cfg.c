@@ -695,3 +695,80 @@ TEST_CASE("the shipped userfs seed config passes the schema", "[cfg][docs]")
     TEST_ASSERT_EQUAL(ESP_OK, validate(src, why, sizeof why));
     TEST_ASSERT_EQUAL_STRING("", why);
 }
+
+/* `03-config.md` §tools: the three keys the doc's own example carries. Before these
+ * rows existed the example was refused as unknown keys, so a documented config could
+ * not load. */
+TEST_CASE("the i2c pins and the task ceiling are known keys, bounded", "[cfg]")
+{
+    char why[96] = "";
+    char src[640];
+
+    snprintf(src, sizeof src,
+             "{\"version\":1,"
+             "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+             "\"llm\":{\"providers\":[{\"id\":\"p\",\"base_url\":\"http://h\","
+             "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]},"
+             "\"tools\":{\"i2c_sda\":5,\"i2c_scl\":6,\"task_max\":16}}");
+    TEST_ASSERT_EQUAL(ESP_OK, validate(src, why, sizeof why));
+
+    /* `01-hardware.md` §6.1: GPIO3 is a strapping pin between two usable ones, so the
+     * allowlist is a set and the check cannot be a range. */
+    snprintf(src, sizeof src,
+             "{\"version\":1,"
+             "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+             "\"llm\":{\"providers\":[{\"id\":\"p\",\"base_url\":\"http://h\","
+             "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]},"
+             "\"tools\":{\"i2c_sda\":3,\"i2c_scl\":6}}");
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(src, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "tools.i2c_sda"));
+
+    /* One pin alone leaves the bus with one wire. */
+    snprintf(src, sizeof src,
+             "{\"version\":1,"
+             "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+             "\"llm\":{\"providers\":[{\"id\":\"p\",\"base_url\":\"http://h\","
+             "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]},"
+             "\"tools\":{\"i2c_sda\":5}}");
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(src, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "set together"));
+
+    /* The same pin twice is not a bus. */
+    snprintf(src, sizeof src,
+             "{\"version\":1,"
+             "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+             "\"llm\":{\"providers\":[{\"id\":\"p\",\"base_url\":\"http://h\","
+             "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]},"
+             "\"tools\":{\"i2c_sda\":6,\"i2c_scl\":6}}");
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(src, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "must differ"));
+
+    /* `task_max` may not exceed the schema's own 16-entry array cap. */
+    snprintf(src, sizeof src,
+             "{\"version\":1,"
+             "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+             "\"llm\":{\"providers\":[{\"id\":\"p\",\"base_url\":\"http://h\","
+             "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]},"
+             "\"tools\":{\"task_max\":17}}");
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate(src, why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "tools.task_max"));
+}
+
+TEST_CASE("an optional key set to null reads as absent", "[cfg]")
+{
+    /* `03-config.md` §Default / reject matrix. `tools.i2c_sda` defaults to null, so
+     * without this rule the documented default is a document the device refuses. */
+    char why[96] = "";
+    char src[640];
+    snprintf(src, sizeof src,
+             "{\"version\":1,"
+             "\"wifi\":{\"networks\":[{\"ssid\":\"a\",\"password_ref\":\"nvs:k\"}]},"
+             "\"llm\":{\"providers\":[{\"id\":\"p\",\"base_url\":\"http://h\","
+             "\"model\":\"m\",\"api_key_ref\":\"nvs:k\"}]},"
+             "\"tools\":{\"i2c_sda\":null,\"i2c_scl\":null,\"task_max\":null}}");
+    TEST_ASSERT_EQUAL(ESP_OK, validate(src, why, sizeof why));
+
+    /* A required key may not be null: `version` is checked before the walk, and a
+     * null there cannot satisfy `== 1`. */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, validate("{\"version\":null}", why, sizeof why));
+}
