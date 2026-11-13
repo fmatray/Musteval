@@ -452,6 +452,9 @@ esp_err_t net_scan(net_scan_entry_t *out, size_t cap, size_t *count, bool *trunc
         out[n].ssid[len] = '\0';
         out[n].rssi = s_records[i].rssi;
         out[n].auth = s_records[i].authmode;
+        snprintf(out[n].bssid, sizeof out[n].bssid, "%02x:%02x:%02x:%02x:%02x:%02x",
+                 s_records[i].bssid[0], s_records[i].bssid[1], s_records[i].bssid[2],
+                 s_records[i].bssid[3], s_records[i].bssid[4], s_records[i].bssid[5]);
         n++;
     }
     *count = n;

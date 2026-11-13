@@ -49,6 +49,9 @@ json_doc_t   *json_new_object(void);
 json_node_t  *json_new_array(json_node_t *parent, const char *key);
 bool          json_add_string(json_node_t *obj, const char *key, const char *value);
 bool          json_add_int(json_node_t *obj, const char *key, int64_t value);
+/* A non-integral member: coordinates are the one field the protocol carries as a
+ * real number (`04-protocol.md` §4.13). */
+bool          json_add_double(json_node_t *obj, const char *key, double value);
 bool          json_add_bool(json_node_t *obj, const char *key, bool value);
 bool          json_add_null(json_node_t *obj, const char *key);
 json_node_t  *json_add_object(json_node_t *obj, const char *key);
@@ -72,6 +75,9 @@ bool         json_is_number(const json_node_t *node);
  * is not a string. Copy it before freeing the doc. */
 const char *json_string(const json_node_t *node);
 bool        json_int(const json_node_t *node, int64_t *out);
+/* A number that need not be integral. Returns false for a non-number or a NaN/inf,
+ * so a caller never caches a coordinate that serialises as invalid JSON. */
+bool        json_double(const json_node_t *node, double *out);
 bool        json_bool(const json_node_t *node, bool *out);
 
 size_t       json_array_len(const json_node_t *node);

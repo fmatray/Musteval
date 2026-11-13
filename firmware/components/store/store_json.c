@@ -258,6 +258,12 @@ bool json_add_int(json_node_t *obj, const char *key, int64_t value)
     return add_item(obj, key, cJSON_CreateNumber((double)value));
 }
 
+bool json_add_double(json_node_t *obj, const char *key, double value)
+{
+    if (!(value == value) || value > 1.7e308 || value < -1.7e308) return false;
+    return add_item(obj, key, cJSON_CreateNumber(value));
+}
+
 bool json_add_bool(json_node_t *obj, const char *key, bool value)
 {
     return add_item(obj, key, cJSON_CreateBool(value));
@@ -337,6 +343,18 @@ bool json_int(const json_node_t *node, int64_t *out)
         return false;
     }
     *out = (int64_t)d;
+    return true;
+}
+
+bool json_double(const json_node_t *node, double *out)
+{
+    const cJSON *n = node_of(node);
+    if (out == NULL || !cJSON_IsNumber(n)) return false;
+    /* NaN and both infinities round-trip through cJSON as invalid JSON, so they are
+     * refused here rather than emitted into a frame. */
+    double d = n->valuedouble;
+    if (!(d == d) || d > 1.7e308 || d < -1.7e308) return false;
+    *out = d;
     return true;
 }
 

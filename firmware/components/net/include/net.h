@@ -141,7 +141,12 @@ const char *net_state_name(net_state_t state);
 typedef struct {
     char    ssid[33];
     int32_t rssi;
-    uint8_t auth;  /* `wifi_auth_mode_t`, mapped to the wire word by `net_auth_name` */
+    uint8_t auth;   /* `wifi_auth_mode_t`, mapped to the wire word by `net_auth_name` */
+    /* The AP's address, `aa:bb:cc:dd:ee:ff`. Not on the wire — §4.24 collapses by SSID
+     * because a reader picks a network by name — but `geo` positions against BSSIDs, so
+     * the scan that already happened is the only place to get them. Two radios sharing
+     * an SSID keep the strongest one's address, which is the one in reach. */
+    char    bssid[18];
 } net_scan_entry_t;
 
 /* Bring the radio up if needed and ask it for the access points in range. Blocks for

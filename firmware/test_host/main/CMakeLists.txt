@@ -1,13 +1,13 @@
 set(SRCS "test_main.c" "test_smoke.c" "test_store.c" "test_link.c" "test_sys.c"
          "test_frame.c" "test_quota.c" "test_log.c" "test_sandbox.c" "test_cfg.c" "test_m3.c" "test_m4.c"
-         "test_net_ping.c" "test_tools.c" "test_m5.c")
+         "test_net_ping.c" "test_tools.c" "test_m5.c" "test_m6.c")
 
 # WHOLE_ARCHIVE is required, not cosmetic: TEST_CASE registers itself from a
 # constructor in a translation unit nothing references, so a normal link drops
 # the object and the suite silently reports `0 Tests`.
 idf_component_register(SRCS ${SRCS}
                        INCLUDE_DIRS "."
-                       REQUIRES unity store link sys cfg clock net llm agent tools skills sched
+                       REQUIRES unity store link sys cfg clock net llm agent tools skills sched geo
                        WHOLE_ARCHIVE)
 
 # IDF includes this file a second time in CMake *script* mode to collect
