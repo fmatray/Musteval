@@ -172,9 +172,12 @@ Goal: Full automation, remote capabilities, and final security audit.
 ### M6: MQTT, Geolocation & Task Authoring
 Goal: Enable asynchronous external triggers and agent-managed task persistence.
 - **Scope**: MQTT client, BSSID/IP geolocation, `task.set` tool plus `tasks.set`/`tasks.delete` commands, task quota enforcement.
-  `store`'s sandbox primitives and the four wired commands are implemented
-  ahead of the rest of M6.
-- **Deliverables**: `mqtt`, `geo` modules.
+  Every piece is implemented and builds for the board; the acceptance tests below
+  are the on-target runs that close the milestone. `store`'s sandbox primitives
+  and the four wired commands landed ahead of the rest of M6.
+- **Deliverables**: `mqtt`, `geo` modules. Both ship: `geo` splits into
+  `geo_parse.c` (host-tested) and `geo.c` (board), and `mqtt` — in
+  `components/broker/`, because ESP-IDF owns the name `mqtt` — does the same.
 - **Acceptance Tests**:
   - Multi-broker: Connect to two brokers simultaneously (one TLS, one plain) and receive messages from both.
   - Inbound MQTT: Inbound message produces `mqtt.message` frame and fires a `mqtt_message` trigger.

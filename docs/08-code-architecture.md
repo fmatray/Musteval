@@ -229,6 +229,11 @@ components/<name>/
   Kconfig.projbuild    only if the module has a build-time option
 ```
 
+One directory is not named after its module: `mqtt` lives in
+`components/broker/`, because ESP-IDF ships a component called `mqtt` and a local
+directory of that name shadows it (`02-firmware.md` §mqtt). The header is still
+`mqtt.h` and the module is still `mqtt` in every dependency table here.
+
 ```c
 /* include/mqtt.h — the whole public surface, one screenful */
 #pragma once
