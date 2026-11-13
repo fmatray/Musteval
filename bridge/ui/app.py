@@ -20,7 +20,7 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.text import Text
 
-from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
+from textual.widgets import DataTable, Header, Input, RichLog, Static
 
 from ..client import LinkState, Session
 from ..client.session import SessionError
@@ -945,6 +945,7 @@ class BridgeApp(App):
     #prompt-bar { padding: 0 2; height: 1; color: $text-muted; }
     #mqtt-brokers { padding: 0 2; }
     #task-hint { padding: 0 2; }
+    #app-hint { padding: 0 2; height: auto; }
     """
 
     BINDINGS = [
@@ -1020,7 +1021,11 @@ class BridgeApp(App):
             yield MqttScreen(id="mqtt")
             yield FilesScreen(id="files")
             yield SplashScreen(pick_tip(), id="splash")
-        yield Footer()
+        # `05` §13.3: every screen ends in the one hint line, built here from the
+        # app's own bindings. Textual's `Footer` was in this slot and clipped
+        # mid-word — `^r Reconnec` at 100 columns, and F6/F7 lost at 50 — where the
+        # rule says a hint wraps rather than truncating.
+        yield Static(hint_bar(binding_pairs(self.BINDINGS)), id="app-hint", markup=False)
 
     async def on_mount(self) -> None:
         self.session.install_sink(self._on_frame)

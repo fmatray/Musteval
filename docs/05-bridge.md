@@ -1226,6 +1226,14 @@ Every screen ends in a **hint line**, and every hint line is built by one functi
 `Enter` and `Esc`, where the screen acts on them, are written into the same line as
 if they were bindings, because from the reader's side they are.
 
+**The app's own row is a hint line too.** `Ctrl+Q`, `F1`–`F7` and `Esc` are the
+`BridgeApp` bindings, so the row under the composer is `hint_bar` over those pairs,
+not Textual's `Footer`. The `Footer` clipped mid-word — `Ctrl+R Reconnec` where the
+terminal was wide enough for the whole label, and `F6`/`F7` gone at 50 columns — which
+is the truncation the third rule above forbids. Textual's `Footer` shows
+`Ctrl+P palette` as well, a command palette the app never bound, so its row named a
+key the reader could press and nothing happened.
+
 ### 13.4 Modals
 
 - **Width follows the content, bounded by the terminal.** A one-line prompt is not

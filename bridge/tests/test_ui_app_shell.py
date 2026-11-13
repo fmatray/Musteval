@@ -21,7 +21,9 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
     _run,
     _text,
 )
-from bridge.ui.app import ChatScreen, FilesScreen, MqttScreen
+from bridge.client.session import Session
+from bridge.link.fake_transport import FakeTransport
+from bridge.ui.app import BridgeApp, ChatScreen, FilesScreen, MqttScreen
 from bridge.ui.modals import NetworkStep
 
 
@@ -489,3 +491,23 @@ async def test_a_reply_that_is_not_a_command_result_is_not_read_for_a_result():
         assert "ok" not in _text(app)
 
     await _run(_device(), body)
+
+
+@pytest.mark.asyncio
+async def test_the_global_hint_names_every_key_at_a_narrow_width() -> None:
+    """`05` §13.3: the hint line wraps rather than truncating, so no key is lost.
+
+    Textual's `Footer` used to fill this row and it clipped mid-word: at 100 columns
+    the reader saw `^r Reconnec`, and at 50 the `F6`/`F7` aliases were gone. A key a
+    screen binds but the hint does not show is a key the reader never presses.
+    """
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test(size=(50, 20)):
+        shown = str(app.query_one("#app-hint").content)
+        for key in ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "Ctrl+Q"):
+            assert key in shown, key
+        # Every label is whole: a truncated line ends mid-word, which is the defect.
+        for label in ("Reconnect", "Quit", "Help", "MQTT"):
+            assert label in shown, label
+    await session.close()
