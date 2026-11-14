@@ -22,7 +22,7 @@
  * `/tools` and their cJSON parse. At 4 KiB that overflowed the task and panicked the
  * board on the first handshake, which reads from outside as a device that boots and
  * then ignores the bridge. */
-#define LINK_TASK_STACK 8192
+#define LINK_TASK_STACK 12288
 
 /* The id bound of `04-protocol.md` §2: 1-32 chars from `[A-Za-z0-9._-]`. Exported
  * because a caller that answers asynchronously must own a copy of the id it owes a
