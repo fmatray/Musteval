@@ -64,6 +64,7 @@ from .render import (
     UNREACHABLE,
     SlashHighlighter,
     clip,
+    geo_line,
     ping_line,
     render_diag,
     render_json_block,
@@ -1701,6 +1702,15 @@ class BridgeApp(App):
                 for line in todo_lines(result):
                     self._chat().write(line)
             self._todo_quiet = False
+            return
+        if name == "geo.locate" and isinstance(result, dict):
+            # `05` §10: a fix updates the Status screen GEO row and reports in chat.
+            # Without this branch the reply fell through to the raw JSON block, so
+            # `/geo` looked like a debug dump and the GEO row kept reading `no fix`
+            # from the last `status`.
+            self._last_status = {**self._last_status, "geo": result}
+            self._render_status()
+            self._chat().write(geo_line(result))
             return
         if name == "mqtt.status":
             servers = result if isinstance(result, list) else (result or {}).get("servers", [])

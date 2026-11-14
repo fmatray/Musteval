@@ -160,7 +160,7 @@ def test_fit_drops_whole_trailing_segments_and_never_the_first():
     assert _fit(segments, 99) == segments
 
 
-from bridge.ui.render import wifi_scan_lines, wifi_state_line
+from bridge.ui.render import geo_line, wifi_scan_lines, wifi_state_line
 
 def test_wifi_scan_renders_networks():
     result = {
@@ -296,3 +296,25 @@ def test_hints_are_derived_from_the_bindings_so_a_dead_key_cannot_be_named():
     # The key is bold, the verb is dim: two styles, never one for both.
     styles = {span.style for span in line.spans if span.style}
     assert styles
+
+
+def test_a_geo_line_names_the_fix_provider_and_age():
+    """`04` §4.13: all four members are what the reader needs to judge a fix."""
+    line = geo_line({"lat": 52.3676, "lon": 4.9041, "accuracy_m": 65,
+                     "provider": "home_wifi", "age_s": 42})
+    assert "52.3676, 4.9041" in line and "+/-65m" in line
+    assert "home_wifi" in line and "age 42s" in line
+
+
+def test_a_geo_line_omits_a_provider_and_age_it_was_not_given():
+    """`04` §4.13 makes both optional on a fresh fix; printing `None` where a name
+    belongs reads as a device fault."""
+    line = geo_line({"lat": 1.5, "lon": -2.5, "accuracy_m": 10})
+    assert "None" not in line and "via" not in line and "age" not in line
+
+
+def test_geo_line_sanitises_the_provider_id():
+    """The id is a config-file string, so it is as untrusted as an ssid."""
+    line = geo_line({"lat": 1.0, "lon": 2.0, "accuracy_m": 5,
+                     "provider": "\x1b[31mHostile\x1b[0m"})
+    assert "\x1b" not in line and "Hostile" in line

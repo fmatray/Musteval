@@ -69,6 +69,25 @@ def wifi_state_line(result: dict[str, Any]) -> str:
     return f"wifi {state} ({sanitize(str(ssid))}) rssi {result.get('rssi')} dBm ip {result.get('ip')}"
 
 
+def geo_line(result: dict[str, Any]) -> str:
+    """`04-protocol.md` §4.13's answer as one line.
+
+    `provider` is the configured entry id, which comes from the config file, so it
+    is sanitized like any other device-supplied string.
+    """
+    age = result.get("age_s")
+    line = (
+        f"geo {result.get('lat')}, {result.get('lon')} "
+        f"(+/-{result.get('accuracy_m')}m)"
+    )
+    provider = result.get("provider")
+    if provider:
+        line += f" via {sanitize(str(provider))}"
+    if age is not None:
+        line += f", age {age}s"
+    return line
+
+
 def wifi_scan_lines(result: dict[str, Any]) -> list[str]:
     """`04-protocol.md` §4.24's answer, one line per network, strongest first.
 

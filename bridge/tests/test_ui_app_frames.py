@@ -319,3 +319,34 @@ async def test_a_frame_type_the_bridge_does_not_route_is_ignored():
         assert any("after" in line for line in app._logs().buffer.visible())
 
     await _run(_device(), body)
+
+
+async def test_a_geo_result_updates_the_geo_row_and_reports_in_chat():
+    """`05` §10: `geo.locate` updates the Status screen GEO row and reports in chat.
+    The branch that did the second was missing, so a fix fell through to the raw JSON
+    block and the row kept reading `no fix` from the last `status`."""
+    fix = {"lat": 52.3676, "lon": 4.9041, "accuracy_m": 65,
+           "provider": "home_wifi", "age_s": 42}
+
+    async def body(app, pilot):
+        app._last_status = dict(STATUS)
+        app._render_status()
+        await pilot.pause(0.05)
+        assert "no fix" in str(app.query_one("#status-body").content)
+
+        app._on_command_result(
+            Frame(type="command.result", id="d-9", ts=0,
+                  body=_result_body("geo.locate", fix))
+        )
+        # "+/-65m" is `geo_line`'s own wording: the raw JSON block the reply used to
+        # fall through to contains the number but never that form, so this asserts
+        # the chat line rather than the `_render_status` call that follows it.
+        await _await_chat(pilot, app, "+/-65m")
+        assert "+/-65m" in _text(app)
+        assert app._last_status["geo"] == fix
+        await pilot.pause(0.05)
+        grid = str(app.query_one("#status-body").content)
+        assert "no fix" not in grid
+        assert "52.3676" in grid
+
+    await _run(_device(), body)
