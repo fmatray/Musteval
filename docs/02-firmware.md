@@ -168,7 +168,7 @@ bug it exists to prevent.
   NVS namespace `runtime`.
 
 `net.ping` also creates a short-lived task, one per command: four ICMP probes take up
-to 2.8 s, and `answer_command` runs on `link_task`'s 8 KiB stack, which must answer
+to 2.8 s, and `answer_command` runs on `link_task`'s 12 KiB stack, which must answer
 `pong` inside 1 s even while the ping is in flight (`04-protocol.md` §3.7). The task
 copies its host and `reply_to`, emits one `command.result`, and deletes itself. A
 second `net.ping` while one is in flight is `E_BUSY` (`04-protocol.md` §4.25).
@@ -395,7 +395,7 @@ also add the rule that sends a subset (`07-roadmap.md` M5).
 ### `agent` — Core Loop
 - `agent_submit(prompt, len, source, reply_to, run_id_out, run_id_cap)`: Queue one
   prompt for the loop. The text is **copied** into the module's own buffer; the
-  caller's pointer is not retained (the link task's stack is 8 KiB, so an 8 KiB
+  caller's pointer is not retained (the link task's stack is 12 KiB, so an 8 KiB
   prompt on it is a stack overflow). `run_id_out` receives the id **minted
   before** the enqueue, because the replies that start a run name it — `tasks.run`
   (`04-protocol.md` §4.5) and `fired` (§3.16) — and a refusal writes `""`; it may be
@@ -715,14 +715,15 @@ To maintain responsiveness, work is split across priorities:
 
 | Task | Priority | Stack | Role |
 |---|---|---|---|
-| `link_task` | High | 8 KiB | Read/write USB CDC; fast framing to avoid buffer overflow, and the stack `hello` builds the tool context on |
-| `agent_task` | Medium | 16 KiB | Serialized execution of LLM runs and tool calls; runs `geo_locate`, which blocks on a scan |
-| `sched_task` | Medium | 4 KiB | Timer management and trigger dispatch |
-| `net_task` | Low | 8 KiB | Background WiFi reconnection and SNTP sync |
+| `link_task` | High | 12 KiB | Read/write USB CDC; fast framing to avoid buffer overflow, `hello`'s tool context, and every `command` frame — including one that blocks on a TLS handshake, which needs more headroom than the 8 KiB an earlier build carried |
+| `agent_task` | Medium | 8 KiB | Serialized execution of LLM runs and tool calls |
+| `sched_gpio` | Medium | 4 KiB | ISR-to-work handoff for an armed GPIO trigger |
+| `wifi_connect` | Medium | 4 KiB | One association attempt, spawned per `wifi.connect` |
+| `net_ping` | Medium | 3 KiB | One `net.ping`, so a blocking ping never holds `link_task` |
 
 `mqtt` has no task of its own: esp-mqtt runs a per-client event loop task
-internally (one per broker). Handlers must not block, so inbound messages are
-copied and queued to `sched_task`.
+internally (one per broker). Handlers must not block, so an inbound message is
+matched against the armed tasks and the frame is emitted from the handler.
 
 ## 4. The Agent Loop
 
