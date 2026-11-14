@@ -327,10 +327,11 @@ reported and surfaced to the model.
 | `geo.providers[].url` | string | yes | none | `https://` only |
 | `geo.providers[].api_key_ref` | string | required for `wifi_scan` | none | `^nvs:[A-Za-z0-9_]{1,15}$`; forbidden on `ip` |
 
-Providers are tried in order; the first to return a fix wins. `wifi_scan` requires
-`api_key_ref` (sent as `Authorization: Bearer <key>` `[ASSUMPTION]`); `ip` must not
-have one. Both `url` hosts MUST be reachable over TLS. If every provider fails, the
-tool returns `E_GEO` and no fix is cached; `geo.enabled: false` returns `E_CONFIG`.
+Providers are tried in order; the first to return a fix wins. `wifi_scan` is a `POST`
+of the scanned-AP list and requires `api_key_ref` (sent as `Authorization: Bearer
+<key>` `[ASSUMPTION]`); `ip` is a `GET` with no entity and must not have one. Both
+`url` hosts MUST be reachable over TLS. If every provider fails, the tool returns
+`E_GEO` and no fix is cached; `geo.enabled: false` returns `E_CONFIG`.
 
 ### mqtt
 

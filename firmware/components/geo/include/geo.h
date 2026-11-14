@@ -95,3 +95,11 @@ bool geo_fix_is_fresh(int64_t source_ts, int64_t now, int64_t ttl_s);
  * not index the array itself and a bounds bug is a host-test failure. Pure. */
 const geo_provider_t *geo_provider_at(const geo_provider_t *chain, size_t count,
                                       size_t index);
+
+/* True when this provider kind is reached with `POST`, false for `GET`. A `wifi_scan`
+ * entry is a POST of the scanned-AP list; an `ip` entry is a plain GET of a URL that
+ * reads the caller's address off the connection. Sending an `ip` provider a POST is not
+ * a wasted request but a refusal: ipwho.is answers 405 and ipapi.co closes the
+ * connection, so the chain reports a failure that has nothing to do with the network.
+ * Pure, so the verb is proven on the host and neither kind can drift. */
+bool geo_kind_posts(geo_kind_t kind);

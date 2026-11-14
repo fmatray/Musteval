@@ -183,6 +183,24 @@ TEST_CASE("the provider chain is walked in the order it was written", "[geo]")
     TEST_ASSERT_NULL(geo_provider_at(NULL, 2, 0));
 }
 
+/* --- The verb per provider kind ------------------------------------------
+ * `docs/tools/geo.md` §Providers: a `wifi_scan` entry is a POST of the scanned-AP
+ * list, an `ip` entry is a GET of a URL that reads the caller's address off the
+ * connection. The verb is not a detail of taste - ipwho.is answers 405 to a POST and
+ * ipapi.co closes the connection - so the rule is asserted rather than left to the
+ * board half, where the only failure it produced was a chain-wide `E_GEO` naming
+ * neither the provider nor the verb. */
+
+TEST_CASE("a wifi_scan provider is reached with POST", "[geo]")
+{
+    TEST_ASSERT_TRUE(geo_kind_posts(GEO_KIND_WIFI));
+}
+
+TEST_CASE("an ip provider is reached with GET", "[geo]")
+{
+    TEST_ASSERT_FALSE(geo_kind_posts(GEO_KIND_IP));
+}
+
 /* --- The mqtt allowlist ---------------------------------------------------
  * `03-config.md` §mqtt: `topics[]` is the complete publish/subscribe allowlist, and the
  * grammar is deliberately smaller than MQTT's. The grammar itself is `cfg`'s, so these

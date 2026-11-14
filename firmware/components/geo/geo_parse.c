@@ -115,3 +115,14 @@ const geo_provider_t *geo_provider_at(const geo_provider_t *chain, size_t count,
     if (chain == NULL || index >= count) return NULL;
     return &chain[index];
 }
+
+bool geo_kind_posts(geo_kind_t kind)
+{
+    /* Exhaustive over the enum rather than `kind != GEO_KIND_IP`, so a third kind
+     * added later has to state its verb here instead of inheriting POST silently. */
+    switch (kind) {
+    case GEO_KIND_WIFI: return true;
+    case GEO_KIND_IP:   return false;
+    }
+    return true;
+}

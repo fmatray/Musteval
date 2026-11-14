@@ -116,20 +116,22 @@ esp_err_t geo_init(void)
 bool geo_enabled(void) { return s_state.enabled; }
 
 /* One provider attempt. `key` is the resolved secret, empty for `ip`. A provider that
- * overruns `timeout_ms` is a failure like any other, so the chain continues. */
+ * overruns `timeout_ms` is a failure like any other, so the chain continues. The verb
+ * comes from `geo_kind_posts`: an `ip` entry is a GET of a URL that reads the caller's
+ * address off the connection, and a POST to one is refused by the provider itself. */
 static esp_err_t try_provider(const geo_provider_t *p, const char *key, const char *body,
                               size_t body_len, geo_fix_t *out, int32_t *status_out)
 {
-    char auth[CFG_SECRET_MAX + 16];
-    const char *authorization = NULL;
-    if (p->kind == GEO_KIND_WIFI) {
-        snprintf(auth, sizeof auth, "Bearer %s", key);
-        authorization = auth;
-    }
-
     net_response_t resp = {0};
-    esp_err_t err = net_post(p->url, "application/json", authorization, body, body_len,
-                             (int32_t)s_state.timeout_ms, &resp);
+    esp_err_t err;
+    if (geo_kind_posts(p->kind)) {
+        char auth[CFG_SECRET_MAX + 16];
+        snprintf(auth, sizeof auth, "Bearer %s", key);
+        err = net_post(p->url, "application/json", auth, body, body_len,
+                       (int32_t)s_state.timeout_ms, &resp);
+    } else {
+        err = net_get(p->url, NULL, NULL, 0, (int32_t)s_state.timeout_ms, &resp);
+    }
     if (status_out != NULL) *status_out = resp.status;
     if (err != ESP_OK) {
         if (resp.body != NULL) free(resp.body);

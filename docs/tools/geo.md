@@ -17,14 +17,18 @@ per-device and never chosen by the model (`../03-config.md` §geo). The first en
 that returns a fix wins; the order is the user's privacy control, because whichever
 entry answers learns where the device is.
 
-| `kind` | Requires | Typical accuracy | Failure handling |
-|---|---|---|---|
-| `wifi_scan` | `api_key_ref` (`nvs:` ref) | 20-200 m | try the next `wifi_scan` entry in order, then the first `ip` entry |
-| `ip` | no `api_key_ref` (forbidden) | city-level | chain exhausted, return `E_GEO`, cache nothing |
+| `kind` | Verb | Requires | Typical accuracy | Failure handling |
+|---|---|---|---|---|
+| `wifi_scan` | `POST` | `api_key_ref` (`nvs:` ref) | 20-200 m | try the next `wifi_scan` entry in order, then the first `ip` entry |
+| `ip` | `GET` | no `api_key_ref` (forbidden) | city-level | chain exhausted, return `E_GEO`, cache nothing |
 
-Both `url` hosts must be reachable over TLS. `wifi_scan` sends the scanned
-`[{bssid, rssi}]` list; `ip` sends nothing and lets the provider geolocate the public
-IP. A `wifi_scan` provider without `api_key_ref`, or an `ip` provider that has one, is
+Both `url` hosts must be reachable over TLS. `wifi_scan` is a `POST` carrying the
+scanned `[{bssid, rssi}]` list; `ip` is a `GET` with no entity, letting the provider
+read the caller's address off the connection. The verb is part of the kind, not a
+choice: an `ip` provider answers a `POST` with a refusal of its own (ipwho.is returns
+405, ipapi.co closes the connection), which surfaces as a chain-wide `E_GEO` naming
+neither the provider nor the verb (`geo_kind_posts`, board half `try_provider`). A
+`wifi_scan` provider without `api_key_ref`, or an `ip` provider that has one, is
 rejected by `geo_init()` at boot as `E_CONFIG`.
 
 The `wifi_scan` credential is sent as `Authorization: Bearer <key>`; that header form

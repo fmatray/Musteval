@@ -529,7 +529,7 @@ which `mqtt` assembles before raising a single `mqtt.message`; a payload past
 
 ### `geo` — WiFi positioning
 - `geo_init()`: validate `geo.providers[]`, resolve any `api_key_ref`.
-- `geo_locate(out, &accuracy_m)`: blocking. Returns `E_CONFIG` when
+- `geo_locate(geo_fix_t *out)`: blocking. Returns `E_CONFIG` when
   `geo.enabled` is false, `E_GEO` when every provider fails, `E_TIMEOUT` on
   `geo.timeout_ms`.
 
@@ -539,11 +539,13 @@ Flow:
 2. `esp_wifi_scan_start` (blocking), sort by RSSI, keep the
    `geo.max_bssids` strongest.
 3. Walk `geo.providers[]` in the order it was written, whichever `kind` each entry
-   is. A `wifi_scan` entry is sent `[{bssid, rssi}]`; an `ip` entry needs no key and
-   no body. If a provider exceeds its attempt budget or fails to respond within
-   `geo.timeout_ms`, it is considered failed and the chain continues to the next
-   entry. Order is the user's privacy control (`docs/tools/geo.md` §Provider chain),
-   so the firmware does not reorder the chain by kind.
+   is. A `wifi_scan` entry is a `POST` of `[{bssid, rssi}]`; an `ip` entry is a `GET`
+   with no key and no body, because such a provider reads the caller's address off
+   the connection and refuses a `POST` (`geo_kind_posts`, `docs/tools/geo.md`
+   §Provider chain). If a provider exceeds its attempt budget or fails to respond
+   within `geo.timeout_ms`, it is considered failed and the chain continues to the
+   next entry. Order is the user's privacy control, so the firmware does not reorder
+   the chain by kind.
 4. Cache `{lat, lon, accuracy_m, provider, source_ts}` and return it.
 
 The cache is RAM-only and bounded by `geo.cache_ttl_s` alone: a change in RSSI
