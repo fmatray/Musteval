@@ -60,9 +60,13 @@ locates the access point, which is not necessarily where the device is
 (`../06-security.md` §6.4). A caller that needs precision has no better value to fall
 back on in this firmware.
 
-**Result trust.** The provider response is untrusted input that reaches the prompt:
-`geo.locate` results are wrapped in delimiters the system prompt declares as data,
-never as instructions (`../06-security.md` §6.4). A provider cannot redirect the agent.
+**Result trust.** The provider response is untrusted input, and the result narrows it
+to typed fields before it reaches the prompt: `lat` and `lon` are parsed numbers,
+`accuracy_m` and `source_ts` are integers, and `provider` is the configured entry's
+`id`, never a string the provider chose (`../03-config.md` §geo). A body that
+does not carry both coordinates is refused rather than defaulted (`geo_parse_fix`), so
+a provider cannot put prose, a coordinate it did not report, or a redirect into a
+`geo.locate` result.
 
 **Arguments**
 

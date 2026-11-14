@@ -936,8 +936,9 @@ A `mqtt_message` task matches an inbound message on four fields:
 Matching is evaluated most-specific-first (exact `topic` before wildcard), and a
 message may match several tasks. Matched tasks run serialized through
 `agent_task`, never reentrantly, so a burst of messages queues rather than
-overlapping. Payloads are untrusted input: they reach the model as a task
-prompt, so the prompt wrapper delimits them (`06-security.md` §6.4).
+overlapping. A payload is untrusted input, but it is never prompt text: it is
+matched against `payload_contains` and reported as `mqtt.message`; the run's prompt
+is the task's own `action.prompt` or the rendered template (`06-security.md` §6.4).
 
 ```json
 {

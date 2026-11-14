@@ -274,12 +274,25 @@ Consequences worth stating explicitly:
 
 ### 6.4 MQTT and geolocation inputs
 
-Broker payloads and positioning responses are **untrusted input that reaches the
-prompt**. `mqtt_message` tasks and `geo.locate` results are wrapped in delimiters
-that the system prompt declares as data, never as instructions
-(T16, T17). Neither is auto-injected into a running conversation: a payload
-enters the model only through a matched trigger, and position only when the model
-calls `geo.locate`.
+Broker payloads and positioning responses are **untrusted input** (T16, T17). Each
+is narrowed before it can reach the model, and neither is auto-injected into a
+running conversation:
+
+- A broker payload never becomes prompt text. It is matched against a task's
+  `payload_contains` filter (`02-firmware.md` §5.4) and reported on the wire as
+  `mqtt.message`; what reaches the model is the task's own `action.prompt` or
+  `action.template`, which is authored in `/tasks.json`.
+- A positioning response is parsed into typed fields — `lat` and `lon` as numbers,
+  `accuracy_m` and `source_ts` as integers, `provider` as the configured entry's
+  `id` — and reaches the model only when it calls `geo.locate` (`tools/geo.md`
+  §Result). A body without both coordinates is refused, never defaulted.
+
+Other tool results **do** carry third-party prose verbatim — `http.query`,
+`fs.read`, `mcp.*` and the declarative tools under `/tools` — and this firmware
+does not delimit it or declare a data/instruction boundary in the system prompt.
+A hostile document fetched by one of those tools can therefore attempt a prompt
+injection; what bounds the damage is the tool gate (`06` §6) and the per-run
+limits in `llm.max_tool_rounds`, not a delimiter.
 
 ## 7. Redaction rules
 
