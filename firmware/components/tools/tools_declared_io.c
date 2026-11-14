@@ -137,17 +137,25 @@ esp_err_t tools_declared_load(tools_declared_set_t *set)
     if (set == NULL) return ESP_ERR_INVALID_ARG;
     memset(set, 0, sizeof *set);
 
-    /* `/tools` is part of the image, not the sandbox, so the image rule admits it. */
-    store_entry_t entries[TOOLS_MAX_DECLARED];
+    /* `/tools` is part of the image, not the sandbox, so the image rule admits it.
+     * The listing is heap, not a local: this runs on whatever stack first asks for
+     * the set, and `hello` asks on the link task. 1.3 KiB of entries beside the path
+     * and the parse is what overflowed that 4 KiB stack. */
+    store_entry_t *entries = malloc(TOOLS_MAX_DECLARED * sizeof *entries);
+    if (entries == NULL) return ESP_ERR_NO_MEM;
     size_t count = 0;
     esp_err_t err = store_list_image_dir("/tools", entries, TOOLS_MAX_DECLARED, &count);
     if (err != ESP_OK) {
+        free(entries);
         /* A board whose image carries no `/tools/` has built-ins only. */
         return err == ESP_ERR_NOT_FOUND ? ESP_OK : err;
     }
 
     char *body = malloc(DECLARED_BODY_MAX);
-    if (body == NULL) return ESP_ERR_NO_MEM;
+    if (body == NULL) {
+        free(entries);
+        return ESP_ERR_NO_MEM;
+    }
 
     for (size_t i = 0; i < count && set->count < TOOLS_MAX_DECLARED; i++) {
         const char *name = entries[i].name;
@@ -180,6 +188,7 @@ esp_err_t tools_declared_load(tools_declared_set_t *set)
         set->count++;
     }
     free(body);
+    free(entries);
     return ESP_OK;
 }
 

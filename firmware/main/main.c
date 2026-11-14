@@ -327,9 +327,10 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
     } else if (strcmp(name, "sandbox.read") == 0) {
         const char *path = json_string(json_get(args, "path"));
         if (path == NULL) { emit_failure("sandbox.read", reply_to, "E_PROTOCOL", "Missing path"); return ESP_ERR_INVALID_ARG; }
-        /* `04` §4.18: the buffer is static because `link_task` has 4 KiB of stack
-         * and 8193 bytes of local would not fit. Dispatch is single-threaded, so
-         * one buffer is correct; a mutex would be dead weight. The cap matches the
+        /* `04` §4.18: the buffer is static because `link_task` has 8 KiB of stack
+         * and 8193 bytes of local would still not fit beside the handshake path.
+         * Dispatch is single-threaded, so one buffer is correct; a mutex would be
+         * dead weight. The cap matches the
          * document exactly: a larger read would not fit the 16384-byte TX limit. */
         static char s_text[SANDBOX_READ_CAP + 1];
         size_t len = 0, total = 0;
@@ -481,7 +482,7 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
 }
 
 /* The canonical text of the loaded document, and the document it was parsed from.
- * Both static: `link_task` has 4096 bytes of stack and a whole config does not fit
+ * Both static: `link_task` has 8 KiB of stack and a whole config still does not fit
  * on it (`02-firmware.md` §3.1). */
 static char s_cfg_out[CFG_JSON_MAX + 1];
 
@@ -681,7 +682,7 @@ static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
 
 
     /* Static for the same reason as `sandbox.read`: 4097 bytes does not fit on the
-     * 4 KiB link stack (`02-firmware.md` §3.1). */
+     * link stack (`02-firmware.md` §3.1). */
     static char s_text[4096 + 1];
     size_t len = 0;
     esp_err_t err = store_read_file(path, s_text, sizeof s_text, &len);

@@ -119,8 +119,14 @@ esp_err_t link_start(void)
     link_set_writer(cdc_write);
 
     /* High priority: a frame must be answered while the agent is busy (§3.3). The
-     * task blocks on the read, so it costs nothing when idle. */
-    BaseType_t created = xTaskCreate(link_task, "link_task", 4096, NULL,
+     * task blocks on the read, so it costs nothing when idle.
+     *
+     * 8 KiB, not 4: `hello` is dispatched on this stack and builds the tool context
+     * there, which walks the declarative set and parses every file under `/tools`
+     * through cJSON. At 4 KiB that chain overflowed the task and panicked the board
+     * on the first `hello` — the device booted, answered `ping` (which never leaves
+     * this task), and then reset instead of answering the handshake. */
+    BaseType_t created = xTaskCreate(link_task, "link_task", LINK_TASK_STACK, NULL,
                                      configMAX_PRIORITIES - 3, NULL);
     if (created != pdPASS) {
         ESP_LOGE(TAG, "link task could not start");

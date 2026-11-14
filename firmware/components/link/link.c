@@ -15,9 +15,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-/* One scratch frame, static because the link task's 4 KiB stack (`02-firmware.md`
- * §3.3) cannot hold it and `out` must stay untouched on failure. The 16 KiB
- * BSS cost is acceptable for the sole link task. */
+/* One scratch frame, static because the link task's stack (`02-firmware.md` §3.3)
+ * cannot hold it and `out` must stay untouched on failure. The 16 KiB BSS cost is
+ * acceptable for the sole link task. */
 static char s_tx[LINK_TX_MAX];
 
 /* The assembled frame for the emit paths below. Static for the same reason as
@@ -52,8 +52,8 @@ static void emit_lock_give(void)
 static uint32_t s_counter = 0;
 
 /* The refusal message for a malformed line, which must name the byte offset
- * (`04-protocol.md` §1.2). Static because the link task stack is 4096 bytes and the
- * frame is built from it (`02-firmware.md` §3.3). */
+ * (`04-protocol.md` §1.2). Static because the link task stack is the one budget in
+ * play and the frame is built from it (`02-firmware.md` §3.3). */
 static char s_parse_message[32];
 
 static const link_sink_t *s_sink = NULL;

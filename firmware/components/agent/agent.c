@@ -52,8 +52,9 @@ static const char *TAG = "agent";
 #define AGENT_SKILL_INDEX_MAX 1024
 
 /* The job carries a *pointer* to its prompt, never the prompt itself: it is queued
- * from the link task, whose stack is 4 KiB (`02-firmware.md` §3.3), and an inline
- * 8 KiB buffer overflowed it on the first prompt. The prompt is allocated from PSRAM
+ * from the link task, whose stack is 8 KiB (`02-firmware.md` §3.3), and an inline
+ * 8 KiB buffer overflowed the 4 KiB it had then on the first prompt. The prompt is
+ * allocated from PSRAM
  * by `agent_submit` and freed by whichever side ends up owning it. */
 typedef struct {
     char *prompt;

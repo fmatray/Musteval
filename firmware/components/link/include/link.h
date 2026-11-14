@@ -17,6 +17,13 @@
 #define LINK_RX_MAX 4096
 #define LINK_TX_MAX 16384
 
+/* `02-firmware.md` §3.3 task table. 8 KiB, not 4: the sink runs `hello` on this
+ * stack, and `hello` builds the tool context there — the declarative files under
+ * `/tools` and their cJSON parse. At 4 KiB that overflowed the task and panicked the
+ * board on the first handshake, which reads from outside as a device that boots and
+ * then ignores the bridge. */
+#define LINK_TASK_STACK 8192
+
 /* The id bound of `04-protocol.md` §2: 1-32 chars from `[A-Za-z0-9._-]`. Exported
  * because a caller that answers asynchronously must own a copy of the id it owes a
  * reply to, and it may not assume a smaller size. */
