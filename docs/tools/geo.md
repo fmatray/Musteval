@@ -100,16 +100,16 @@ documented here is the one the model calls.
   ref (`../03-config.md` §geo).
 - `E_GEO` - every provider in the chain failed; no fix is cached and the previous
   cached fix, if any, is not returned.
- - `E_TIMEOUT` - the last provider attempt in the chain exceeded `geo.timeout_ms`
-   (`../02-firmware.md` §geo), and no subsequent provider produced a fix.
- **Failure handling.** A provider that exceeds its attempt budget or fails to respond
- within `geo.timeout_ms` is considered failed; the chain continues to the next
- configured entry. `E_TIMEOUT` is only returned if the failure was a timeout AND no
- later provider succeeded.
+- `E_TIMEOUT` - the **last** provider attempt in the chain exceeded `geo.timeout_ms`
+  (`../02-firmware.md` §geo), and no later provider produced a fix.
+  **Failure handling.** A provider that exceeds its attempt budget or fails to respond
+  within `geo.timeout_ms` is considered failed; the chain continues to the next
+  configured entry. `E_TIMEOUT` is only returned if the failure was a timeout AND no
+  later provider produced a fix — which is to say the chain reports its final outcome,
+  not its worst one. A chain whose first provider timed out and whose last refused is
+  `E_GEO`: telling the reader to retry would send them into the same refusal.
 - `E_TOOL` - the arguments failed schema validation. The canonical schema has no
   properties, so this only fires on a malformed call (`../02-firmware.md` §7.1).
-- `E_CANCELLED` - the run was cancelled while the blocking lookup was in flight
-  (`../04-protocol.md` §5).
 
 ## See also
 

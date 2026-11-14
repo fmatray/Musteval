@@ -871,7 +871,11 @@ static esp_err_t call_geo_locate(json_doc_t **out, const char **wire_code, char 
     if (err != ESP_OK) {
         set_why(why, why_cap, err == ESP_ERR_TIMEOUT ? "geo.locate: no provider answered"
                                                      : "geo.locate: every provider failed");
-        if (wire_code != NULL) *wire_code = "E_GEO";
+        /* `tools/geo.md` §Errors names both: the chain exhausted is `E_GEO`, the chain
+         * that ran out of time is `E_TIMEOUT`. They are different readings — one says
+         * every provider refused or failed, the other says none answered in time — and
+         * the reader's next move differs (reconfigure versus retry later). */
+        if (wire_code != NULL) *wire_code = err == ESP_ERR_TIMEOUT ? "E_TIMEOUT" : "E_GEO";
         return err;
     }
     *out = json_new_object();
@@ -1106,9 +1110,11 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
         *out = NULL;
     }
     if (wire_code != NULL) {
-        /* The table lives in `tools_spec.c` so it is host-tested; see
-         * `tools_wire_code`. */
-        const char *code = tools_wire_code(name, err);
+        /* The rule lives in `tools_spec.c` so it is host-tested; see
+         * `tools_wire_code_refine`. A handler that classified its own failure keeps
+         * that code — the generic table only answers for the ones that left `E_TOOL`
+         * standing. */
+        const char *code = tools_wire_code_refine(name, err, *wire_code);
         if (code != NULL) *wire_code = code;
     }
     return err;

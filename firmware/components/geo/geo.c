@@ -189,7 +189,6 @@ esp_err_t geo_locate(geo_fix_t *out)
     /* Steps 3-4: walk the chain as written. The first fix wins; a failure is logged
      * with its provider id and the next entry is tried. */
     esp_err_t last = ESP_ERR_NOT_FOUND;
-    bool saw_timeout = false;
     for (size_t i = 0; i < s_state.count; i++) {
         const geo_provider_t *p = geo_provider_at(s_state.providers, s_state.count, i);
         if (p == NULL) continue;
@@ -222,14 +221,18 @@ esp_err_t geo_locate(geo_fix_t *out)
             *out = candidate;
             return ESP_OK;
         }
-        if (r == ESP_ERR_TIMEOUT) saw_timeout = true;
         ESP_LOGW(TAG, "locate: %s: %s (http %d)", p->id, esp_err_to_name(r), (int)status);
         last = r;
     }
 
     /* Step 5 is the cache write, which only happens on success: a failed lookup caches
-     * nothing, so the next call retries the whole chain. */
-    if (saw_timeout) return ESP_ERR_TIMEOUT;
+     * nothing, so the next call retries the whole chain.
+     *
+     * `tools/geo.md` §Errors: `E_TIMEOUT` is the *last* attempt timing out, not any
+     * attempt. A chain whose first provider timed out and whose second refused is a
+     * refusal — reporting a timeout there would tell the reader to retry a lookup that
+     * will refuse again. */
+    if (last == ESP_ERR_TIMEOUT) return ESP_ERR_TIMEOUT;
     return last == ESP_OK ? ESP_ERR_NOT_FOUND : last;
 }
 

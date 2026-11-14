@@ -420,3 +420,13 @@ const char *tools_wire_code(const char *tool, esp_err_t err)
     default:                    return "E_STORAGE";
     }
 }
+
+const char *tools_wire_code_refine(const char *tool, esp_err_t err, const char *chosen)
+{
+    if (err == ESP_OK) return NULL;
+    /* `E_TOOL` is the default every handler starts from, so seeing it means no
+     * handler claimed the failure. Anything else was chosen deliberately. */
+    if (chosen != NULL && strcmp(chosen, "E_TOOL") != 0) return chosen;
+    const char *code = tools_wire_code(tool, err);
+    return code != NULL ? code : chosen;
+}

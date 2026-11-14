@@ -766,6 +766,40 @@ TEST_CASE("a tool failure carries the documented wire code", "[m4]")
     TEST_ASSERT_NULL(tools_wire_code("time.now", ESP_OK));
 }
 
+/* `tools/geo.md` §Errors, `tools/mqtt.md` §Errors and `06-security.md` §T9: a tool
+ * that classifies its own failure must keep that code. `tools_call` used to apply the
+ * generic table over whatever the handler chose, so a locator that was simply
+ * switched off reached the model as `E_TOOL` instead of the documented `E_CONFIG`. */
+TEST_CASE("a handler's own wire code survives the generic table", "[m4]")
+{
+    /* Chosen deliberately: kept, whatever the table would have said. `E_CONFIG` for a
+     * disabled locator is the case the overwrite broke, since the handler reports it
+     * with `ESP_ERR_INVALID_STATE` — a code the table maps to `E_TOOL`. */
+    TEST_ASSERT_EQUAL_STRING("E_CONFIG",
+        tools_wire_code_refine("geo.locate", ESP_ERR_INVALID_STATE, "E_CONFIG"));
+    TEST_ASSERT_EQUAL_STRING("E_GEO",
+        tools_wire_code_refine("geo.locate", ESP_ERR_NOT_FOUND, "E_GEO"));
+    TEST_ASSERT_EQUAL_STRING("E_TIMEOUT",
+        tools_wire_code_refine("geo.locate", ESP_ERR_TIMEOUT, "E_TIMEOUT"));
+    TEST_ASSERT_EQUAL_STRING("E_MQTT",
+        tools_wire_code_refine("mqtt.publish", ESP_ERR_INVALID_ARG, "E_MQTT"));
+    TEST_ASSERT_EQUAL_STRING("E_MCP",
+        tools_wire_code_refine("mcp.fs.read", ESP_ERR_INVALID_STATE, "E_MCP"));
+
+    /* Left at the default: the table answers. */
+    TEST_ASSERT_EQUAL_STRING("E_STORAGE",
+        tools_wire_code_refine("fs.write", ESP_ERR_INVALID_SIZE, "E_TOOL"));
+    TEST_ASSERT_EQUAL_STRING("E_WIFI",
+        tools_wire_code_refine("net.ping", ESP_ERR_INVALID_STATE, "E_TOOL"));
+    TEST_ASSERT_EQUAL_STRING("E_TIMEOUT",
+        tools_wire_code_refine("time.now", ESP_ERR_TIMEOUT, "E_TOOL"));
+
+    /* No handler and no code at all: the default stands rather than NULL. */
+    TEST_ASSERT_EQUAL_STRING("E_TOOL",
+        tools_wire_code_refine("fs.read", ESP_ERR_NOT_FOUND, "E_TOOL"));
+    TEST_ASSERT_NULL(tools_wire_code_refine("fs.read", ESP_OK, "E_TOOL"));
+}
+
 /* --- gating (`06-security.md` §6) ----------------------------------------- */
 
 static tools_policy_t policy_with(bool dangerous)

@@ -196,6 +196,12 @@ const char *tools_memory_reserved_prefix(const char *key);
  * `tools_call` is the only caller. */
 const char *tools_wire_code(const char *tool, esp_err_t err);
 
+/* The code a failed call finally reports: `chosen` when the handler classified its
+ * own failure, else `tools_wire_code`. `geo.locate`, `mqtt.*`, `mcp.*` and `task.*`
+ * pass a code in — `E_CONFIG`, `E_GEO`, `E_MQTT`, `E_MCP` — and the generic table
+ * only answers for a handler that left the default `E_TOOL` standing. Pure. */
+const char *tools_wire_code_refine(const char *tool, esp_err_t err, const char *chosen);
+
 /* True when `task.set` may write: an update never consumes a slot, so only an id the
  * schedule does not already hold is counted against `tools.task_max`. Split out of
  * `tools.c` because that file is board-only, and this is the one rule the model's cap
