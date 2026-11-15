@@ -539,3 +539,72 @@ async def test_thinking_accepts_a_level_on_ollama_cloud():
     entry = written[0][0]
     assert entry["id"] == "ollama-cloud"
     assert entry["extra_body"] == {"reasoning_effort": "high"}
+
+
+# -- a `command.result` that breaks `04` §3.20 ---------------------------
+
+
+async def test_a_result_with_no_name_or_ok_is_reported_and_never_prints_none():
+    """The board's real `geo.locate` reply carried `result` and `duration_ms` but no
+    `name` and no `ok`, so the chat printed `None: None None` — a sentence naming
+    nothing. `04` §3.20 requires both members; a frame without them is malformed."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame["type"] == "command":
+            return [encode(Frame(type="command.result", id="d-29", ts=0,
+                                 body={"duration_ms": 1593,
+                                       "result": {"accuracy_m": 5000, "age_s": 0,
+                                                  "lat": 50.5296462, "lon": 2.6400314,
+                                                  "provider": "ip_fallback"}},
+                                 reply_to=frame["id"]))]
+        return []
+
+    async def body(app, pilot):
+        assert await app._request("geo.locate") is None
+        await pilot.pause(0.1)
+        text = _text(app)
+        assert "malformed reply" in text, text
+        assert "None" not in text, text
+
+    await _run(reply, body)
+
+
+async def test_a_refusal_with_no_error_object_is_reported_as_malformed():
+    """`04` §3.20: `ok:false` carries an `error` object. Without one the code and
+    message are both empty, and `name: None None` says nothing the reader can act on."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame["type"] == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame["type"] == "command":
+            return [encode(Frame(type="command.result", id="d-9", ts=0,
+                                 body={"name": "status", "ok": False, "duration_ms": 1},
+                                 reply_to=frame["id"]))]
+        return []
+
+    async def body(app, pilot):
+        await app._request("status")
+        await pilot.pause(0.1)
+        text = _text(app)
+        assert "malformed reply" in text, text
+        assert "None" not in text, text
+
+    await _run(reply, body)
+
+
+async def test_a_well_formed_refusal_still_names_its_code_and_message():
+    """`05` §13.2: the line repeats the device's own words verbatim, so this guard
+    must not paraphrase a refusal that does arrive in full."""
+
+    async def body(app, pilot):
+        await app._request("status")
+        await pilot.pause(0.1)
+        assert "status: E_STORAGE usage failed" in _text(app)
+
+    await _run(_scripted({"status": {"code": "E_STORAGE", "message": "usage failed"}}), body)

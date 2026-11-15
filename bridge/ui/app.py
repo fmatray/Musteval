@@ -1680,8 +1680,16 @@ class BridgeApp(App):
         body = frame.body
         name = body.get("name")
         if not body.get("ok"):
-            error = body.get("error") or {}
-            self._chat().write(f"{name}: {error.get('code')} {error.get('message')}", kind="error")
+            # `04` §3.20 requires `name` and, on a refusal, `error{code,message}`.
+            # Without them the line read `None: None None`, which names nothing and
+            # hides that the device broke the contract.
+            error = body.get("error")
+            if isinstance(name, str) and isinstance(error, dict) and error.get("code"):
+                self._chat().write(
+                    f"{name}: {error.get('code')} {error.get('message')}", kind="error"
+                )
+            else:
+                self._chat().write("the device sent a malformed reply", kind="error")
             return
         result = body.get("result")
         if name == "status" and isinstance(result, dict):
