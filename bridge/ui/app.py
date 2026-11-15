@@ -1517,6 +1517,7 @@ class BridgeApp(App):
             "agent.start": self._on_agent_start,
             "agent.tool": self._on_agent_tool,
             "agent.tool_result": self._on_agent_tool_result,
+            "agent.thinking": self._on_agent_thinking,
             "agent.final": self._on_agent_final,
             "agent.error": self._on_agent_error,
             "task.fired": self._on_task_fired,
@@ -1610,6 +1611,15 @@ class BridgeApp(App):
             render_tool_result(frame.body),
             kind="tool" if frame.body.get("ok") else "error",
         )
+
+    def _on_agent_thinking(self, frame: Frame) -> None:
+        # `04` §3.21: the model's working, never its answer, so it is a dim line above
+        # the reply rather than part of it. A truncated trace says so, for the same
+        # reason a truncated answer does: the reader must not take a cut for a whole.
+        text = str(frame.body.get("text", ""))
+        if frame.body.get("truncated"):
+            text += f" … [cut at {frame.body.get('full_bytes', 0)} bytes]"
+        self._chat().write(text, kind="thinking")
 
     def _on_agent_final(self, frame: Frame) -> None:
         usage = frame.body.get("usage") or {}

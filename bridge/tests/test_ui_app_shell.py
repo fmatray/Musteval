@@ -280,8 +280,9 @@ async def test_every_device_frame_type_has_a_handler():
 
         handled = {
             "hello_ack", "status", "log", "agent.start", "agent.tool",
-            "agent.tool_result", "agent.final", "agent.error", "task.fired",
-            "gpio.edge", "mqtt.message", "event", "command.result", "pong",
+            "agent.tool_result", "agent.thinking", "agent.final", "agent.error",
+            "task.fired", "gpio.edge", "mqtt.message", "event", "command.result",
+            "pong",
         }
         assert handled == set(DEVICE_TO_BRIDGE)
 

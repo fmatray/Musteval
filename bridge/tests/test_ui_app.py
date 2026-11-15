@@ -831,6 +831,76 @@ async def test_a_tool_result_and_a_tool_call_reach_the_transcript():
     await _run(reply, body)
 
 
+async def test_a_model_trace_reaches_the_transcript_above_its_answer():
+    """`04` §3.21: the trace is the model's working, not its answer, so it lands in
+    the pane as its own line instead of being folded into `agent.final`."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") != "prompt":
+            return _device()(line)
+        return [
+            encode(Frame(type="agent.start", id="d-3", ts=0,
+                         body={"run_id": "r-1", "trigger": "manual",
+                               "source": "prompt", "provider": "p", "model": "m",
+                               "input_bytes": 1, "queue_depth": 0},
+                         reply_to=frame["id"])),
+            encode(Frame(type="agent.thinking", id="d-5", ts=0,
+                         body={"run_id": "r-1", "round": 1,
+                               "text": "17 times 2 is 34", "truncated": False,
+                               "full_bytes": None},
+                         reply_to=frame["id"])),
+            encode(Frame(type="agent.final", id="d-4", ts=0,
+                         body={"run_id": "r-1", "text": "34",
+                               "usage": {"total_tokens": 1}, "rounds": 1,
+                               "provider": "p", "model": "m", "duration_ms": 1,
+                               "truncated": False, "todo_open": False},
+                         reply_to=frame["id"])),
+        ]
+
+    async def body(app, pilot):
+        app.submit("what is 17 times 2")
+        await _await_chat(pilot, app, "34")
+        text = _text(app)
+        assert "17 times 2 is 34" in text
+        # The trace precedes the answer it explains; a trace printed after it would
+        # read as the model's next remark.
+        assert text.index("17 times 2 is 34") < text.index("\n34")
+
+    await _run(reply, body)
+
+
+async def test_a_cut_trace_says_it_was_cut():
+    """`04` §3.21: a shortened trace reads as the whole reasoning unless it says so,
+    which is the same rule `agent.final` follows for a cut answer."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") != "prompt":
+            return _device()(line)
+        return [
+            encode(Frame(type="agent.thinking", id="d-5", ts=0,
+                         body={"run_id": "r-1", "round": 1, "text": "part of it",
+                               "truncated": True, "full_bytes": 9000},
+                         reply_to=frame["id"])),
+            encode(Frame(type="agent.final", id="d-4", ts=0,
+                         body={"run_id": "r-1", "text": "done",
+                               "usage": {"total_tokens": 1}, "rounds": 1,
+                               "provider": "p", "model": "m", "duration_ms": 1,
+                               "truncated": False, "todo_open": False},
+                         reply_to=frame["id"])),
+        ]
+
+    async def body(app, pilot):
+        app.submit("go")
+        await _await_chat(pilot, app, "cut at 9000 bytes")
+        # `_await_chat` gives up without asserting, so the poll alone would let this
+        # pass on a tree that never rendered the line.
+        assert "cut at 9000 bytes" in _text(app)
+
+    await _run(reply, body)
+
+
 async def test_device_push_frames_reach_the_screen_that_owns_them():
     """`04` §2.1: `task.fired`, `gpio.edge`, `mqtt.message` and `event` are pushed
     without a request, so each has to find a surface with no command behind it."""

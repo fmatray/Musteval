@@ -391,6 +391,32 @@ static void emit_agent_final(const char *run_id, const char *reply_to,
     json_free(body);
 }
 
+/* The model's reasoning trace, in its own frame (`04-protocol.md` §3.21).
+ *
+ * It never rides `agent.final`: that text is the answer, `AGENT_TEXT_MAX` is the whole
+ * frame budget, and a trace presented as the reply is a different answer rather than
+ * a longer one. Nothing is emitted when a reply carried no trace, so a model that
+ * thinks nothing costs no frame. */
+static void emit_agent_thinking(const char *run_id, int round, const agent_reply_t *reply)
+{
+    if (run_id == NULL || reply == NULL || reply->thinking_len == 0) return;
+
+    /* The reply's own buffer is already NUL-terminated inside `AGENT_THINKING_MAX`,
+     * so it is serialised in place — no second copy, and no way for the two to
+     * disagree about where the cut fell. */
+    bool truncated = reply->thinking_full > 0;
+    json_doc_t *body = json_new_object();
+    if (body == NULL) return;
+    json_node_t *root = json_root(body);
+    json_add_string(root, "run_id", run_id);
+    json_add_int(root, "round", round);
+    json_add_string(root, "text", reply->thinking);
+    json_add_bool(root, "truncated", truncated);
+    if (truncated) json_add_int(root, "full_bytes", (int64_t)reply->thinking_full);
+    link_emit_body("agent.thinking", agent_frame_id(), now_s(), NULL, body);
+    json_free(body);
+}
+
 /* --- Tool execution ------------------------------------------------------ */
 
 /* Rendered messages go into statics, never locals: the agent task has 8 KiB of stack
@@ -741,6 +767,11 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
                              "provider reply was not a chat completion", true);
             goto done;
         }
+
+        /* The trace is emitted as soon as the reply is parsed, before any branch, so
+         * a round that ends in a tool call still shows its reasoning. A model that
+         * returns no trace costs no frame (`04-protocol.md` §3.21). */
+        emit_agent_thinking(s_run_id, rounds + 1, s_reply);
 
         prompt_tokens += s_reply->prompt_tokens;
         completion_tokens += s_reply->completion_tokens;

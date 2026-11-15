@@ -49,9 +49,27 @@ def test_catalog_matches_the_frozen_split():
         "ping",
         "ack",
     }
-    assert len(DEVICE_TO_BRIDGE) == 14
+    # Named, not counted: a count alone cannot tell a renamed type from a new one,
+    # and the direction of a frame is the half of the contract a typo breaks silently.
+    assert DEVICE_TO_BRIDGE == {
+        "hello_ack",
+        "status",
+        "log",
+        "agent.start",
+        "agent.tool",
+        "agent.tool_result",
+        "agent.thinking",
+        "agent.final",
+        "agent.error",
+        "task.fired",
+        "gpio.edge",
+        "mqtt.message",
+        "event",
+        "command.result",
+        "pong",
+    }
     assert not BRIDGE_TO_DEVICE & DEVICE_TO_BRIDGE
-    assert len(ALL_TYPES) == 21
+    assert len(ALL_TYPES) == 22
 
 
 def test_error_codes_are_the_frozen_sixteen():

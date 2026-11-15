@@ -56,6 +56,31 @@ static void copy_content(agent_reply_t *out, const char *text)
     out->content_len = n;
 }
 
+/* Copy the model's reasoning trace into `out->thinking`, truncating at the frame
+ * bound. The three member names are the ones the providers in `03-config.md`
+ * §Provider compatibility use: Ollama's `message.thinking`, and the
+ * OpenAI-compatible `reasoning_content` and `reasoning`. First present wins, because
+ * a provider that sends two is naming the same trace twice. */
+static void copy_thinking(agent_reply_t *out, const json_node_t *message)
+{
+    static const char *const NAMES[] = {"thinking", "reasoning_content", "reasoning"};
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+        const char *text = json_string(json_get(message, NAMES[i]));
+        if (text == NULL || text[0] == '\0') continue;
+        size_t n = strlen(text);
+        if (n >= sizeof out->thinking) {
+            out->thinking_full = n;
+            /* Cut on a character boundary: `04` §3.21 promises UTF-8, and half a
+             * sequence is bytes the bridge would render as a replacement character. */
+            n = store_utf8_prefix((const uint8_t *)text, sizeof out->thinking - 1);
+        }
+        memcpy(out->thinking, text, n);
+        out->thinking[n] = '\0';
+        out->thinking_len = n;
+        return;
+    }
+}
+
 esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
 {
     if (body == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
@@ -130,16 +155,25 @@ esp_err_t agent_parse_reply(const char *body, size_t len, agent_reply_t *out)
         out->call_count++;
     }
 
-    /* A thinking model may put its whole answer in `reasoning_content` and leave
-     * `content` empty, which reached `agent.final` as `text:""` — a blank answer the
-     * reader could not tell from a silent failure. Fall back only when there is no
-     * visible content *and* no tool call: an empty `content` beside `tool_calls` is
-     * the normal shape of a tool round, and borrowing reasoning there would replay it
-     * as the assistant turn. The field is not in the OpenAI spec, so it is read as an
-     * optional extra the providers in `03-config.md` §Provider compatibility add. */
-    if (out->content_len == 0 && out->call_count == 0) {
-        const char *reasoning = json_string(json_get(message, "reasoning_content"));
-        if (reasoning != NULL && reasoning[0] != '\0') copy_content(out, reasoning);
+    /* The trace is carried beside the answer, never as it: `agent.c` emits it as its
+     * own `agent.thinking` frame (`04-protocol.md` §3.21). Read unconditionally —
+     * gating it on an empty `content` was the defect that hid every trace a model
+     * produced alongside a real answer. */
+    copy_thinking(out, message);
+
+    /* Some models reason and then stop, so `content` is empty while a trace exists;
+     * read as-is that reached `agent.final` as `text:""`, a blank turn the reader
+     * could not tell from a silent failure. The trace is promoted to the answer only
+     * when there is no visible content *and* no tool call: an empty `content` beside
+     * `tool_calls` is the normal shape of a tool round, and promoting the trace there
+     * would replay it as the assistant turn. */
+    if (out->content_len == 0 && out->call_count == 0 && out->thinking_len > 0) {
+        copy_content(out, out->thinking);
+        /* The trace *is* the answer now, so it must not also be framed as the
+         * reader's preview of it: the bridge would show the same text twice. */
+        out->thinking_len = 0;
+        out->thinking_full = 0;
+        out->thinking[0] = '\0';
     }
 
     int64_t value = 0;

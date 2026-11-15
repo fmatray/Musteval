@@ -797,18 +797,22 @@ The agent process is **serialized**. Only one run is active at a time.
    `E_TOOL` result naming the cause, so the run retries the call smaller rather than
    dying. A malformed call under any other finish reason is still a provider fault.
 
-   **A thinking model's answer may arrive in `reasoning_content`.** That member is not
-   in the OpenAI spec; the providers in `03-config.md` §Provider compatibility add it,
-   and a model that reasons before answering can leave `content` empty and put the
-   whole answer there. Read as-is, that reached `agent.final` as `text: ""`, which the
-   bridge renders as a blank turn — an answer the reader cannot tell from a silent
-   failure. `agent_parse_reply` therefore falls back to `reasoning_content` when
-   `content` is empty **and** the reply carries no tool call. The tool-call condition
-   is what keeps the fallback from corrupting a normal tool round, where an empty
-   `content` is expected and the reasoning would otherwise be replayed into history as
-   the assistant turn. Visible `content` always wins: the reasoning is the model's
-   working, and presenting it as the answer when a real answer exists would show the
-   reader the private notes instead.
+   **A thinking model's working is carried beside its answer, never instead of it.**
+   The trace arrives in `message.thinking` (Ollama), `reasoning_content` or
+   `reasoning`; none is in the OpenAI spec, and the providers in `03-config.md`
+   §Provider compatibility add them. `agent_parse_reply` reads all three and keeps the
+   trace on `agent_reply_t.thinking`, which reaches the bridge as its own
+   `agent.thinking` frame (`04-protocol.md` §3.21). It never enters
+   `agent.final.text`: presenting the private notes as the reply is a different
+   answer, not a longer one, and `AGENT_TEXT_MAX` is already the whole frame budget.
+
+   The one case where the trace does become the answer is a reply with **no** visible
+   `content` and **no** tool call — some models reason and stop. Read as-is that
+   reached `agent.final` as `text: ""`, which the bridge renders as a blank turn, an
+   answer the reader cannot tell from a silent failure. The fallback is kept for that
+   case alone. The tool-call condition is what stops it corrupting a normal tool
+   round, where an empty `content` is expected and the reasoning would otherwise be
+   replayed into history as the assistant turn. Visible `content` always wins.
 
 5. **Close-out check**: Before finalizing, inspect the todo tree via
    `agent_todo_phases()` and the rounds used. The check fails in two cases:

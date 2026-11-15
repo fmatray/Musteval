@@ -153,8 +153,8 @@ static bool type_known(const char *type)
         "hello",  "hello_ack", "prompt",   "cancel",     "command",
         "secret.set", "ping",  "pong",     "ack",        "status",
         "log",    "agent.start", "agent.tool", "agent.tool_result",
-        "agent.final", "agent.error", "task.fired", "gpio.edge",
-        "mqtt.message", "event", "command.result",
+        "agent.thinking", "agent.final", "agent.error", "task.fired",
+        "gpio.edge", "mqtt.message", "event", "command.result",
     };
     for (size_t i = 0; i < sizeof(k_types) / sizeof(k_types[0]); i++) {
         if (strcmp(type, k_types[i]) == 0) return true;

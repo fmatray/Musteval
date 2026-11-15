@@ -1372,6 +1372,10 @@ TEST_CASE("agent_parse_reply falls back to reasoning_content when content is emp
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
     TEST_ASSERT_EQUAL_STRING("the pin reads high", reply->content);
     TEST_ASSERT_EQUAL_size_t(18, reply->content_len);
+    /* Promoted to the answer, so it must not also be framed as a trace: the bridge
+     * would show the same sentence twice (`04` §3.21). */
+    TEST_ASSERT_EQUAL_size_t(0, reply->thinking_len);
+    TEST_ASSERT_EQUAL_STRING("", reply->thinking);
     free(reply);
 }
 
@@ -1386,6 +1390,11 @@ TEST_CASE("agent_parse_reply prefers content over reasoning_content", "[m4]")
     TEST_ASSERT_NOT_NULL(reply);
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
     TEST_ASSERT_EQUAL_STRING("done", reply->content);
+    /* The trace survives beside the answer, which is what `agent.thinking` carries.
+     * Gating the read on an empty `content` is the defect the user reported. */
+    TEST_ASSERT_EQUAL_STRING("let me think", reply->thinking);
+    TEST_ASSERT_EQUAL_size_t(12, reply->thinking_len);
+    TEST_ASSERT_EQUAL_size_t(0, reply->thinking_full);
     free(reply);
 }
 
@@ -1405,7 +1414,103 @@ TEST_CASE("agent_parse_reply ignores reasoning_content on a tool round", "[m4]")
     TEST_ASSERT_EQUAL_size_t(1, reply->call_count);
     TEST_ASSERT_EQUAL_size_t(0, reply->content_len);
     TEST_ASSERT_EQUAL_STRING("", reply->content);
+    /* The reasoning is *not* promoted on a tool round, so it rides `agent.thinking`
+     * instead of being replayed into history as the assistant turn. */
+    TEST_ASSERT_EQUAL_STRING("I should check the pin", reply->thinking);
     free(reply);
+}
+
+/* `04` §3.21: every name a provider uses for the trace is read. Ollama returns
+ * `message.thinking`; the OpenAI-compatible deployments use `reasoning_content` or
+ * `reasoning`. A model that reasons alongside a real answer must still show its
+ * working, so the read cannot depend on `content` being empty. */
+TEST_CASE("agent_parse_reply reads all three trace members", "[m4]")
+{
+    static const char *bodies[] = {
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"42\","
+        "\"thinking\":\"17 times 2 plus 8\"},\"finish_reason\":\"stop\"}]}",
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"42\","
+        "\"reasoning_content\":\"17 times 2 plus 8\"},\"finish_reason\":\"stop\"}]}",
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"42\","
+        "\"reasoning\":\"17 times 2 plus 8\"},\"finish_reason\":\"stop\"}]}",
+    };
+    for (size_t i = 0; i < sizeof bodies / sizeof bodies[0]; i++) {
+        agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+        TEST_ASSERT_NOT_NULL(reply);
+        TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(bodies[i], strlen(bodies[i]), reply));
+        TEST_ASSERT_EQUAL_STRING("42", reply->content);
+        TEST_ASSERT_EQUAL_STRING("17 times 2 plus 8", reply->thinking);
+        TEST_ASSERT_EQUAL_size_t(17, reply->thinking_len);
+        free(reply);
+    }
+}
+
+/* A reply with no trace emits no frame at all, so `thinking_len` must be 0 rather
+ * than a stale value from the previous round: `s_reply` is reused every iteration. */
+TEST_CASE("agent_parse_reply leaves no trace when the model sent none", "[m4]")
+{
+    static const char *body =
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},"
+        "\"finish_reason\":\"stop\"}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_STRING("stale", (memcpy(reply->thinking, "stale", 6), reply->thinking));
+    reply->thinking_len = 5;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(0, reply->thinking_len);
+    TEST_ASSERT_EQUAL_STRING("", reply->thinking);
+    free(reply);
+}
+
+/* A trace longer than the field is cut and the cut is reported: a silently shortened
+ * trace reads as the model's whole reasoning. The bound is what makes the frame fit
+ * `LINK_TX_MAX` even when every byte escapes to six (`04` §3.21). */
+TEST_CASE("agent_parse_reply reports a trace it had to cut", "[m4]")
+{
+    size_t payload = AGENT_THINKING_MAX + 512;
+    char *body = (char *)malloc(payload + 256);
+    TEST_ASSERT_NOT_NULL(body);
+    int head = snprintf(body, payload + 256,
+                        "{\"choices\":[{\"message\":{\"role\":\"assistant\","
+                        "\"content\":\"ok\",\"thinking\":\"");
+    TEST_ASSERT_GREATER_THAN_INT(0, head);
+    memset(body + head, 'x', payload);
+    strcpy(body + head + payload,
+           "\"},\"finish_reason\":\"stop\"}]}");
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+                          agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(AGENT_THINKING_MAX - 1, reply->thinking_len);
+    TEST_ASSERT_EQUAL_size_t(payload, reply->thinking_full);
+    TEST_ASSERT_EQUAL_STRING("ok", reply->content);
+    free(reply);
+    free(body);
+}
+
+/* `04` §3.21 promises the cut trace is still UTF-8: a two-byte character straddling
+ * the bound is dropped whole, not split into a stray lead byte the bridge would show
+ * as a replacement symbol. */
+TEST_CASE("agent_parse_reply cuts a trace between characters, not through one", "[m4]")
+{
+    size_t fill = AGENT_THINKING_MAX - 2; /* one 2-byte character then overflows */
+    char *body = (char *)malloc(fill + 256);
+    TEST_ASSERT_NOT_NULL(body);
+    int head = snprintf(body, fill + 256,
+                        "{\"choices\":[{\"message\":{\"role\":\"assistant\","
+                        "\"content\":\"ok\",\"thinking\":\"");
+    TEST_ASSERT_GREATER_THAN_INT(0, head);
+    memset(body + head, 'x', fill);
+    static const char TAIL[] = "\xc3\xa9\"},\"finish_reason\":\"stop\"}]}";
+    memcpy(body + head + fill, TAIL, sizeof TAIL); /* sizeof, so the NUL comes too */
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+                          agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(fill, reply->thinking_len);
+    TEST_ASSERT_EQUAL_CHAR('x', reply->thinking[fill - 1]);
+    free(reply);
+    free(body);
 }
 
 /* A tool call carries its id, name and the arguments as the provider sent them. */

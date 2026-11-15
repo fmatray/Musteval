@@ -36,6 +36,7 @@ DEVICE_TO_BRIDGE: FrozenSet[str] = frozenset(
         "agent.start",
         "agent.tool",
         "agent.tool_result",
+        "agent.thinking",
         "agent.final",
         "agent.error",
         "task.fired",

@@ -217,7 +217,7 @@ line cannot land in the pane unclassified.
 |---|---|---|
 | `user` | the operator's prompt, echoed | Markdown, on `$accent` |
 | `assistant` | `agent.final` | Markdown |
-| `thinking` | `agent.start`, `waiting for the run…` | dim |
+| `thinking` | `agent.start`, `agent.thinking`, `waiting for the run…` | dim |
 | `tool` | `agent.tool`, `agent.tool_result` | dim, indented |
 | `info` | a command's ordinary answer | plain |
 | `warn` | degraded but working | `$warning`, `!` |
@@ -1159,7 +1159,7 @@ Every device `→` bridge frame maps to exactly one UI surface. A frame with no
 surface is a protocol bug, not a silently dropped message.
 
 The `Frame` column is not a second catalogue: `04-protocol.md` §2.1 owns the type
-list, and this table must contain exactly the 14 types whose device `→` bridge cell
+list, and this table must contain exactly the 15 types whose device `→` bridge cell
 is populated there — no more, no fewer. A type added to `04` without a row here is
 caught mechanically (§7 of `09-bridge-architecture.md`), so the two cannot drift.
 
@@ -1171,6 +1171,7 @@ caught mechanically (§7 of `09-bridge-architecture.md`), so the two cannot drif
 | `agent.start` | Chat screen | Starts a run block |
 | `agent.tool` | Chat screen | Tool call line under the run |
 | `agent.tool_result` | Chat screen | Result line, truncated with indicator |
+| `agent.thinking` | Chat screen | The model's reasoning trace, dim, above the answer |
 | `agent.final` | Chat screen | Closes the run block |
 | `agent.error` | Chat screen | Red error line; banner if terminal |
 | `task.fired` | Tasks screen (F4) | Highlights the fired row; appends to chat |

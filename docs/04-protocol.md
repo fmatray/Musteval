@@ -51,7 +51,8 @@ adapters and terminal multiplexers behave identically `[ASSUMPTION]`.
 4096 are clamped to 4096 at config load, because the device RX buffer is fixed by
 the protocol `[ASSUMPTION]`.
 
-Truncation is only permitted on `agent.final.text`. Every other message type MUST
+Truncation is only permitted on `agent.final.text` and `agent.thinking.text`.
+Every other message type MUST
 fit in 16384 bytes by construction; `templates.*` and `config.get` results are sized
 by the flash files they read and are validated against the cap before send, failing
 with `E_STORAGE` if they do not fit.
@@ -97,6 +98,7 @@ Rules:
 | `agent.start` | — | unsolicited, correlated |
 | `agent.tool` | — | unsolicited |
 | `agent.tool_result` | — | unsolicited |
+| `agent.thinking` | — | unsolicited |
 | `agent.final` | — | terminal |
 | `agent.error` | — | terminal or rejection |
 | `task.fired` | — | unsolicited |
@@ -566,6 +568,37 @@ generic notification line and MUST NOT error.
 ```json
 {"v":1,"type":"command.result","id":"d-15","ts":1730563221,"reply_to":"b-4","name":"template.get","ok":false,"error":{"code":"E_STORAGE","message":"template not found: missing.md"},"duration_ms":3}
 ```
+
+### 3.21 `agent.thinking` (device → bridge)
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `run_id` | string | yes | Owning run |
+| `round` | integer | yes | 1-based loop round that produced it |
+| `text` | string | yes | The model's reasoning trace, plain text |
+| `truncated` | boolean | yes | `true` when `text` was shortened to fit its 2048-byte bound |
+| `full_bytes` | integer | when `truncated` | Pre-truncation length |
+
+```json
+{"v":1,"type":"agent.thinking","id":"d-6","ts":1730563219,"run_id":"r-7","round":1,"text":"The clock tool returns Unix seconds; I need ISO 8601, so convert before answering.","truncated":false}
+```
+
+A model that reasons before answering separates the trace from the answer: Ollama
+returns `message.thinking` beside `message.content`, OpenAI-compatible deployments
+return `reasoning_content` or `reasoning`. That text is the model's working, not its
+answer, so it never travels in `agent.final.text` — doing so would present private
+notes as the reply, and `AGENT_TEXT_MAX` is already the whole frame budget. It arrives
+on this frame instead, ahead of the round's `agent.final` or `agent.tool`.
+
+`text` is bounded at 2048 bytes. The bound is not arbitrary: JSON escaping costs at
+worst six bytes per source byte (`\u00XX`), so this is the longest trace whose frame
+always fits `LINK_TX_MAX` and can never be refused. A longer trace is cut at a UTF-8
+character boundary and reported through `truncated` and `full_bytes`, the same
+contract as `agent.final.text` (§1.2). A reply with no reasoning emits no frame at
+all — an empty frame would be indistinguishable from a model that thinks nothing.
+
+The frame is advisory. It is never terminal, the bridge may discard it, and a run
+whose trace is dropped is still a correct run.
 
 ## 4. Command catalog
 

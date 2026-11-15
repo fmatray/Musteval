@@ -29,6 +29,15 @@
  * reports it. The bound is the frame cap, not the body cap. */
 #define AGENT_TEXT_MAX 16384
 
+/* `04-protocol.md` §3.21: the reasoning trace rides `agent.thinking` instead of
+ * `agent.final`, and its own bound is this one. 2048 is the largest trace whose frame
+ * can never be refused: JSON escaping is at worst 6 bytes per source byte (`\u00XX`),
+ * so 2048 * 6 + the ~200-byte envelope is inside `LINK_TX_MAX`. A trace cut here is
+ * reported through `truncated`/`full_bytes`, and the frame is advisory, so shortening
+ * it costs the reader a preview rather than the answer. It matches `TOOLS_TEXT_MAX`,
+ * which is the same kind of "human-readable preview in one frame" bound. */
+#define AGENT_THINKING_MAX 2048
+
 /* Runs accepted but not yet started. `04` §3.15's `E_BUSY` example names 2. */
 #define AGENT_MAX_QUEUE 2
 
@@ -189,6 +198,20 @@ typedef struct {
      * the provider stopped at the output token cap, so `content` is a prefix and any
      * tool call it cut is incomplete. Empty when the provider sent no reason. */
     char finish_reason[24];
+    /* The model's reasoning trace, from `message.thinking`, `reasoning_content` or
+     * `reasoning` — the three names the providers in `03-config.md` §Provider
+     * compatibility use. It is *never* the answer: `agent.c` emits it as its own
+     * `agent.thinking` frame (`04-protocol.md` §3.21). `thinking_len` is 0 when the
+     * reply carried no trace, and then no frame is emitted at all.
+     *
+     * A fixed 4096 here rather than PSRAM: one buffer per run, and the struct is
+     * already heap-allocated by `agent_alloc`. */
+    char thinking[AGENT_THINKING_MAX];
+    size_t thinking_len;
+    /* The trace's real length when `thinking` had to be cut, else 0. Kept here rather
+     * than recomputed in `agent.c`: the parse is the only place that sees the whole
+     * string, and a silent cut would reach the reader as a complete trace. */
+    size_t thinking_full;
 } agent_reply_t;
 
 /* The `finish_reason` that means "output cap reached". Frozen because the loop
