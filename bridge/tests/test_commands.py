@@ -28,7 +28,7 @@ def test_every_produced_name_is_a_frozen_command():
     texts = [
         "/status", "/reload", "/reboot", "/templates", "/template t1", "/geo",
         "/tasks", "/run t1", "/config get a.b", "/config set a.b c", "/mqtt",
-        "/mqtt publish s1 t p", "/fs put /x",
+        "/mqtt publish s1 t p", "/fs put /skills/a.md",
         "/sandbox", "/sandbox list /workspace/runs", "/sandbox read /workspace/a.txt",
         "/sandbox delete /workspace/a.txt",
     ]
@@ -319,7 +319,7 @@ def test_todo_view_refuses_a_target_it_would_drop():
 
 def test_fs_put_splits_under_the_rx_cap():
     data = b"x" * (FS_PUT_CHUNK_BYTES * 2 + 10)
-    frames = parse("/fs put /ws/a.txt", CommandState(upload_bytes=data))
+    frames = parse("/fs put /skills/a.md", CommandState(upload_bytes=data))
     assert len(frames) == 3
     assert [f.body["args"]["final"] for f in frames] == [False, False, True]
     assert [f.body["args"]["offset"] for f in frames] == [0, FS_PUT_CHUNK_BYTES, FS_PUT_CHUNK_BYTES * 2]
@@ -334,12 +334,12 @@ def test_fs_put_requires_an_absolute_path():
 
 
 def test_fs_put_without_a_loaded_file():
-    with pytest.raises(CommandError):
-        parse("/fs put /a", CommandState())
+    with pytest.raises(CommandError, match="no file loaded"):
+        parse("/fs put /skills/a.md", CommandState())
 
 
 def test_fs_put_of_an_empty_file_still_sends_one_final_chunk():
-    (frame,) = parse("/fs put /empty", CommandState(upload_bytes=b""))
+    (frame,) = parse("/fs put /skills/empty.md", CommandState(upload_bytes=b""))
     assert frame.body["args"]["final"] is True
     assert frame.body["args"]["data"] == ""
 
@@ -435,13 +435,56 @@ def test_sys_reset_counter_rejects_bad_sub():
     with pytest.raises(CommandError, match="usage: /sys reset-counter"):
         parse("/sys bogus")
 
+
+def _refused(text, state=None) -> str:
+    """The message `parse` refuses `text` with.
+
+    A refusal is an exception, never a short frame list: `parse` is pure, so a
+    caller that got frames back would send them.
+    """
+    with pytest.raises(CommandError) as exc:
+        parse(text, state)
+    return str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "text,expected_usage",
+    [
+        ("/status extra", "usage: /status"),
+        ("/reload extra", "usage: /reload"),
+        ("/reboot extra", "usage: /reboot"),
+        ("/templates extra", "usage: /templates"),
+        ("/geo extra", "usage: /geo"),
+        ("/cancel extra", "usage: /cancel"),
+        ("/diag extra", "usage: /diag"),
+        ("/retry extra", "usage: /retry"),
+        ("/template morning junk", "usage: /template <name>"),
+        ("/run t1 junk", "usage: /run <id>"),
+        ("/tasks delete t1 junk", "usage: /tasks delete <id>"),
+        ("/tasks enable t1 junk", "usage: /tasks enable <id>"),
+        ("/tasks disable t1 junk", "usage: /tasks disable <id>"),
+        ("/tasks set t1 junk", "usage: /tasks set <id>"),
+        ("/sandbox list /workspace/a junk", "usage: /sandbox list [<path>]"),
+        ("/sandbox read /workspace/a junk", "usage: /sandbox read <path>"),
+        ("/sandbox mkdir /workspace/a junk", "usage: /sandbox mkdir <path>"),
+        ("/sandbox move /workspace/a /workspace/b junk", "usage: /sandbox move <from> <to>"),
+        ("/sandbox delete /workspace/a junk", "usage: /sandbox delete [-r] <path>"),
+        ("/secret set key junk", "usage: /secret set <key>"),
+        ("/config get a.b junk", "usage: /config get <path>"),
+        ("/sys reset-counter extra", "usage: /sys reset-counter"),
+        ("/fs put /workspace/a junk", "usage: /fs put <path>"),
+    ],
+)
+def test_fixed_arity_refusals(text, expected_usage):
+    # Use state with relevant data to ensure refusal is arity, not missing state
+    state = CommandState(tasks=[{"id": "t1"}], upload_bytes=b"a", last_prompt="hi")
+    assert _refused(text, state) == expected_usage
+
+
 def test_new_slash_forms_send_zero_frames_on_refusal():
-    # Path refusal should raise CommandError and emit nothing.
-    # Since parse is pure and raises, result is naturally empty.
-    sent: list[Frame] = []
-    with pytest.raises(CommandError):
-        sent.extend(parse("/sandbox mkdir /outside"))
-    assert sent == []
+    # Proof that path refusal (and others) raises and emits nothing.
+    # _refused helper already verifies this property.
+    assert _refused("/sandbox mkdir /outside") == "outside /workspace/: /outside"
 
 def test_every_produced_name_is_a_frozen_command_updated():
     texts = [

@@ -100,6 +100,12 @@ def _require(argv: list[str], count: int, usage: str) -> None:
         raise CommandError(f"usage: {usage}")
 
 
+def _exact(argv: list[str], count: int, usage: str) -> None:
+    """A fixed-arity form: a surplus word is as wrong as a missing one."""
+    if len(argv) != count:
+        raise CommandError(f"usage: {usage}")
+
+
 def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     """Map one slash-command line to the frames it sends.
 
@@ -118,15 +124,19 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         return []
 
     if head == "status":
+        _exact(rest, 0, "/status")
         return [_command("status")]
     if head == "reload":
+        _exact(rest, 0, "/reload")
         return [_command("reload")]
     if head == "reboot":
+        _exact(rest, 0, "/reboot")
         return [_command("reboot")]
     if head == "templates":
+        _exact(rest, 0, "/templates")
         return [_command("templates.list")]
     if head == "template":
-        _require(rest, 1, "/template <name>")
+        _exact(rest, 1, "/template <name>")
         return [_command("template.get", {"name": rest[0]})]
     if head == "mqtt":
         if not rest:
@@ -142,6 +152,7 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
             )
         ]
     if head == "geo":
+        _exact(rest, 0, "/geo")
         return [_command("geo.locate")]
     if head == "wifi":
         # `05-bridge.md` §7: `scan` asks the radio, the other four ask the station.
@@ -160,18 +171,22 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
             return [_command("net.ping", {"target": rest[0]})]
         raise CommandError("usage: /ping device|router|llm|ntp")
     if head == "cancel":
+        _exact(rest, 0, "/cancel")
         return [Frame(type="cancel", id=new_id("b"), ts=0, body={"reason": "user"})]
     if head == "retry":
+        _exact(rest, 0, "/retry")
         if not state.last_prompt:
             raise CommandError("no prompt to retry")
         return [
             Frame(type="prompt", id=new_id("b"), ts=0, body={"text": state.last_prompt})
         ]
     if head == "diag":
+        _exact(rest, 0, "/diag")
         return [_command("status")]
     if head == "secret":
-        if len(rest) < 2 or rest[0] != "set":
+        if not rest or rest[0] != "set":
             raise CommandError("usage: /secret set <key>")
+        _exact(rest[1:], 1, "/secret set <key>")
         value = state.secret_value
         if not value:
             raise CommandError("no secret value supplied")
@@ -181,21 +196,22 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
             )
         ]
     if head == "config":
-        if len(rest) < 2:
+        if not rest:
             raise CommandError("usage: /config get <path> | /config set <path> <value>")
         if rest[0] == "get":
+            _exact(rest[1:], 1, "/config get <path>")
             return [_command("config.get", {"path": rest[1]})]
         if rest[0] == "set":
-            if len(rest) < 3:
-                raise CommandError("usage: /config set <path> <value>")
+            _require(rest[1:], 2, "/config set <path> <value>")
             return [_command("config.set", {"path": rest[1], "value": " ".join(rest[2:])})]
         raise CommandError("usage: /config get <path> | /config set <path> <value>")
     if head == "run":
-        _require(rest, 1, "/run <id>")
+        _exact(rest, 1, "/run <id>")
         return [_command("tasks.run", {"id": rest[0]})]
     if head == "fs":
-        if len(rest) < 2 or rest[0] != "put":
+        if not rest or rest[0] != "put":
             raise CommandError("usage: /fs put <path>")
+        _exact(rest[1:], 1, "/fs put <path>")
         return _fs_put(rest[1], state)
     if head == "sandbox":
         return _sandbox(rest)
@@ -204,7 +220,7 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     if head == "tasks":
         return _tasks(rest, state)
     if head == "sys":
-        if rest[:1] != ["reset-counter"]:
+        if rest[:1] != ["reset-counter"] or len(rest) > 1:
             raise CommandError("usage: /sys reset-counter")
         return [_command("sys.reset_counter")]
 
@@ -225,9 +241,10 @@ def _sandbox(rest: list[str]) -> list[Frame]:
         return [_command("sandbox.list", {"path": SANDBOX_ROOT})]
     sub, args = rest[0], rest[1:]
     if sub == "list":
+        _exact(args, 1 if args else 0, "/sandbox list [<path>]")
         return [_command("sandbox.list", {"path": _sandbox_path(args[0] if args else SANDBOX_ROOT)})]
     if sub == "read":
-        _require(args, 1, "/sandbox read <path>")
+        _exact(args, 1, "/sandbox read <path>")
         return [_command("sandbox.read", {"path": _sandbox_path(args[0])})]
     if sub in ("delete", "rm"):
         recursive = False
@@ -239,16 +256,16 @@ def _sandbox(rest: list[str]) -> list[Frame]:
                 raise CommandError(f"unknown option: {a}")
             else:
                 positional.append(a)
-        _require(positional, 1, "/sandbox delete [-r] <path>")
+        _exact(positional, 1, "/sandbox delete [-r] <path>")
         body = {"path": _sandbox_path(positional[0])}
         if recursive:
             body["recursive"] = True
         return [_command("sandbox.delete", body)]
     if sub == "mkdir":
-        _require(args, 1, "/sandbox mkdir <path>")
+        _exact(args, 1, "/sandbox mkdir <path>")
         return [_command("sandbox.mkdir", {"path": _sandbox_path(args[0])})]
     if sub == "move":
-        _require(args, 2, "/sandbox move <from> <to>")
+        _exact(args, 2, "/sandbox move <from> <to>")
         return [_command("sandbox.move", {"from": _sandbox_path(args[0]), "to": _sandbox_path(args[1])})]
     raise CommandError("usage: /sandbox list|read|mkdir|move|delete <path>")
 
@@ -493,15 +510,15 @@ def _tasks(rest: list[str], state: CommandState) -> list[Frame]:
         return [_command("tasks.list")]
     sub = rest[0]
     if sub == "delete":
-        _require(rest[1:], 1, "/tasks delete <id>")
+        _exact(rest[1:], 1, "/tasks delete <id>")
         return [_command("tasks.delete", {"id": rest[1]})]
     if sub in ("enable", "disable"):
-        _require(rest[1:], 1, f"/tasks {sub} <id>")
+        _exact(rest[1:], 1, f"/tasks {sub} <id>")
         task = _find_task(state, rest[1])
         task["enabled"] = sub == "enable"
         return [_command("tasks.set", {"task": task})]
     if sub == "set":
-        _require(rest[1:], 1, "/tasks set <id>")
+        _exact(rest[1:], 1, "/tasks set <id>")
         return [_command("tasks.set", {"task": _find_task(state, rest[1])})]
     if sub == "add":
         raise CommandError("a task body must be supplied (add opens a modal)")
