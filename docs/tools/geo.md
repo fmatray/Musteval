@@ -83,13 +83,21 @@ a provider cannot put prose, a coordinate it did not report, or a redirect into 
 **Result**
 
 ```json
-{"lat": 52.3676, "lon": 4.9041, "accuracy_m": 65, "source_ts": 1730563520, "provider": "wifi_beacon"}
+{"lat": 52.3676, "lon": 4.9041, "accuracy_m": 65, "source_ts": 1730563520, "provider": "wifi_beacon", "city": "Amsterdam", "region": "North Holland", "region_code": "NH", "country": "Netherlands", "country_code": "NL", "country_code_iso3": "NLD", "country_capital": "Amsterdam", "country_tld": ".nl", "continent_code": "EU", "in_eu": true, "postal": "1012", "country_calling_code": "+31", "timezone": "Europe/Amsterdam", "utc_offset": "+01:00", "currency": "EUR", "currency_name": "Euro", "languages": "nl-NL,fy-NL"}
 ```
 
 `provider` is the `geo.providers[].id` that produced the fix. `source_ts` is the Unix
 second the fix was obtained — the local receive time, stamped when the response parsed,
 because a provider is not trusted to report a usable clock — and it is the reference
 point the cache age is measured against.
+
+The place and locale members (`city` through `languages`) are the same set
+`04-protocol.md` §4.13 documents for the command surface, and the same rule applies:
+each is present only when the provider reported it. The `ip` provider in the seed config
+sends neither currency nor currency name nor languages, so a result from it carries the
+geography and omits those three. They are informational: a model reading them learns
+where the device is, which is the point of the tool, and `06-security.md` §6.4 already
+states that a provider sees the request.
 
 **Schema sent to the model**
 

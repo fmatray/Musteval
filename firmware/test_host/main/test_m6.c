@@ -100,6 +100,138 @@ TEST_CASE("a negative or absurd accuracy is not trusted", "[geo]")
     TEST_ASSERT_EQUAL_INT32(100, fix.accuracy_m);
 }
 
+/* --- Place and locale ----------------------------------------------------
+ * Neither provider shape is ours, and the two disagree on nearly every field: the
+ * name is `country_name` on ipapi.co and `country` on ipwho.is, EU membership is
+ * `in_eu` against `is_eu`, the offset is `+0100` against `+01:00`. These cases pin the
+ * absorption, including the fields one family does not send at all. */
+
+TEST_CASE("the ipapi.co shape yields the place and locale it carries", "[geo]")
+{
+    const char *body =
+        "{\"ip\":\"2a01::1\",\"city\":\"Coudekerque-Branche\",\"region\":\"Hauts-de-France\","
+        "\"region_code\":\"HDF\",\"country\":\"FR\",\"country_name\":\"France\","
+        "\"country_code\":\"FR\",\"country_code_iso3\":\"FRA\",\"country_capital\":\"Paris\","
+        "\"country_tld\":\".fr\",\"continent_code\":\"EU\",\"in_eu\":true,\"postal\":\"59210\","
+        "\"latitude\":51.05,\"longitude\":2.36667,\"timezone\":\"Europe/Paris\","
+        "\"utc_offset\":\"+0100\",\"country_calling_code\":\"+33\",\"currency\":\"EUR\","
+        "\"currency_name\":\"Euro\",\"languages\":\"fr-FR,frp,br,co,ca,eu,oc\"}";
+    geo_fix_t fix = {0};
+    TEST_ASSERT_TRUE(geo_parse_fix(body, strlen(body), 100, &fix));
+    TEST_ASSERT_EQUAL_DOUBLE(51.05, fix.lat);
+    TEST_ASSERT_EQUAL_STRING("Coudekerque-Branche", fix.city);
+    TEST_ASSERT_EQUAL_STRING("Hauts-de-France", fix.region);
+    TEST_ASSERT_EQUAL_STRING("HDF", fix.region_code);
+    TEST_ASSERT_EQUAL_STRING("France", fix.country);
+    TEST_ASSERT_EQUAL_STRING("FR", fix.country_code);
+    TEST_ASSERT_EQUAL_STRING("FRA", fix.country_code_iso3);
+    TEST_ASSERT_EQUAL_STRING("Paris", fix.country_capital);
+    TEST_ASSERT_EQUAL_STRING(".fr", fix.country_tld);
+    TEST_ASSERT_EQUAL_STRING("EU", fix.continent_code);
+    TEST_ASSERT_EQUAL_INT8(1, fix.in_eu);
+    TEST_ASSERT_EQUAL_STRING("59210", fix.postal);
+    TEST_ASSERT_EQUAL_STRING("+33", fix.country_calling_code);
+    TEST_ASSERT_EQUAL_STRING("Europe/Paris", fix.timezone);
+    TEST_ASSERT_EQUAL_STRING("+01:00", fix.utc_offset);
+    TEST_ASSERT_EQUAL_STRING("EUR", fix.currency);
+    TEST_ASSERT_EQUAL_STRING("Euro", fix.currency_name);
+    TEST_ASSERT_EQUAL_STRING("fr-FR,frp,br,co,ca,eu,oc", fix.languages);
+}
+
+TEST_CASE("the ipwho.is shape yields the place and locale it carries", "[geo]")
+{
+    const char *body =
+        "{\"ip\":\"2a01::1\",\"success\":true,\"type\":\"IPv6\",\"continent\":\"Europe\","
+        "\"continent_code\":\"EU\",\"country\":\"France\",\"country_code\":\"FR\","
+        "\"region\":\"Ile-de-France\",\"region_code\":\"IDF\",\"city\":\"Paris\","
+        "\"latitude\":48.8534127,\"longitude\":2.3488107,\"is_eu\":true,\"postal\":\"75001\","
+        "\"calling_code\":\"33\",\"capital\":\"Paris\","
+        "\"timezone\":{\"id\":\"Europe/Paris\",\"abbr\":\"CET\",\"is_dst\":false,"
+        "\"offset\":3600,\"utc\":\"+01:00\"},\"connection\":{\"asn\":12322,\"org\":\"Free SAS\"}}";
+    geo_fix_t fix = {0};
+    TEST_ASSERT_TRUE(geo_parse_fix(body, strlen(body), 100, &fix));
+    TEST_ASSERT_EQUAL_STRING("Paris", fix.city);
+    TEST_ASSERT_EQUAL_STRING("France", fix.country);
+    TEST_ASSERT_EQUAL_STRING("FR", fix.country_code);
+    TEST_ASSERT_EQUAL_STRING("Paris", fix.country_capital);
+    TEST_ASSERT_EQUAL_INT8(1, fix.in_eu);
+    TEST_ASSERT_EQUAL_STRING("+33", fix.country_calling_code);
+    TEST_ASSERT_EQUAL_STRING("Europe/Paris", fix.timezone);
+    TEST_ASSERT_EQUAL_STRING("+01:00", fix.utc_offset);
+    /* ipwho.is does not send these */
+    TEST_ASSERT_EQUAL_STRING("", fix.currency);
+    TEST_ASSERT_EQUAL_STRING("", fix.currency_name);
+    TEST_ASSERT_EQUAL_STRING("", fix.languages);
+    TEST_ASSERT_EQUAL_STRING("", fix.country_code_iso3);
+}
+
+TEST_CASE("EU membership stays unknown when the provider did not say", "[geo]")
+{
+    geo_fix_t fix = {0};
+    const char *body = "{\"lat\":1,\"lon\":2,\"city\":\"X\"}";
+    TEST_ASSERT_TRUE(geo_parse_fix(body, strlen(body), 100, &fix));
+    TEST_ASSERT_EQUAL_INT8(-1, fix.in_eu);
+
+    /* json boolean only: a string "true" is a non-boolean and must leave in_eu as -1. */
+    const char *word = "{\"lat\":1,\"lon\":2,\"in_eu\":\"true\"}";
+    TEST_ASSERT_TRUE(geo_parse_fix(word, strlen(word), 100, &fix));
+    TEST_ASSERT_EQUAL_INT8(-1, fix.in_eu);
+
+    /* A country name is not invented from a bare code. */
+    const char *bare = "{\"lat\":1,\"lon\":2,\"country\":\"FR\"}";
+    TEST_ASSERT_TRUE(geo_parse_fix(bare, strlen(bare), 100, &fix));
+    TEST_ASSERT_EQUAL_STRING("", fix.country);
+}
+
+TEST_CASE("the utc offset is normalized to one canonical form", "[geo]")
+{
+    char buf[GEO_UTC_OFFSET_MAX + 1];
+    struct { const char *in; const char *want; } ok[] = {
+        {"+0100", "+01:00"}, {"+01:00", "+01:00"}, {"-0530", "-05:30"},
+        {"Z", "+00:00"}, {"+0000", "+00:00"},
+    };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        TEST_ASSERT_TRUE_MESSAGE(geo_normalize_utc_offset(ok[i].in, buf, sizeof buf), ok[i].in);
+        TEST_ASSERT_EQUAL_STRING(ok[i].want, buf);
+    }
+    const char *bad[] = {"+1:00", "0100", "UTC", ""};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        strcpy(buf, "x");
+        TEST_ASSERT_FALSE_MESSAGE(geo_normalize_utc_offset(bad[i], buf, sizeof buf), bad[i]);
+        TEST_ASSERT_EQUAL_STRING("", buf);
+    }
+    /* through the parser: garbage offset leaves the field empty. */
+    geo_fix_t fix = {0};
+    const char *body = "{\"lat\":1,\"lon\":2,\"utc_offset\":\"UTC\"}";
+    TEST_ASSERT_TRUE(geo_parse_fix(body, strlen(body), 100, &fix));
+    TEST_ASSERT_EQUAL_STRING("", fix.utc_offset);
+}
+
+TEST_CASE("a calling code carries its plus whichever way it was sent", "[geo]")
+{
+    char buf[GEO_CALLING_MAX + 1];
+    TEST_ASSERT_TRUE(geo_normalize_calling_code("+33", buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("+33", buf);
+    TEST_ASSERT_TRUE(geo_normalize_calling_code("33", buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("+33", buf);
+    TEST_ASSERT_FALSE(geo_normalize_calling_code("", buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("", buf);
+    TEST_ASSERT_FALSE(geo_normalize_calling_code("+", buf, sizeof buf));
+    TEST_ASSERT_FALSE(geo_normalize_calling_code("3x", buf, sizeof buf));
+}
+
+TEST_CASE("a city longer than its buffer truncates and the fix survives", "[geo]")
+{
+    const char *body = "{\"lat\":53.22,\"lon\":-4.2,\"city\":\""
+        "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch\"}";
+    geo_fix_t fix = {0};
+    TEST_ASSERT_TRUE(geo_parse_fix(body, strlen(body), 100, &fix));
+    TEST_ASSERT_EQUAL_DOUBLE(53.22, fix.lat);
+    TEST_ASSERT_EQUAL_UINT(GEO_CITY_MAX, strlen(fix.city));
+    TEST_ASSERT_EQUAL_STRING_LEN("Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogog",
+                                  fix.city, GEO_CITY_MAX);
+}
+
 /* --- The scan payload ----------------------------------------------------- */
 
 TEST_CASE("the scan body lists the BSSIDs it was given", "[geo]")

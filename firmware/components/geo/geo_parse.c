@@ -29,26 +29,43 @@ static bool coord_from(const json_node_t *obj, const char *const *keys, size_t n
     return false;
 }
 
+static const json_node_t *field_of(const json_node_t *holder, const json_node_t *root,
+                                   const char *key)
+{
+    const json_node_t *v = json_get(holder, key);
+    /* A wrapped body keeps its coordinates under `location`; place fields sit beside
+     * them, but falling back to the top level costs nothing when a provider splits the
+     * two. */
+    return (v == NULL && holder != root) ? json_get(root, key) : v;
+}
+
+static void copy_str(const json_node_t *node, char *out, size_t cap)
+{
+    const char *s = node == NULL ? NULL : json_string(node);
+    if (s != NULL) snprintf(out, cap, "%s", s);
+}
+
+static bool two_digits(const char *s, int *out)
+{
+    if (s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9') return false;
+    *out = (s[0] - '0') * 10 + (s[1] - '0');
+    return true;
+}
+
 bool geo_parse_fix(const char *body, size_t len, int32_t accuracy_default, geo_fix_t *out)
 {
     if (body == NULL || out == NULL || len == 0) return false;
-    /* Some providers answer with a JSON *string* containing JSON — a quoted body is not
-     * a fix, and unquoting it would make `geo` a general JSON un-wrapper. */
     json_doc_t *doc = NULL;
     if (json_parse(body, len, &doc) != ESP_OK || doc == NULL) return false;
 
     bool ok = false;
     json_node_t *root = json_root(doc);
-    /* `{"location":{"lat":..,"lng":..}}` and the flat form are both documented by
-     * providers in this space; accept either rather than guess one. */
     const json_node_t *holder = json_get(root, "location");
     if (holder == NULL || !json_is_object(holder)) holder = root;
 
     double lat = 0, lon = 0;
     if (coord_from(holder, k_lat_keys, sizeof k_lat_keys / sizeof k_lat_keys[0], &lat) &&
         coord_from(holder, k_lon_keys, sizeof k_lon_keys / sizeof k_lon_keys[0], &lon)) {
-        /* A place on Earth, or a provider bug. 0,0 is a real location (the Gulf of
-         * Guinea), so it is accepted; out-of-range is not. */
         if (lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0) {
             out->lat = lat;
             out->lon = lon;
@@ -61,12 +78,86 @@ bool geo_parse_fix(const char *body, size_t len, int32_t accuracy_default, geo_f
                     break;
                 }
             }
+
+            /* Place and locale: absorb provider dialects and normalize. */
+            out->in_eu = -1;
+            copy_str(field_of(holder, root, "city"), out->city, sizeof out->city);
+            copy_str(field_of(holder, root, "region"), out->region, sizeof out->region);
+            copy_str(field_of(holder, root, "region_code"), out->region_code,
+                    sizeof out->region_code);
+            copy_str(field_of(holder, root, "country_code"), out->country_code,
+                    sizeof out->country_code);
+            copy_str(field_of(holder, root, "country_code_iso3"), out->country_code_iso3,
+                    sizeof out->country_code_iso3);
+            copy_str(field_of(holder, root, "country_tld"), out->country_tld,
+                    sizeof out->country_tld);
+            copy_str(field_of(holder, root, "continent_code"), out->continent_code,
+                    sizeof out->continent_code);
+            copy_str(field_of(holder, root, "postal"), out->postal, sizeof out->postal);
+            copy_str(field_of(holder, root, "currency"), out->currency,
+                    sizeof out->currency);
+            copy_str(field_of(holder, root, "currency_name"), out->currency_name,
+                    sizeof out->currency_name);
+            copy_str(field_of(holder, root, "languages"), out->languages,
+                    sizeof out->languages);
+
+            /* Country Name: prefer `country_name`; else take `country` only when a code
+             * also exists and differs, so a bare `country:"FR"` is not reported as a
+             * name. Both providers in the chain send `country_code`, which is what
+             * makes the comparison decidable. */
+            const json_node_t *name = field_of(holder, root, "country_name");
+            if (name != NULL) copy_str(name, out->country, sizeof out->country);
+            else {
+                const json_node_t *c = field_of(holder, root, "country");
+                const json_node_t *cc = field_of(holder, root, "country_code");
+                const char *cv = c ? json_string(c) : NULL;
+                const char *ccv = cc ? json_string(cc) : NULL;
+                if (cv != NULL && ccv != NULL && strcmp(cv, ccv) != 0) {
+                    snprintf(out->country, sizeof out->country, "%s", cv);
+                }
+            }
+
+            /* Capital: `country_capital` or `capital`. */
+            const json_node_t *cap = field_of(holder, root, "country_capital");
+            if (cap == NULL) cap = field_of(holder, root, "capital");
+            copy_str(cap, out->country_capital, sizeof out->country_capital);
+
+            /* Calling Code: `country_calling_code` or `calling_code`. */
+            const json_node_t *call = field_of(holder, root, "country_calling_code");
+            if (call == NULL) call = field_of(holder, root, "calling_code");
+            const char *ccs = call ? json_string(call) : NULL;
+            if (ccs != NULL) geo_normalize_calling_code(ccs, out->country_calling_code,
+                                                       sizeof out->country_calling_code);
+
+            /* Timezone and Offset: handle nested object or top-level string. */
+            const json_node_t *tz = field_of(holder, root, "timezone");
+            if (tz != NULL) {
+                const char *tzs = json_string(tz);
+                if (tzs != NULL) snprintf(out->timezone, sizeof out->timezone, "%s", tzs);
+                else if (json_is_object(tz)) {
+                    copy_str(json_get(tz, "id"), out->timezone, sizeof out->timezone);
+                }
+            }
+
+            const char *off = json_string(field_of(holder, root, "utc_offset"));
+            if (off == NULL && json_is_object(tz)) off = json_string(json_get(tz, "utc"));
+            if (off != NULL) geo_normalize_utc_offset(off, out->utc_offset,
+                                                       sizeof out->utc_offset);
+
+            /* EU membership: only JSON boolean. */
+            const json_node_t *eu = field_of(holder, root, "in_eu");
+            if (eu == NULL) eu = field_of(holder, root, "is_eu");
+            bool eu_flag = false;
+            if (eu != NULL && json_bool(eu, &eu_flag)) out->in_eu = eu_flag ? 1 : 0;
+
             ok = true;
         }
     }
     json_free(doc);
     return ok;
 }
+
+
 
 size_t geo_scan_body(const char *const *bssids, const int32_t *rssi, size_t count,
                      char *buf, size_t cap)
@@ -133,4 +224,45 @@ bool geo_chain_needs_scan(const geo_provider_t *chain, size_t count)
         if (chain[i].kind == GEO_KIND_WIFI) return true;
     }
     return false;
+}
+
+bool geo_normalize_utc_offset(const char *in, char *out, size_t cap)
+{
+    /* `geo.h`: a refused value leaves `out` empty. `geo_parse_fix` guards on the
+     * return, but a caller that ignored it would otherwise publish whatever the
+     * previous provider left in the buffer, which is a real place's offset. */
+    if (out != NULL && cap > 0) out[0] = '\0';
+    if (in == NULL || out == NULL || cap < 7) return false;
+    if (strcmp(in, "Z") == 0 || strcmp(in, "+0000") == 0 || strcmp(in, "+00:00") == 0) {
+        snprintf(out, cap, "+00:00");
+        return true;
+    }
+    if (in[0] != '+' && in[0] != '-') return false;
+    int h = 0, m = 0;
+    const char *p = in + 1;
+    if (!two_digits(p, &h)) return false;
+    p += 2;
+    if (*p == ':') p++;
+    if (!two_digits(p, &m)) return false;
+    /* A trailing character means this is not an offset we understand (`+01:00Z`,
+     * `+0100x`); accepting a prefix would publish an offset the provider never sent. */
+    if (p[2] != '\0') return false;
+    if (h > 23 || m > 59) return false;
+    snprintf(out, cap, "%c%02d:%02d", in[0], h, m);
+    return true;
+}
+
+bool geo_normalize_calling_code(const char *in, char *out, size_t cap)
+{
+    if (out != NULL && cap > 0) out[0] = '\0';
+    if (in == NULL || out == NULL || cap < 2) return false;
+    const char *p = (in[0] == '+') ? in + 1 : in;
+    if (*p == '\0') return false;
+    size_t len = 0;
+    while (p[len] >= '0' && p[len] <= '9') len++;
+    /* The digits must be the whole string: `3x` and `33 1` are not calling codes, and
+     * truncating them to `+3` would name a country the provider did not. */
+    if (len == 0 || p[len] != '\0' || len + 1 >= cap) return false;
+    snprintf(out, cap, "+%.*s", (int)len, p);
+    return true;
 }

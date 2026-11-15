@@ -1,7 +1,8 @@
-# `geo_parse.c` is pure — provider-response parsing, the scan payload and the cache
-# rule — so `test_host` covers it. `geo.c` opens sockets, scans the radio and reads
-# NVS, which a stub would only pretend to test (`AGENTS.md`, coverage gates).
-set(srcs "geo_parse.c")
+# `geo_parse.c` and `geo_emit.c` are pure — provider-response parsing, the scan
+# payload, the cache rule and the place-member emission — so `test_host` covers them.
+# `geo.c` opens sockets, scans the radio and reads NVS, which a stub would only
+# pretend to test (`AGENTS.md`, coverage gates).
+set(srcs "geo_parse.c" "geo_emit.c")
 
 set(reqs "store" "clock" "net" "cfg")
 

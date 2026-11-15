@@ -1408,6 +1408,9 @@ static void answer_command(const json_node_t *frame)
         json_add_string(res, "provider", fix.provider);
         int64_t age_s = (int64_t)clock_now() - fix.source_ts;
         json_add_int(res, "age_s", age_s < 0 ? 0 : age_s);
+        /* §4.13's place and locale members, emitted from one list (`geo_add_place`)
+         * so this surface and the model's `geo.locate` tool cannot disagree. */
+        geo_add_place(res, &fix);
         built = ESP_OK;
     } else if (name && strcmp(name, "templates.list") == 0) {
         esp_err_t r = handle_templates_list(args, root, json_add_object(root, "result"));

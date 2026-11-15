@@ -554,7 +554,19 @@ Flow:
    within `geo.timeout_ms`, it is considered failed and the chain continues to the
    next entry. Order is the user's privacy control, so the firmware does not reorder
    the chain by kind.
-4. Cache `{lat, lon, accuracy_m, provider, source_ts}` and return it.
+4. Cache the whole `geo_fix_t` and return it: the coordinates, `accuracy_m`,
+   `provider`, `source_ts`, and every place and locale member the provider sent.
+   `geo_add_place()` is the one emitter for those members (`04` §4.13 owns their
+   names), because the command surface and the tool both report them and two copies
+   of a seventeen-name list drift.
+
+The place members are optional because no provider is obliged to send them: `ipwho.is`
+answers a city, a region, a country, a postal code and a timezone but no currency and
+no languages, while `ipapi.co` answers all of them under different key names. `geo_parse`
+normalizes both dialects into one `geo_fix_t` — the country name and the code swap
+places between them, `is_eu` is `ipwho.is`'s spelling of `in_eu`, and a calling code
+arrives with or without its `+`. A member whose value cannot be normalized is left
+empty rather than guessed at, and `geo_add_place` then omits it from the frame.
 
 The cache is RAM-only and bounded by `geo.cache_ttl_s` alone: a change in RSSI
 does not invalidate it. A reboot costs one scan. Geolocation reveals the access

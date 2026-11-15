@@ -898,6 +898,9 @@ static esp_err_t call_geo_locate(json_doc_t **out, const char **wire_code, char 
      * what the cache age is measured against. The command surface reports an age
      * instead (`04-protocol.md` §4.13), and the two shapes are deliberately apart. */
     json_add_int(root, "source_ts", fix.source_ts);
+    /* The tool reports the same place and locale members as the command surface
+     * (`04` §4.13), from the same single list. */
+    geo_add_place(root, &fix);
     return ESP_OK;
 }
 

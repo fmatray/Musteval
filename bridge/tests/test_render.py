@@ -318,3 +318,71 @@ def test_geo_line_sanitises_the_provider_id():
     line = geo_line({"lat": 1.0, "lon": 2.0, "accuracy_m": 5,
                      "provider": "\x1b[31mHostile\x1b[0m"})
     assert "\x1b" not in line and "Hostile" in line
+
+
+def test_a_geo_line_names_the_place_and_locale_the_provider_returned():
+    """`04` §4.13: the place and locale members are the provider's own words, and
+    they answer the question a fix alone leaves open: where this device is."""
+    line = geo_line({
+        "lat": 48.8534, "lon": 2.3488, "accuracy_m": 5000,
+        "provider": "ip_fallback", "age_s": 0,
+        "city": "Paris", "region": "Ile-de-France", "region_code": "IDF",
+        "country": "France", "country_code": "FR", "postal": "75001",
+        "country_calling_code": "+33",
+        "timezone": "Europe/Paris", "utc_offset": "+01:00",
+        "currency": "EUR", "currency_name": "Euro",
+        "languages": "fr-FR,frp,br",
+    })
+    assert "Paris" in line and "Ile-de-France (IDF)" in line
+    assert "France [FR]" in line and "75001" in line
+    assert "+33" in line
+    assert "Europe/Paris +01:00" in line
+    assert "EUR Euro" in line and "fr-FR,frp,br" in line
+    # One result is one chat line: the caller writes the return as a single row.
+    assert "\n" not in line
+
+
+def test_a_geo_line_omits_the_locale_the_live_provider_does_not_send():
+    """The fallback provider answers no `currency`, `currency_name` or `languages`,
+    so that shape is normal, not a fault: no `None`, no empty bracket, no separator
+    left with nothing after it."""
+    line = geo_line({
+        "lat": 48.8534, "lon": 2.3488, "accuracy_m": 5000,
+        "provider": "ip_fallback", "age_s": 0,
+        "city": "Paris", "region": "Ile-de-France", "region_code": "IDF",
+        "country": "France", "country_code": "FR", "country_code_iso3": "FRA",
+        "country_capital": "Paris", "country_tld": ".fr", "continent_code": "EU",
+        "in_eu": True, "postal": "75001", "country_calling_code": "+33",
+        "timezone": "Europe/Paris", "utc_offset": "+01:00",
+    })
+    assert "Paris, Ile-de-France (IDF), France [FR]" in line
+    assert "Europe/Paris +01:00" in line
+    assert "None" not in line and "()" not in line and "[]" not in line
+    assert all(part.strip() for part in line.split(" · "))
+    assert not line.endswith(("·", ",", " "))
+
+
+def test_geo_line_sanitises_every_place_string_the_provider_supplies():
+    """`06` §6.4: a city and a timezone are third-party strings, so an escape
+    sequence in either cannot reach this terminal. The words around it survive."""
+    line = geo_line({
+        "lat": 1.0, "lon": 2.0, "accuracy_m": 5,
+        "city": "\x1b[31mParis\x1b[0m",
+        "region": "\x1b[2JIle-de-France",
+        "country": "\x1b[1mFrance",
+        "timezone": "\x1b[31mEurope/Paris\x1b[0m",
+        "currency_name": "\x1b[5mEuro",
+        "languages": "\x1b[0mfr-FR",
+    })
+    assert "\x1b" not in line
+    assert "Paris" in line and "Ile-de-France" in line and "France" in line
+    assert "Europe/Paris" in line and "Euro" in line and "fr-FR" in line
+
+
+def test_a_geo_line_marks_eu_only_when_the_provider_sent_a_bool():
+    """`in_eu` is a boolean: `bool` subclasses `int`, so an `isinstance(…, int)`
+    check would print a marker for a value the provider never claimed."""
+    base = {"lat": 1.0, "lon": 2.0, "accuracy_m": 5, "city": "Paris"}
+    assert "EU" in geo_line({**base, "in_eu": True})
+    assert "EU" not in geo_line(base)
+    assert "EU" not in geo_line({**base, "in_eu": 1})

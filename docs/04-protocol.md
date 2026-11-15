@@ -820,8 +820,43 @@ cached fix if one is younger than `geo.cache_ttl_s`.
 ```
 
 ```json
-{"v":1,"type":"command.result","id":"d-26","ts":1730572000,"reply_to":"b-18","name":"geo.locate","ok":true,"result":{"lat":52.3676,"lon":4.9041,"accuracy_m":65,"provider":"home_wifi","age_s":42},"duration_ms":120}
+{"v":1,"type":"command.result","id":"d-26","ts":1730572000,"reply_to":"b-18","name":"geo.locate","ok":true,"result":{"lat":52.3676,"lon":4.9041,"accuracy_m":65,"provider":"home_wifi","age_s":42,"city":"Amsterdam","region":"North Holland","region_code":"NH","country":"Netherlands","country_code":"NL","country_code_iso3":"NLD","country_capital":"Amsterdam","country_tld":".nl","continent_code":"EU","in_eu":true,"postal":"1012","country_calling_code":"+31","timezone":"Europe/Amsterdam","utc_offset":"+01:00","currency":"EUR","currency_name":"Euro","languages":"nl-NL,fy-NL"},"duration_ms":120}
 ```
+
+`lat`, `lon`, `accuracy_m`, `provider` and `age_s` are always present. Every member
+after them is the place the provider reported, and each is **absent** when that
+provider did not report it — never `""` and never `null`, because an empty city reads
+as "there is no city" and a `null` is a hole the bridge would have to special-case.
+The `ip` provider configured in `03-config.md` §geo does not send `currency`,
+`currency_name` or `languages` at all, so a frame from it simply lacks those three.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `city` | string | City or locality |
+| `region` | string | Administrative division name |
+| `region_code` | string | Administrative division code |
+| `country` | string | Country **name**, not its code |
+| `country_code` | string | ISO 3166-1 alpha-2 |
+| `country_code_iso3` | string | ISO 3166-1 alpha-3 |
+| `country_capital` | string | Capital city |
+| `country_tld` | string | Country top-level domain |
+| `continent_code` | string | Continent code, e.g. `EU` |
+| `in_eu` | boolean | Country is an EU member |
+| `postal` | string | Postal or ZIP code |
+| `country_calling_code` | string | Normalized to a leading `+`, e.g. `+33` |
+| `timezone` | string | IANA zone, e.g. `Europe/Paris` |
+| `utc_offset` | string | Normalized `+HH:MM`, the offset **in effect** for this fix, DST included |
+| `currency` | string | ISO 4217 code |
+| `currency_name` | string | Currency name |
+| `languages` | string | Comma-separated language tags, as the provider sent them |
+
+Two providers answer in different shapes and neither is under our control, so the
+device normalizes before it emits: a provider that reports the country code under
+`country` and the name under `country_name` yields the same frame as one that reports
+the name under `country`. `country_calling_code` gains the `+` a provider may omit and
+`utc_offset` is `+HH:MM` whichever of `+0100`, `+01:00` or `Z` arrived. A field whose
+value cannot be brought into that form is dropped rather than passed through, so the
+reader never sees `+1:00`.
 
 Disabled `geo.enabled` returns `E_CONFIG`; provider chain failure returns `E_GEO`.
 

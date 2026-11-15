@@ -96,8 +96,24 @@ def geo_line(result: dict[str, Any]) -> str:
     """`04-protocol.md` §4.13's answer as one line.
 
     `provider` is the configured entry id, which comes from the config file, so it
-    is sanitized like any other device-supplied string.
+    is sanitized like any other device-supplied string. The place and locale
+    members are the provider's own words, so each goes through `sanitize` too, and
+    an absent one is left out rather than printed as an empty bracket.
+
+    The return stays one line because the caller writes it as one chat row.
     """
+    def text(*keys: str) -> str:
+        """The first of `keys` the provider actually sent, sanitised."""
+        for key in keys:
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return sanitize(value).strip()
+        return ""
+
+    def labelled(value: str, code: str, fmt: str) -> str:
+        """`value (code)` when both arrived; whichever one arrived alone otherwise."""
+        return fmt.format(value, code) if value and code else value or code
+
     age = result.get("age_s")
     line = (
         f"geo {result.get('lat')}, {result.get('lon')} "
@@ -108,6 +124,28 @@ def geo_line(result: dict[str, Any]) -> str:
         line += f" via {sanitize(str(provider))}"
     if age is not None:
         line += f", age {age}s"
+
+    region = labelled(text("region"), text("region_code"), "{} ({})")
+    country = labelled(text("country"), text("country_code"), "{} [{}]")
+    place = ", ".join(p for p in (text("city"), region, country) if p)
+
+    segments = [place] if place else []
+    if result.get("in_eu") is True:
+        segments.append("EU")
+    if dial := text("country_calling_code"):
+        segments.append(dial)
+    if postal := text("postal"):
+        segments.append(postal)
+    if clock := " ".join(p for p in (text("timezone"), text("utc_offset")) if p):
+        segments.append(clock)
+    if money := " ".join(p for p in (text("currency"), text("currency_name")) if p):
+        segments.append(money)
+    if languages := text("languages"):
+        segments.append(languages)
+
+    if segments:
+        line += " — " + " · ".join(segments)
+
     return line
 
 
