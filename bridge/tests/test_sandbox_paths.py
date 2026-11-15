@@ -16,6 +16,7 @@ from bridge.protocol import (
     sandbox_join,
     sandbox_normalise,
     sandbox_parent,
+    userfs_import_ok,
 )
 
 
@@ -75,3 +76,20 @@ def test_display_marks_a_directory_with_a_trailing_slash():
     assert sandbox_display("/workspace/runs/") == "/workspace/runs/"
     assert sandbox_display("/workspace/runs/a.txt") == "/workspace/runs/a.txt"
     assert sandbox_display(SANDBOX_ROOT) == SANDBOX_ROOT
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "rel/skills/a.md",
+        "/skills/a\x00b.md",
+        # `..` with no segment to pop climbs above `/` rather than above a
+        # directory, so there is no canonical form to test against the allowlist.
+        "/../skills/a.md",
+    ],
+)
+def test_an_import_path_that_cannot_canonicalise_is_refused(path):
+    """`04` §4.16: an import path is canonicalised the way the device does it, so a
+    relative path, an embedded NUL or a climb above the root has no form the
+    allowlist could match. The device refuses these; the bridge must agree."""
+    assert userfs_import_ok(path) is False

@@ -284,6 +284,7 @@ def redact_line(line: bytes) -> bytes:
 from .sandbox import ROOT as SANDBOX_ROOT  # noqa: E402
 from .sandbox import SANDBOX_CHUNK_BYTES  # noqa: E402
 from .sandbox import SandboxPathError  # noqa: E402
+from .sandbox import import_path_ok as userfs_import_ok  # noqa: E402
 from .sandbox import display as sandbox_display  # noqa: E402
 from .sandbox import join as sandbox_join  # noqa: E402
 from .sandbox import normalise as sandbox_normalise  # noqa: E402
