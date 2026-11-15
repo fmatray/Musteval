@@ -120,7 +120,7 @@ The primary interaction pane.
     `flaky` is not refused: a degraded link still carries traffic, so the prompt
     is sent and either succeeds or reports its timeout like any other. A prompt on
     a `linked` peer that never answers leaves one line saying so, never silence.
-    Slash commands are not gated this way — `/help`, `/settings` and the other
+    Slash commands are not gated this way — `/help`, `/config` and the other
     local screens work with no link.
   - Every submitted line is kept in a bounded ring (100 entries, adjacent
     duplicates collapsed, blank lines ignored). `Up` walks back through it,
@@ -415,13 +415,17 @@ The modal itself, over whatever screen was open:
 +--------------------------------------------------------------+
 ```
 
-### 5.7 Settings Screen (`/settings`)
+### 5.7 Settings Screen (`/config`)
 
 The device config, browsable without memorising dotted paths. One row per scalar
 or simple-list key of `03-config.md` §Full schema, in table order and grouped by
 section; the keys whose value is a nested object or an object array
 (`wifi.networks[]`, `llm.providers[]`, `mcp.servers[]`, `geo.providers[]` and their
 children) are not rows, because they need a form rather than a line.
+
+`/config` and `/config edit` both open it; `/config get <path>` and
+`/config set <path> <value>` are the two forms that stay device frames. There is no
+`/settings`: the screen is reached only through the head it belongs to.
 
 Opening the screen sends `config.get` with no `path` once and renders
 the reply through `flatten`, which indexes arrays so a dotted row finds its value
@@ -763,7 +767,8 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/cancel` | `cancel` | none | Cancels current run |
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
-| `/settings` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
+| `/config` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
+| `/config edit` | (Local) | none | The same screen as the bare `/config` |
 | `/onboard` | `wifi.scan`, `status`, `reload`, `secret.set`, `command {name:"config.set"}`, `command {name:"config.get"}` | none | Wizard of three sequential steps: network and time (SSID, password, region), provider (provider, base URL, API key) and model (model, thinking level). Each step is pre-filled from the current config and each is **written and tested before the next is asked for** (§13.6). The SSID comes from a `wifi.scan` dropdown or a manual entry; the provider comes from the bridge-side catalog (§7.1). Writes whole values only, secrets always before the `config.set` naming their `nvs:` key. Refuses at once on `down`, `linking` or `refused` |
 | `/quit` | (Local) | none | Exits TUI |
 
@@ -953,7 +958,7 @@ network and the key as well — a form of a full reconfiguration to change one n
   only when the running chain re-read the document (`04` §4.9), so the chat line
   says `thinking: high` only when the next prompt will use it.
 - **Neither form moves the reader.** A whole-document `config.get` reply normally
-  switches to the settings grid, because `/settings` and its `Ctrl+R` refresh are
+  switches to the settings grid, because `/config` and its `Ctrl+R` refresh are
   the reader asking for that grid. `/thinking` reads the document as an input, so it
   asks for the same reply quietly and its answer lands in the chat pane the reader
   is looking at. The same rule holds for `/onboard`, which reads the document only

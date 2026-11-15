@@ -1134,6 +1134,10 @@ class BridgeApp(App):
         self.push_screen(HelpModal(help_tabs()))
 
     def action_show(self, name: str) -> None:
+        self.title = name.capitalize()
+        # `05` §5.7: the config screen is reached as `/config`; its widget keeps the
+        # name the screen's own tests and bindings use.
+        name = "settings" if name == "config" else name
         for screen in (
             "chat",
             "status",
@@ -1144,7 +1148,6 @@ class BridgeApp(App):
             "files",
         ):
             self.query_one(f"#{screen}").display = screen == name
-        self.title = name.capitalize()
         if name == "status":
             self._render_status()
         if name == "tasks":
@@ -1840,7 +1843,7 @@ class BridgeApp(App):
     async def _fetch_config(self) -> None:
         """Read the whole document into `_config` without showing the Settings grid.
 
-        The whole-document reply navigates on purpose: `/settings` and a `Ctrl+R`
+        The whole-document reply navigates on purpose: `/config` and a `Ctrl+R`
         refresh are the reader asking for that grid. A command that needs the
         document as an input — `/thinking`, `/onboard` — is not, and letting the
         reply navigate wrote its answer into a pane it had just hidden.
@@ -1924,8 +1927,14 @@ class BridgeApp(App):
         # the reader to a screen that will not show the answer.
         if head in ("status", "tasks", "mqtt"):
             self.action_show(head if len(words) == 1 else "chat")
-        if head == "settings":
-            self.action_show("settings")
+        if head == "config" and words[1:2] in ([], ["edit"]):
+            # `05` §5.7: `/config` and `/config edit` open the settings screen; `get`
+            # and `set` stay device frames. A surplus word is named rather than
+            # dropped, so `/config edit wifi` is not read as a narrowed screen.
+            if len(words) > 2:
+                self._chat().write("usage: /config edit", kind="error")
+                return
+            self.action_show("config")
             return
         if head == "model":
             await self._model(words[1:])

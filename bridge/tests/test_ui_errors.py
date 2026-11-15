@@ -499,7 +499,7 @@ async def test_thinking_reads_the_document_before_reporting_on_it():
 async def test_a_command_that_reads_the_config_does_not_move_the_reader():
     """`/thinking` fetched the document and the whole-document reply navigated to
     Settings, so the answer it wrote landed in a pane it had just hidden. The reply
-    still navigates for `/settings` and its refresh: that is the reader asking."""
+    still navigates for `/config` and its refresh: that is the reader asking."""
     async def body(app, pilot):
         await app._run_command("/thinking")
         await pilot.pause(0.2)

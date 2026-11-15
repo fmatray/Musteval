@@ -77,6 +77,66 @@ async def test_a_bare_command_opens_its_screen_and_a_sub_command_stays_in_chat()
     await _run(_device(), body)
 
 
+async def test_bare_config_and_config_edit_open_the_settings_screen():
+    """`05` §5.7: `/config` is the settings screen's command. `get` and `set` stay
+    device frames, so the head cannot be answered by one rule; the screen must open
+    for the two forms that ask for it and the chat must stay put for the others."""
+
+    async def body(app, pilot):
+        app.submit("/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        assert app.query_one("#settings").display is True
+        app.submit("/status")
+        await _until(pilot, lambda: app.query_one("#status").display)
+        app.submit("/config edit")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        assert app.query_one("#settings").display is True
+        # `get` and `set` are still device frames: folding the screen into this head
+        # must not swallow the two forms that were already mapped to the wire.
+        app.submit("/config get wifi.connect_timeout_ms")
+        # The screen's own whole-document read carries no `path`, so the path-scoped
+        # frame is the one this asserts on.
+        await _until(
+            pilot,
+            lambda: any(f.get("name") == "config.get" and f.get("args")
+                        for f in _frames(app)),
+        )
+        assert {"path": "wifi.connect_timeout_ms"} in [
+            f.get("args") for f in _frames(app) if f.get("name") == "config.get"
+        ]
+
+    await _run(_device(), body)
+
+
+async def test_config_edit_with_a_surplus_word_is_refused_and_sends_nothing():
+    """`05` §7: a surplus word is refused rather than silently dropped, so the
+    reader is not left believing `/config edit wifi` narrowed the screen."""
+
+    async def body(app, pilot):
+        before = len(_frames(app))
+        app.submit("/config edit wifi")
+        await _await_chat(pilot, app, "usage: /config edit")
+        # `_await_chat` gives up without asserting, so the line it waited for is
+        # checked here: a refusal that never arrived would otherwise look like one.
+        assert "usage: /config edit" in _text(app)
+        assert len(_frames(app)) == before
+
+    await _run(_device(), body)
+
+
+async def test_settings_is_no_longer_a_command():
+    """`05` §7: `/settings` folded into `/config`, so a reader typing the old name
+    is told it is unknown rather than moved to a screen it no longer names."""
+
+    async def body(app, pilot):
+        app.submit("/settings")
+        await _await_chat(pilot, app, "unknown command")
+        assert "unknown command: /settings" in _text(app)
+        assert app.query_one("#settings").display is False
+
+    await _run(_device(), body)
+
+
 async def test_files_normalises_its_path_and_refuses_an_escape():
     """`09` §4: the path is normalised before the screen opens, and an escape is named
     without moving the reader to a listing the device would refuse."""

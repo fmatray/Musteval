@@ -1,4 +1,4 @@
-"""Data model for the `/settings` screen: one row per scalar `config.json` key.
+"""Data model for the `/config` screen: one row per scalar `config.json` key.
 
 `03-config.md` §config.json §Full schema is the authority for every path, kind,
 default and bound below, in table order.

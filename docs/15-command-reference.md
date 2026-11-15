@@ -22,6 +22,8 @@ Column meanings:
 | Form | Arguments | Sends | Note |
 |---|---|---|---|
 | `/cancel` | none | `cancel` | `reason: "user"`; stops the run in flight |
+| `/config` | none | (Local) | Opens the Settings screen; the screen sends `config.get` and `config.set` |
+| `/config edit` | none | (Local) | Same screen as the bare `/config` |
 | `/config get <path>` | `path` | `config.get` | Dumps one value |
 | `/config set <path> <value>` | `path`, then the value as the rest of the line | `config.set` | Writes one value |
 | `/context` | none | (Local) | Last `input_bytes` and observed token totals |
@@ -54,7 +56,6 @@ Column meanings:
 | `/sandbox move <from> <to>` | `from`, `to` | `sandbox.move` | Renames or relocates |
 | `/sandbox read <path>` | `path` | `sandbox.read` | Prints one file; a file is written from the Files screen, never from chat |
 | `/secret set <key>` | `key` | `secret.set` | Value is prompted, masked, and never echoed |
-| `/settings` | none | (Local) | Opens the Settings screen; the screen sends `config.get` and `config.set` |
 | `/status` | none | `status` | Forces a refresh and switches to the Status screen |
 | `/sys reset-counter` | `reset-counter` | `sys.reset_counter` | Clears the boot-failure counter |
 | `/tasks` | none | `tasks.list` | Lists tasks and switches to the Tasks screen |
@@ -91,11 +92,11 @@ Column meanings:
 
 | Kind | Commands |
 |---|---|
-| Device, one frame | `config`, `fs`, `geo`, `mqtt`, `ping` (three of four), `reboot`, `reload`, `run`, `sandbox`, `secret`, `status`, `sys`, `tasks` (all but `add`), `template`, `templates`, `todo`, `wifi` |
+| Device, one frame | `config` (`get`, `set`), `fs`, `geo`, `mqtt`, `ping` (three of four), `reboot`, `reload`, `run`, `sandbox`, `secret`, `status`, `sys`, `tasks` (all but `add`), `template`, `templates`, `todo`, `wifi` |
 | Device, read-modify-write | `model`, `thinking` |
 | Device, a wizard of several frames | `onboard` |
 | Host-only frame | `cancel`, `ping device`, `retry` |
-| Local, no frame | `context`, `export`, `files`, `help`, `logs`, `mcp`, `settings`, `tools`, `usage`, `quit` |
+| Local, no frame | `config` (bare and `edit`), `context`, `export`, `files`, `help`, `logs`, `mcp`, `tools`, `usage`, `quit` |
 
 ## Refusals a reader will meet
 

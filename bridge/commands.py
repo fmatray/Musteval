@@ -32,7 +32,6 @@ LOCAL_COMMANDS = frozenset(
         "mcp",
         "usage",
         "context",
-        "settings",
         "export",
         "quit",
         "logs",
@@ -198,8 +197,12 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
             )
         ]
     if head == "config":
-        if not rest:
-            raise CommandError("usage: /config get <path> | /config set <path> <value>")
+        if not rest or rest[0] == "edit":
+            # `05` §5.7: both open the settings screen, which a pure function cannot
+            # raise; by the time `parse` sees one the chat path did not intercept it.
+            raise CommandError(
+                "nothing to send (bare /config and /config edit open the settings screen)"
+            )
         if rest[0] == "get":
             _exact(rest[1:], 1, "/config get <path>")
             return [_command("config.get", {"path": rest[1]})]

@@ -1,4 +1,4 @@
-"""L3 ui: composer history, Tab acceptance and the `/settings` screen.
+"""L3 ui: composer history, Tab acceptance and the config screen.
 
 `05-bridge.md` §5.1 and §5.7. These assert what a user sees, driven through the
 pilot: a recalled prompt lands in the field, Tab fills the completion, and a
@@ -278,13 +278,13 @@ async def test_tab_leaves_the_composer_where_it_is():
 
 
 async def test_a_screen_takes_focus_where_its_keys_are_needed():
-    """Regression: `/settings` appeared with focus on the chat log and ignored Enter."""
+    """Regression: the config screen appeared with focus on the chat log and ignored Enter."""
     session = Session(FakeTransport(on_write=_reply_with_config), ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test(size=(120, 40)) as pilot:
         await _connected(pilot)
         app.query_one("#chat-input").focus()
-        await pilot.press(*"/settings")
+        await pilot.press(*"/config")
         await pilot.press("enter")
         for _ in range(80):
             if app.query_one("#settings-table").row_count:
@@ -392,7 +392,7 @@ async def test_the_settings_hint_and_bounds_survive_a_real_render():
     async with app.run_test(size=(130, 44)) as pilot:
         await _connected(pilot)
         app.query_one("#chat-input").focus()
-        await pilot.press(*"/settings")
+        await pilot.press(*"/config")
         await pilot.press("enter")
         for _ in range(80):
             if app.query_one("#settings-table").row_count:
@@ -423,7 +423,7 @@ async def test_settings_screen_renders_every_row_from_the_device_config():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.query_one("#chat-input").focus()
-        await pilot.press(*"/settings")
+        await pilot.press(*"/config")
         await pilot.press("enter")
         for _ in range(80):
             if app.query_one("#settings-table").row_count:
@@ -442,7 +442,7 @@ async def test_editing_a_row_sends_a_coerced_config_set():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.query_one("#chat-input").focus()
-        await pilot.press(*"/settings")
+        await pilot.press(*"/config")
         await pilot.press("enter")
         for _ in range(80):
             if app.query_one("#settings-table").row_count:
@@ -479,7 +479,7 @@ async def test_an_out_of_bounds_value_never_reaches_the_wire():
     async with app.run_test() as pilot:
         await _connected(pilot)
         app.query_one("#chat-input").focus()
-        await pilot.press(*"/settings")
+        await pilot.press(*"/config")
         await pilot.press("enter")
         for _ in range(80):
             if app.query_one("#settings-table").row_count:

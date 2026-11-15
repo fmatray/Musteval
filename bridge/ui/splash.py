@@ -56,7 +56,7 @@ _STOPS: tuple[tuple[int, int, int], ...] = (
 #: drift test holds the two together.
 TIPS: tuple[str, ...] = (
     "/onboard asks for wifi and the provider in one form, grouped by domain",
-    "/settings edits every scalar in config.json without memorising a dotted path",
+    "/config edit lists every scalar in config.json without a dotted path",
     "/secret set api_key prompts masked and stores the value in NVS, never in a file",
     "/tasks add schedules a recurring prompt that runs on the device, not here",
     "F3 shows the last status frame; /status forces a fresh one",

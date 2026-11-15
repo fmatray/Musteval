@@ -266,7 +266,7 @@ def test_the_bounds_map_covers_exactly_the_documented_rows():
     assert encoded - rows == set(), f"rows that no longer exist: {sorted(encoded - rows)}"
 
 
-#: The schema array rows the `/settings` screen cannot show as one line: each is a
+#: The schema array rows the config screen cannot show as one line: each is a
 #: nested object, so editing it needs a form rather than a text field
 #: (`05-bridge.md` §5.7).
 OBJECT_ARRAY_PREFIXES = ("wifi.networks[]", "llm.providers[]", "mcp.servers[]",

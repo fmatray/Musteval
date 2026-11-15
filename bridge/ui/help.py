@@ -46,7 +46,7 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
     ),
     "Chat": ("retry", "ping", "cancel", "diag", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context"),
-    "Screens": ("settings", "onboard", "files", "logs", "help", "quit"),
+    "Screens": ("onboard", "files", "logs", "help", "quit"),
 }
 
 #: `05-bridge.md` §7, device commands first, then local ones.
@@ -64,8 +64,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("run", "/run <id>", "run a task now", False),
     CommandHelp(
         "config",
-        "/config get <path> | /config set <path> <value>",
-        "read a config value, or update one",
+        "/config | /config edit | /config get <path> | /config set <path> <value>",
+        "browse and edit the config, or read and write one value",
         False,
     ),
     CommandHelp(
@@ -127,7 +127,6 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("context", "/context", "input size and token usage", True),
     CommandHelp("todo", "/todo [op] [target]", "read and steer the run's todo list", False),
     CommandHelp("export", "/export", "write the chat log to a markdown file", True),
-    CommandHelp("settings", "/settings", "browse and edit device config", True),
     CommandHelp("onboard", "/onboard", "set wifi, provider key and model", True),
     CommandHelp("files", "/files [path]", "browse and edit the agent sandbox", True),
     CommandHelp("logs", "/logs", "switch to the Logs screen", True),
@@ -138,7 +137,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
 #: Accepted sub-forms of the heads that take one (`05-bridge.md` §7).
 _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "tasks": ("add", "set", "enable", "disable", "delete"),
-    "config": ("get", "set"),
+    "config": ("edit", "get", "set"),
     "mqtt": ("publish",),
     "fs": ("put",),
     "sandbox": ("list", "read", "mkdir", "move", "delete"),
@@ -163,7 +162,11 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "disable": "keep a task but stop it firing",
         "delete": "remove a task by id",
     },
-    "config": {"get": "read one value by path", "set": "write one value by path"},
+    "config": {
+        "edit": "open the settings screen",
+        "get": "read one value by path",
+        "set": "write one value by path",
+    },
     "mqtt": {"publish": "publish one message to one broker"},
     "fs": {"put": "upload a local file into userfs"},
     "sandbox": {
