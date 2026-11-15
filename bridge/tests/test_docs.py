@@ -19,6 +19,7 @@ import pytest
 from bridge.commands import LOCAL_COMMANDS, parse
 from bridge.protocol import DEVICE_TO_BRIDGE, Frame, ProtocolError, decode_line, encode
 from bridge.ui import app as ui
+from bridge.ui import help as help_mod
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 
@@ -445,6 +446,27 @@ def test_the_slash_command_table_matches_the_code_that_handles_it():
         assert not heads - documented, (
             f"{where} dispatches {sorted(heads - documented)}, undocumented in 05 §7"
         )
+
+
+# -- `15-command-reference.md` vs the command catalogue ----------------------
+
+
+def test_the_command_reference_covers_every_command_and_every_subcommand():
+    """`15` restates `05` §7's forms as one alphabetical table. Two facts said twice:
+    a head or a verb missing from it is a command a reader cannot look up, and a row
+    naming a command the code does not dispatch is a promise nothing keeps."""
+    section = _section(_read("15-command-reference.md"), "The table")
+    plain = [row[0].strip("`") for row in _table_rows(section)]
+    assert len(plain) == len(set(plain)), "a form is listed twice"
+    assert plain == sorted(plain), "the table is not in alphabetical order"
+
+    assert {form.split()[0].lstrip("/") for form in plain} == {
+        command.name for command in help_mod.COMMANDS
+    }, "the command set drifts"
+
+    for head, verbs in help_mod._SUBCOMMANDS.items():
+        listed = {form.split()[1] for form in plain if form.startswith(f"/{head} ")}
+        assert listed == set(verbs), f"/{head}: listing {sorted(listed)} vs catalogue {sorted(verbs)}"
 
 
 # -- `02-firmware.md` §7.1 vs `docs/tools/*.md` vs the registry -------------

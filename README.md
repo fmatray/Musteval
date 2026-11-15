@@ -47,6 +47,7 @@ The full specification is located in the `docs/` directory:
 - [12 Acceptance M3](docs/12-acceptance-M3.md) - Hand-run procedure for the M3 criteria, and the two that have no route yet.
 - [13 Acceptance M4](docs/13-acceptance-M4.md) - Hand-run procedure for the M4 criteria, and why the tool surface needs a live provider.
 - [14 Class Diagrams](docs/14-class-diagrams.md) - Every bridge class and firmware `typedef`, with methods, fields and source links.
+- [15 Command Reference](docs/15-command-reference.md) - Every slash command and form, alphabetically, with its arguments and frame.
 - [Tools](docs/tools/README.md) - Per-domain tool contracts: arguments, results, schemas.
 
 ## Quickstart (intended)

@@ -713,7 +713,9 @@ future that is never resolved.
 
 ## 7. Slash Commands
 
-Slash commands in the Chat input are mapped to protocol frames.
+Slash commands in the Chat input are mapped to protocol frames. This section is
+the owner of every mapping; `15-command-reference.md` is the same forms as one
+alphabetical table, for looking a command up by name rather than by kind.
 
 | Command | Protocol Mapping | Args | Note |
 |---|---|---|---|

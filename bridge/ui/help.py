@@ -88,7 +88,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
     ),
     CommandHelp(
         "sandbox",
-        "/sandbox list|read|write <path> | mkdir|move | delete [-r] <path>",
+        "/sandbox list|read <path> | mkdir|move | delete [-r] <path>",
         "browse and edit the agent sandbox from chat",
         False,
     ),
@@ -141,7 +141,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "config": ("get", "set"),
     "mqtt": ("publish",),
     "fs": ("put",),
-    "sandbox": ("list", "read", "write", "mkdir", "move", "delete"),
+    "sandbox": ("list", "read", "mkdir", "move", "delete"),
     "sys": ("reset-counter",),
     "secret": ("set",),
     "ping": ("device", "router", "llm", "ntp"),
@@ -169,7 +169,6 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
     "sandbox": {
         "list": "list a directory",
         "read": "print a file",
-        "write": "write a file",
         "mkdir": "create a directory",
         "move": "move or rename a path",
         "delete": "remove a path",
