@@ -107,7 +107,11 @@ documented here is the one the model calls.
   `wifi_scan`, an `api_key_ref` on `ip`, a non-`https` URL, or an unresolved `nvs:`
   ref (`../03-config.md` §geo).
 - `E_GEO` - every provider in the chain failed; no fix is cached and the previous
-  cached fix, if any, is not returned.
+  cached fix, if any, is not returned. The message names the last provider and what it
+  did (`geo_last_error()`, `"<id>: <err> (http <status>)"`, `../02-firmware.md` §geo),
+  because `E_GEO` alone cannot distinguish a DNS miss from a refused handshake from a
+  provider that answered `500`, and those are three different repairs. `E_GEO` stays
+  the code so the wire contract does not move.
 - `E_TIMEOUT` - the **last** provider attempt in the chain exceeded `geo.timeout_ms`
   (`../02-firmware.md` §geo), and no later provider produced a fix.
   **Failure handling.** A provider that exceeds its attempt budget or fails to respond
