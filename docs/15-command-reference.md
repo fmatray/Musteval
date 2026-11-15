@@ -81,6 +81,9 @@ Column meanings:
 | `/todo start <target>` | `target` (task or phase) | `todo.apply` | Marks in progress |
 | `/todo unblock <target>` | `target` (task or phase) | `todo.apply` | Clears a blocker |
 | `/todo view` | none | `todo.apply` | Renders phases and tasks; a target is refused |
+| `/tool disable` | `disable <name>` | `config.set tools.disabled` | Removes a name from the model's tool list |
+| `/tool enable` | `enable <name>` | `config.set tools.disabled` | Puts a disabled name back |
+| `/tool list` | `list` | `config.get` | Every offered tool, with the disabled ones marked |
 | `/tools` | none | (Local) | Lists `capabilities.tools` and `capabilities.mcp` |
 | `/usage` | none | (Local) | Token totals for this link session |
 | `/wifi connect` | `connect` | `wifi.connect` | Joins the best configured network |
@@ -94,7 +97,7 @@ Column meanings:
 | Kind | Commands |
 |---|---|
 | Device, one frame | `config` (`get`, `set`), `fs`, `geo`, `mqtt`, `ping` (three of four), `reboot`, `reload`, `run`, `sandbox`, `secret`, `status`, `sys`, `tasks` (all but `add`), `template`, `templates`, `todo`, `wifi` |
-| Device, read-modify-write | `model`, `thinking` |
+| Device, read-modify-write | `model`, `thinking`, `tool` |
 | Device, a wizard of several frames | `onboard` |
 | Host-only frame | `cancel`, `ping device`, `retry` |
 | Local, no frame | `config` (bare and `edit`), `context`, `export`, `files`, `help`, `logs`, `mcp`, `tools`, `usage`, `quit` |

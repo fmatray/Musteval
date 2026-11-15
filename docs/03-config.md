@@ -118,6 +118,7 @@ Single JSON object, UTF-8, no comments, no trailing commas.
 | `agent.system_prompt` | string | no | `"/prompts/system.md"` | path starting `/` |
 | `agent.max_input_bytes` | int | no | `3072` | 256..`serial.max_line_bytes` |
 | `tools.allow_dangerous` | bool | no | `false` | switch read by the write tools; the list is `06-security.md` §6, not restated here |
+| `tools.disabled[]` | string[] | no | `[]` | 0..8 tool names the model is neither shown nor allowed to call; a name outside the registry is accepted and stays inert, so a tool that later returns needs no config edit |
 | `tools.http_allow_hosts[]` | string[] | no | `[]` | 0..8 hostnames; exact match, no wildcards |
 | `tools.memory_max_bytes` | int | no | `2048` | 256..4096; total bytes across the `memory` NVS namespace |
 | `tools.i2c_sda` | int | no | `null` | one of GPIO1, GPIO2, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9; `null` means the I2C tools are absent, and it must differ from `tools.i2c_scl` |

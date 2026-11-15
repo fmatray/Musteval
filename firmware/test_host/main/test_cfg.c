@@ -207,6 +207,21 @@ TEST_CASE("an array element's type and range are enforced", "[cfg]")
                       validate_root("\"tools\":{\"http_allow_hosts\":[true]}", why,
                                      sizeof why));
 
+    /* `tools.disabled` must stay a string array: `is_disabled` compares names, so a
+     * number there would silently disable nothing while looking accepted. */
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      validate_root("\"tools\":{\"disabled\":[\"gpio.read\"]}", why,
+                                     sizeof why));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"tools\":{\"disabled\":[7]}", why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "tools.disabled"));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"tools\":{\"disabled\":"
+                                    "[\"a\",\"b\",\"c\",\"d\",\"e\","
+                                    "\"f\",\"g\",\"h\",\"i\"]}",
+                                     why, sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "tools.disabled"));
+
     /* `wifi.retry_backoff_ms` is an array of 100..60000 ms integers. The whole
      * document is written out, not spliced: the member lives inside `wifi`, and a
      * second `wifi` key would be the duplicate cJSON resolves to the first one, so

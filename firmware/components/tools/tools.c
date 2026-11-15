@@ -1176,6 +1176,7 @@ void tools_context_from_config(tools_context_t *ctx)
     if (allow != NULL) json_bool(allow, &dangerous);
     ctx->policy.allow_dangerous = dangerous;
     ctx->policy.http_allow_hosts = cfg_get("tools.http_allow_hosts");
+    ctx->policy.disabled = cfg_get("tools.disabled");
 
     ctx->memory_max_bytes = (size_t)cfg_int_or("tools.memory_max_bytes", 2048);
     ctx->i2c_sda = cfg_int_or("tools.i2c_sda", -1);

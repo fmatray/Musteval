@@ -1991,6 +1991,12 @@ class BridgeApp(App):
         if head == "thinking":
             await self._thinking(words[1:])
             return
+        if head == "tool":
+            # `05` §7.4: `list` reads, the other two are a read-modify-write of one
+            # config array. `parse` never sees the head because the array is an input
+            # the device only hands over whole (`config.get`).
+            await self._tool(words[1:])
+            return
         if head == "sys" and words[1:2] == ["diag"]:
             # `05-bridge.md` §7: reuses the `status` frame, renders only the
             # diagnostic half, so the chat gets fresh counters rather than the
@@ -2561,6 +2567,60 @@ class BridgeApp(App):
         # document as an input must not move the reader onto the settings grid.
         await self._fetch_config()
         self._chat().write(f"thinking: {level}")
+
+    async def _tool(self, rest: list[str]) -> None:
+        """`05` §7.4: read, or read-modify-write, `tools.disabled`.
+
+        One array feeds both the capability list and dispatch, so a tool turned off is
+        absent from the next run's request rather than shown to the model and then
+        refused. `config.set` replaces a value, so the whole array is written. The
+        advertised set comes from `hello_ack`, which the device does not re-push, so
+        what is shown is the offered set annotated with the array just read.
+        """
+        verb = rest[0] if rest else ""
+        if verb not in ("list", "enable", "disable") or len(rest) > 2 or (
+            verb != "list" and len(rest) != 2
+        ):
+            self._chat().write("usage: /tool list|<enable|disable> <name>", kind="error")
+            return
+        if not self._config_fetched:
+            await self._fetch_config()
+        stored = self._existing("tools.disabled")
+        disabled = [n for n in stored if isinstance(n, str)] if isinstance(stored, list) else []
+
+        if verb == "list":
+            offered = set((self._state.get("capabilities") or {}).get("tools") or [])
+            rows = sorted(offered | set(disabled))
+            if not rows:
+                self._chat().write("no tools")
+            for name in rows:
+                self._chat().write(
+                    f"{name} (disabled)" if name in disabled else f"{name}"
+                )
+            return
+
+        name = rest[1]
+        if verb == "disable":
+            if name in disabled:
+                self._chat().write(f"tool disable: {name} is already disabled", kind="error")
+                return
+            wanted = disabled + [name]
+        else:
+            if name not in disabled:
+                self._chat().write(f"tool enable: {name} is not disabled", kind="error")
+                return
+            wanted = [entry for entry in disabled if entry != name]
+
+        async with self._working(f"{verb} {name}", "config.set tools.disabled"):
+            ok, refused = await self._send_body("config", {"tools.disabled": wanted})
+        if not ok:
+            self._chat().write(f"tool {verb}: refused ({refused})", kind="error")
+            return
+        # The write is the whole effect: the next run rebuilds its tool list from this
+        # array. `applied` is read only to say whether the device took it, and this
+        # path has no screen to repaint.
+        await self._fetch_config()
+        self._chat().write(f"tool {verb} {name}: {wanted}")
 
     async def _model_levels(
         self, chain: object

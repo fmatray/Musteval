@@ -312,12 +312,27 @@ const char *tools_memory_reserved_prefix(const char *key)
 
 /* --- The offered set ----------------------------------------------------- */
 
+/* `03-config.md` §Full schema: `tools.disabled` names what the reader turned off.
+ * Checked first, so a disabled tool is absent whatever its other preconditions —
+ * turning off a tool that is not currently offered is still a stable answer. */
+static bool is_disabled(const char *name, const tools_context_t *ctx)
+{
+    if (ctx == NULL || ctx->policy.disabled == NULL) return false;
+    size_t n = json_array_len(ctx->policy.disabled);
+    for (size_t i = 0; i < n; i++) {
+        const char *entry = json_string(json_array_at(ctx->policy.disabled, i));
+        if (entry != NULL && strcmp(entry, name) == 0) return true;
+    }
+    return false;
+}
+
 /* `tools/i2c.md`: the three appear together or not at all, and only when the bus
  * pins are configured. Everything else is always offered. Pure, so the rule is
  * host-tested rather than only observable by reading a request body on a board. */
 bool tools_offered(const char *name, const tools_context_t *ctx)
 {
     if (name == NULL) return false;
+    if (is_disabled(name, ctx)) return false;
     if (strncmp(name, "i2c.", 4) == 0) {
         return ctx != NULL && ctx->i2c_sda >= 0 && ctx->i2c_scl >= 0;
     }

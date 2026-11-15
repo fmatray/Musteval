@@ -94,6 +94,10 @@ static const cfg_rule_t k_rules[] = {
     { "tools",                  CFG_OBJECT, NONE, false, NULL, NULL },
     { "tools.allow_dangerous",  CFG_BOOL, NONE, false, NULL, NULL },
     { "tools.http_allow_hosts", CFG_ARRAY, 0, 8, false, NULL, NULL },
+    /* Names `tools_offered` refuses: the model is neither shown nor allowed to call
+     * them. 8 is the `03-config.md` ceiling, the same length as the host array: a
+     * reader turns off a handful, not the registry. */
+    { "tools.disabled",         CFG_ARRAY, 0, 8, false, NULL, NULL },
     { "tools.memory_max_bytes", CFG_INT, 256, 4096, false, NULL, NULL },
     /* The pin allowlist is not a range — GPIO3 sits between two usable pins and is
      * excluded — so only the outer bound is here and `check_cross` holds the set. */
@@ -552,7 +556,8 @@ static esp_err_t walk(const json_node_t *obj, const char *prefix,
              * "array of int" without a second column nobody would read. */
             bool ints = strcmp(path, "wifi.retry_backoff_ms") == 0;
             bool strs = strcmp(path, "ntp.servers") == 0 ||
-                        strcmp(path, "tools.http_allow_hosts") == 0;
+                        strcmp(path, "tools.http_allow_hosts") == 0 ||
+                        strcmp(path, "tools.disabled") == 0;
             size_t n = json_array_len(c);
             for (size_t k = 0; k < n; k++) {
                 const json_node_t *e = json_array_at(c, k);

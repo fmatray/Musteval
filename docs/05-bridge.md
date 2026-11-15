@@ -766,6 +766,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/wifi reconnect` | `command {name:"wifi.reconnect"}` | none | Leaves and rejoins, so a link that is up but on the wrong AP is moved to the best one |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
+| `/tool` | `command {name:"config.get"}`, `command {name:"config.set"}` | `tools.disabled` | Lists every offered tool with the disabled ones marked, or turns one off for the model. Verbs: `list` (the bare default), `enable <name>`, `disable <name>`; each refuses the state it would not change |
 | `/tools` | (Local) | none | Lists `capabilities.tools` (every tool currently callable, declarative ones included) and `capabilities.mcp` |
 | `/mcp` | (Local) | none | Lists servers from the last `status.mcp[]` |
 | `/usage` | (Local) | none | Token totals from observed `agent.final.usage` |
@@ -1160,6 +1161,33 @@ command sends the existing `config.get` and `config.set`.
   `llm.providers[0]` that is not an object, produces one chat line and no frame. A
   provider id the catalog does not know is **not** a refusal: `custom` entries have
   no catalog row, which is exactly why the list URL comes from the entry itself.
+
+### 7.4 `/tool`
+
+`tools.disabled` (`03-config.md` §Full schema) is the array `tools_offered` consults
+before anything else, so it is the one place a tool can be turned off: the name leaves
+`tools_json`'s request, `hello_ack`'s capability list and the dispatch gate together,
+and the next run cannot call it. A bridge-side filter would hide the row and leave the
+model's request unchanged, which is the failure mode worth naming.
+
+| Form | Sends | Answer |
+|---|---|---|
+| `/tool list` | `config.get` | every offered name, with the disabled ones marked |
+| `/tool disable <name>` | `config.get`, then `config.set tools.disabled` | the array written |
+| `/tool enable <name>` | the same, without the name | the array written |
+
+- **The write is the whole array**, because `config.set` replaces a value rather than
+  appending (`04` §4.9).
+- **The two verbs refuse the state the other one wants.** `disable` refuses a name
+  already in the array and `enable` refuses a name absent from it. Either would write
+  a document identical to the stored one, which costs a flash write and reports a
+  change that did not happen. A name nobody offers is accepted on `disable`: a tool
+  that returns later then needs no config edit, and its entry stays inert meanwhile
+  (`03-config.md` §Full schema).
+- **`list` shows the last `hello_ack` set annotated with the array it just read.** The
+  device pushes a capability list only on `hello`, so a fresh run of tools after a
+  write is not something this command can observe; it reports what the device will use
+  next rather than pretending to have re-read the run.
 
 ## 8. Secrets & Redaction
 

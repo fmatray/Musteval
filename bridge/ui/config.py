@@ -73,6 +73,13 @@ ROWS: tuple[ConfigRow, ...] = (
         False,
         "switch read by the write tools; the list is `06-security.md` §6, not restated here",
     ),
+    _row(
+        "tools.disabled[]",
+        "string[]",
+        [],
+        "0..8 tool names the model is neither shown nor allowed to call; "
+        "`/tool` is the friendlier route and writes the same key",
+    ),
     _row("tools.http_allow_hosts[]", "string[]", [], "0..8 hostnames; exact match, no wildcards"),
     _row("tools.memory_max_bytes", "int", 2048, "256..4096; total bytes across the `memory` NVS namespace"),
     _row("tools.i2c_sda", "int", None, "GPIO1, GPIO2, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8 or GPIO9; `-` for absent"),

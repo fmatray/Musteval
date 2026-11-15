@@ -977,6 +977,38 @@ TEST_CASE("i2c tools are offered only when the bus is pinned", "[m4]")
     TEST_ASSERT_TRUE(tools_offered("gpio.read", NULL));
 }
 
+/* `03-config.md` §Full schema: `tools.disabled` is one set consulted by both the
+ * advertise path and dispatch, so a tool the reader turned off cannot be shown to the
+ * model and then refused, nor called without being shown. */
+TEST_CASE("a disabled tool is not offered and cannot be called", "[m4]")
+{
+    json_doc_t *doc = NULL;
+    const char *json = "[\"gpio.read\",\"memory.set\"]";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, json_parse(json, strlen(json), &doc));
+    TEST_ASSERT_NOT_NULL(doc);
+
+    tools_context_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+    ctx.policy.allow_dangerous = true;
+    ctx.policy.disabled = json_root(doc);
+
+    TEST_ASSERT_FALSE(tools_offered("gpio.read", &ctx));
+    TEST_ASSERT_FALSE(tools_offered("memory.set", &ctx));
+    /* A tool outside the array is untouched, so the switch is not a blanket off. */
+    TEST_ASSERT_TRUE(tools_offered("gpio.write", &ctx));
+    TEST_ASSERT_TRUE(tools_offered("memory.get", &ctx));
+    /* A name the registry does not carry stays inert rather than becoming a rule. */
+    TEST_ASSERT_FALSE(tools_offered("not.a.tool", &ctx));
+
+    /* The same predicate the advertise path uses is the one dispatch consults, so the
+     * refusal is the offer's answer rather than a second, drifting rule. */
+    ctx.policy.disabled = NULL;
+    TEST_ASSERT_TRUE(tools_offered("gpio.read", &ctx));
+    json_free(doc);
+}
+
 /* A name nothing offers is not offered. Before this arm, `tools_offered` answered
  * true for every non-`i2c.`/non-`mcp.` name, so a name the model invented passed the
  * offer gate and was only refused later as "unknown tool" — a gate that gated

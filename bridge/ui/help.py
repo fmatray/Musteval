@@ -42,7 +42,8 @@ class CommandHelp:
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Device": (
         "sys", "tasks", "run", "config", "secret",
-        "templates", "template", "mqtt", "geo", "wifi", "todo", "fs", "sandbox",
+        "templates", "template", "mqtt", "geo", "wifi", "todo", "tool", "fs",
+        "sandbox",
     ),
     "Chat": ("retry", "ping", "cancel", "clear", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context"),
@@ -116,6 +117,12 @@ COMMANDS: tuple[CommandHelp, ...] = (
         "pick the provider's model",
         False,
     ),
+    CommandHelp(
+        "tool",
+        "/tool list|enable|disable <name>",
+        "show the tools, or turn one off for the model",
+        False,
+    ),
     CommandHelp("wifi", "/wifi scan|status|connect|disconnect|reconnect",
                 "scan the radio, or read and steer the station", False),
     CommandHelp("tools", "/tools", "list built-in and MCP tools", True),
@@ -138,6 +145,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "mqtt": ("publish",),
     "fs": ("put",),
     "sandbox": ("list", "read", "mkdir", "move", "delete"),
+    "tool": ("list", "enable", "disable"),
     "sys": ("status", "diag", "reload", "reboot", "reset-counter"),
     "secret": ("set",),
     "ping": ("device", "router", "llm", "ntp"),
@@ -179,6 +187,11 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "reload": "re-read the flash configs",
         "reboot": "restart the device",
         "reset-counter": "clear the boot-failure counter",
+    },
+    "tool": {
+        "list": "show every tool, marking the disabled ones",
+        "enable": "let the model call a tool again",
+        "disable": "keep a tool but hide it from the model",
     },
     "secret": {"set": "store a secret, prompted and masked"},
     "ping": {

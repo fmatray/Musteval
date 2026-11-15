@@ -97,6 +97,9 @@ esp_err_t tools_validate(const char *tool, const json_node_t *args, char *why,
 typedef struct {
     bool allow_dangerous;
     const json_node_t *http_allow_hosts; /* the config array, or NULL */
+    /* `tools.disabled`: names the model is neither shown nor allowed to call. The
+     * config array itself, so one comparison point serves advertise and dispatch. */
+    const json_node_t *disabled;
 } tools_policy_t;
 
 bool tools_host_allowed(const tools_policy_t *policy, const char *host);
