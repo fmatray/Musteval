@@ -288,6 +288,12 @@ Sent unsolicited every 30 s when idle, immediately after handshake, and as the
 shape; the `status` message body is that object inline, and
 `command.result.result` is the same object.
 
+`llm.provider`, `llm.model` and `llm.thinking` report what the device is
+*configured* to call, so they are named from boot and survive a `config.set`.
+`llm.available` is a statement about the last call instead and stays `false`
+until one succeeds: the two answer different questions and neither derives from
+the other.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `wifi.state` | string | `connected`, `connecting`, `failed`, `off` |
@@ -298,8 +304,9 @@ shape; the `status` message body is that object inline, and
 | `time.synced` | boolean | SNTP complete |
 | `time.unix` | integer | Effective clock |
 | `time.tz` | string | `ntp.timezone` |
-| `llm.provider` | string or null | Active provider id |
-| `llm.model` | string or null | Active model |
+| `llm.provider` | string or null | Configured provider id, `llm.providers[0].id`; `null` when none resolved |
+| `llm.model` | string or null | Configured model, `llm.providers[0].model`; `null` when none resolved |
+| `llm.thinking` | string or null | `llm.providers[0].extra_body.reasoning_effort`; `null` when the entry sets none |
 | `llm.available` | boolean | Last call succeeded |
 | `llm.last_error` | string or null | Last provider error text |
 | `mcp[]` | array | `{id, enabled, state}` where state is `connected`, `idle`, `error` |
@@ -328,7 +335,7 @@ shape; the `status` message body is that object inline, and
 | `boot_id` | string | Matches `hello_ack.boot_id` |
 
 ```json
-{"v":1,"type":"status","id":"d-3","ts":1730563600,"wifi":{"state":"connected","ssid":"home-2g","rssi":-58,"ip":"192.168.1.42","failovers":0},"time":{"synced":true,"unix":1730563600,"tz":"UTC"},"llm":{"provider":"openai","model":"gpt-4o-mini","available":true,"last_error":null,"calls_hour":7,"calls_day":41,"limit_hour":100,"limit_day":1000},"mcp":[{"id":"home","enabled":true,"state":"connected"}],"agent":{"busy":false,"run_id":null,"queue_depth":0,"max_queue":2},"mqtt":[{"id":"home","connected":true},{"id":"lab","connected":false}],"geo":{"lat":52.3676,"lon":4.9041,"accuracy_m":65,"age_s":42},"storage":{"userfs":{"used_bytes":18432,"total_bytes":3932160},"wsfs":{"used_bytes":0,"total_bytes":1048576},"workspace_quota_bytes":65536},"mem":{"heap_free":182344,"psram_free":8123456},"sys":{"safe_mode":false,"boot_failures":0,"tool_calls":12,"tool_failures":1},"uptime_s":812,"boot_id":"9f2c1a7e"}
+{"v":1,"type":"status","id":"d-3","ts":1730563600,"wifi":{"state":"connected","ssid":"home-2g","rssi":-58,"ip":"192.168.1.42","failovers":0},"time":{"synced":true,"unix":1730563600,"tz":"UTC"},"llm":{"provider":"openai","model":"gpt-4o-mini","thinking":"medium","available":true,"last_error":null,"calls_hour":7,"calls_day":41,"limit_hour":100,"limit_day":1000},"mcp":[{"id":"home","enabled":true,"state":"connected"}],"agent":{"busy":false,"run_id":null,"queue_depth":0,"max_queue":2},"mqtt":[{"id":"home","connected":true},{"id":"lab","connected":false}],"geo":{"lat":52.3676,"lon":4.9041,"accuracy_m":65,"age_s":42},"storage":{"userfs":{"used_bytes":18432,"total_bytes":3932160},"wsfs":{"used_bytes":0,"total_bytes":1048576},"workspace_quota_bytes":65536},"mem":{"heap_free":182344,"psram_free":8123456},"sys":{"safe_mode":false,"boot_failures":0,"tool_calls":12,"tool_failures":1},"uptime_s":812,"boot_id":"9f2c1a7e"}
 ```
 
 ### 3.10 `log` (device → bridge)
@@ -649,7 +656,7 @@ reads are never refused.
 ```
 
 ```json
-{"v":1,"type":"command.result","id":"d-16","ts":1730563222,"reply_to":"b-8","name":"status","ok":true,"result":{"wifi":{"state":"connected","ssid":"home-2g","rssi":-58,"ip":"192.168.1.42","failovers":0},"time":{"synced":true,"unix":1730563222,"tz":"UTC"},"llm":{"provider":"openai","model":"gpt-4o-mini","available":true,"last_error":null,"calls_hour":7,"calls_day":41,"limit_hour":100,"limit_day":1000},"mcp":[],"agent":{"busy":true,"run_id":"r-7","queue_depth":0,"max_queue":2},"mqtt":[{"id":"home","connected":true},{"id":"lab","connected":false}],"geo":{"lat":52.3676,"lon":4.9041,"accuracy_m":65,"age_s":42},"storage":{"userfs":{"used_bytes":18432,"total_bytes":3932160},"wsfs":{"used_bytes":0,"total_bytes":1048576},"workspace_quota_bytes":65536},"mem":{"heap_free":181004,"psram_free":8123456},"sys":{"safe_mode":false,"boot_failures":0,"tool_calls":12,"tool_failures":1},"uptime_s":834,"boot_id":"9f2c1a7e"},"duration_ms":9}
+{"v":1,"type":"command.result","id":"d-16","ts":1730563222,"reply_to":"b-8","name":"status","ok":true,"result":{"wifi":{"state":"connected","ssid":"home-2g","rssi":-58,"ip":"192.168.1.42","failovers":0},"time":{"synced":true,"unix":1730563222,"tz":"UTC"},"llm":{"provider":"openai","model":"gpt-4o-mini","thinking":"medium","available":true,"last_error":null,"calls_hour":7,"calls_day":41,"limit_hour":100,"limit_day":1000},"mcp":[],"agent":{"busy":true,"run_id":"r-7","queue_depth":0,"max_queue":2},"mqtt":[{"id":"home","connected":true},{"id":"lab","connected":false}],"geo":{"lat":52.3676,"lon":4.9041,"accuracy_m":65,"age_s":42},"storage":{"userfs":{"used_bytes":18432,"total_bytes":3932160},"wsfs":{"used_bytes":0,"total_bytes":1048576},"workspace_quota_bytes":65536},"mem":{"heap_free":181004,"psram_free":8123456},"sys":{"safe_mode":false,"boot_failures":0,"tool_calls":12,"tool_failures":1},"uptime_s":834,"boot_id":"9f2c1a7e"},"duration_ms":9}
 ```
 
 ### 4.2 `reload`

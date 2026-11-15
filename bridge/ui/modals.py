@@ -828,13 +828,10 @@ class ModelPicker(PromptBox[str | None]):
         # Sorting moved the stored name off row 0, and the highlight defaults to the
         # first row: without this, Enter on the list tab adopts whatever sorts first
         # — a model nobody chose, written silently to `llm.providers[0].model`.
-        rows = self.query("#step-model-list")
-        if rows and self.current:
+        # `_names()` unions the stored name in, so it is always present here.
+        if self.query("#step-model-list") and self.current:
             names = self._names()
-            if self.current in names:
-                self.query_one("#step-model-list").highlighted = names.index(
-                    self.current
-                )
+            self.query_one("#step-model-list").highlighted = names.index(self.current)
 
     def _active(self) -> str:
         return self.query_one("#step-model-tabs", TabbedContent).active

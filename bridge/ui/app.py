@@ -1789,6 +1789,13 @@ class BridgeApp(App):
                 + (", requires reboot" if result.get("requires_reboot") else "")
             )
             self.run_worker(self._request("config.get"))
+            # The bar names the configured model and thinking level, so a *live*
+            # write to `llm.providers` makes it stale until the next unsolicited
+            # `status` — up to 30 s of showing the model the reader just replaced
+            # (`05` §5.1). A write the device reports as not applied changed nothing
+            # the bar reads, so it costs no round trip.
+            if result.get("applied"):
+                self.run_worker(self._request("status"))
             return
         if name == "sandbox.list" and isinstance(result, dict):
             self.query_one("#files", FilesScreen).render_entries(

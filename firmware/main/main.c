@@ -988,8 +988,12 @@ static void answer_command(const json_node_t *frame)
         llm_counters(&calls_hour, &calls_day);
         int32_t limit_hour = 0, limit_day = 0;
         llm_limits(&limit_hour, &limit_day);
-        const char *llm_id = NULL, *llm_model = NULL;
-        bool llm_available = llm_last_answer(&llm_id, &llm_model);
+        /* §3.9: the id, model and thinking level are what the chain is configured
+         * to call, so the bar names them from boot; `available` stays a claim about
+         * the last call and is asked separately. */
+        const char *llm_id = NULL, *llm_model = NULL, *llm_thinking = NULL;
+        llm_configured(&llm_id, &llm_model, &llm_thinking);
+        bool llm_available = llm_last_answer(NULL, NULL);
         agent_status_t agent;
         agent_status(&agent);
         tool_counters_t tool_counts;
@@ -1047,6 +1051,7 @@ static void answer_command(const json_node_t *frame)
             .tz = clock_tz(),
             .llm_provider = llm_id,
             .llm_model = llm_model,
+            .llm_thinking = llm_thinking,
             .llm_available = llm_available,
             .llm_last_error = llm_last_error()[0] != '\0' ? llm_last_error() : NULL,
             .llm_calls_hour = calls_hour,

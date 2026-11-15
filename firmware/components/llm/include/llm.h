@@ -190,6 +190,13 @@ bool llm_last_answer(const char **id, const char **model);
  * `llm.limit_day`). 0 means the window is disabled and is reported as null. */
 void llm_limits(int32_t *hour, int32_t *day);
 
+/* The chain's first entry — `id`, `model` and its `extra_body.reasoning_effort` —
+ * all borrowed and stable, and all NULL when no provider resolved. These are the
+ * *configured* facts `status` reports (`04-protocol.md` §3.9), so they name the model
+ * from boot rather than from the first successful call: `llm_last_answer` answers a
+ * different question and stays false until one call out succeeds. */
+void llm_configured(const char **id, const char **model, const char **thinking);
+
 /* Copy the host only — no scheme, no port, no path — of the first configured
  * provider's `base_url` into `out` (`04-protocol.md` §4.25, `net.ping` target `llm`).
  * Returns false when no provider is loaded or the host does not fit. The API key is

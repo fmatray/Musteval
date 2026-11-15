@@ -25,6 +25,7 @@ typedef struct {
     char model[65];
     char api_key[CFG_SECRET_MAX + 1];
     char token_param[24];
+    char thinking[16];
     char extra_body[256];
     int32_t max_output_tokens;
     int32_t timeout_ms;
@@ -115,6 +116,17 @@ esp_err_t llm_init(void)
         }
 
         json_node_t *extra = json_get(entry, "extra_body");
+        /* The level is read out of `extra_body` rather than carried separately: the
+         * member *is* the wire name (`03-config.md` §llm), so a second config key
+         * would be a second truth. `status.llm.thinking` reports it. */
+        const char *effort = extra != NULL ? json_string(json_get(extra, "reasoning_effort"))
+                                           : NULL;
+        /* Refused rather than clipped: a cut level name is a different string, and
+         * reporting `max` for `maximum-effort` would name a setting that is not in
+         * the file. No ladder name is near the bound, so this only fires on a typo. */
+        if (effort != NULL && strlen(effort) < sizeof p->thinking) {
+            snprintf(p->thinking, sizeof p->thinking, "%s", effort);
+        }
         if (extra != NULL) {
             /* Flat, at the root: `extra_body`'s members *are* request members
              * (`03-config.md` §llm). The shape rule lives in the host-tested module,
@@ -289,6 +301,14 @@ void llm_limits(int32_t *hour, int32_t *day)
 {
     if (hour != NULL) *hour = s_max_hour;
     if (day != NULL) *day = s_max_day;
+}
+
+void llm_configured(const char **id, const char **model, const char **thinking)
+{
+    const llm_provider_t *p = s_provider_count > 0 ? &s_providers[0] : NULL;
+    if (id != NULL) *id = p != NULL ? p->id : NULL;
+    if (model != NULL) *model = p != NULL ? p->model : NULL;
+    if (thinking != NULL) *thinking = (p != NULL && p->thinking[0] != '\0') ? p->thinking : NULL;
 }
 
 const char *llm_last_error(void)

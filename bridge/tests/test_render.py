@@ -98,6 +98,23 @@ def test_a_status_without_an_uptime_does_not_invent_one():
     )
 
 
+def test_the_bar_names_the_thinking_level_beside_the_model_it_belongs_to():
+    """`04` §3.9 and `05` §5.1: the level is a property of the model, so it rides in
+    the model's segment. Both arms are one test because they are one rule: a level is
+    named when the device reports one, and `null` reads as absent rather than as
+    `p/m/None`, which would name a level no setting produced."""
+    with_level = _bar(
+        {"llm": {"provider": "ollama", "model": "gemma4:31b", "thinking": "max"}}
+    ).split(PROMPT_SEPARATOR)
+    assert "ollama/gemma4:31b/max" in with_level
+
+    without = _bar(
+        {"llm": {"provider": "p", "model": "m", "thinking": None}}
+    ).split(PROMPT_SEPARATOR)
+    assert "p/m" in without
+    assert not [part for part in without if "None" in part]
+
+
 # -- invariants ----------------------------------------------------------
 
 

@@ -214,10 +214,12 @@ typedef struct {
     int64_t  time_unix;
     const char *tz;
 
-    /* `llm` (§3.9 `llm`). `llm_available` is whether a provider resolved at boot;
-     * `llm_provider`/`llm_model` are the ones that last answered. */
+    /* `llm` (§3.9 `llm`). `llm_provider`, `llm_model` and `llm_thinking` are what the
+     * chain is *configured* to call, so they are named before the first call.
+     * `llm_available` is a claim about the last call instead: one succeeded. */
     const char *llm_provider;
     const char *llm_model;
+    const char *llm_thinking;
     bool     llm_available;
     const char *llm_last_error;
     int32_t  llm_calls_hour, llm_calls_day;

@@ -305,8 +305,12 @@ time, and as a platform service it needs no port.
 - `llm_next_provider(current, count)`: The next index to try, or -1 when the chain is
   exhausted. The chain is walked once per request and never wraps, so a flapping
   provider cannot spend the budget in a loop.
-- `llm_counters(&hour, &day)` / `llm_limits(&hour, &day)` / `llm_last_answer(&id,
-  &model)`: The facts `status` reports (`04-protocol.md` §3.9).
+- `llm_counters(&hour, &day)` / `llm_limits(&hour, &day)` /
+  `llm_configured(&id, &model, &thinking)` / `llm_last_answer(&id, &model)`: The
+  facts `status` reports (`04-protocol.md` §3.9). `llm_configured` answers "what
+  will the next call use" — the chain's first entry, named from boot — while
+  `llm_last_answer` answers "did the last call succeed", and `llm.available` is
+  that answer rather than the other one.
 - `llm_last_error()`: Why the chain last failed, for `E_LLM_UNAVAILABLE`'s
   `error.message`. When the last attempt got an HTTP status and a body, the message
   carries the provider's own words, clipped to `LLM_ERROR_CLIP`:

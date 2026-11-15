@@ -381,7 +381,14 @@ def _bar_segments(
     model = llm.get("model")
     if model:
         provider = llm.get("provider") or "?"
-        segments.append((f"{provider}/{model}", "muted"))
+        # The thinking level rides with the model it belongs to, in one segment: it
+        # is a property of that model, and a narrow bar must not drop one and keep
+        # the other (`05` §5.1).
+        thinking = llm.get("thinking")
+        segments.append(
+            (f"{provider}/{model}/{thinking}" if thinking else f"{provider}/{model}",
+             "muted")
+        )
         # A provider that is down is a fact worth the space; a working one is not.
         if not llm.get("available", True):
             segments.append(("llm down", "bad"))

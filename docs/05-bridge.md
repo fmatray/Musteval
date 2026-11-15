@@ -168,17 +168,26 @@ The primary interaction pane.
     screen as before.
   - The prompt bar above the composer is one row of facts about the link and the
     agent, in the manner of a shell's prompt line. Segments are joined by ` | `
-    and each is a value the bridge already holds, so the bar never costs a
-    frame: the link state (`down`, `linking`, `linked`, `flaky`, `refused`; while the
-    link is down, linking or refused that word is the whole bar, because every
-    other fact would be the last thing heard before the link died), the
-    provider and model while a `status` has named one, the agent's `idle` or
-    `busy <run_id>`, a queue segment only while the queue is non-empty, the wifi
-    state and its signal, workspace use against its quota, the running token
-    total once a call has been charged, and the `device` from `hello_ack`. A
+    and each is a value the bridge already holds, so drawing the bar never
+    costs a frame: the link state (`down`, `linking`, `linked`, `flaky`,
+    `refused`; while the link is down, linking or refused that word is the whole
+    bar, because every other fact would be the last thing heard before the link
+    died), the provider, model and thinking level while a `status` has named
+    one, the agent's `idle` or `busy <run_id>`, a queue segment only while the
+    queue is non-empty, the wifi state and its signal, workspace use against its
+    quota, the running token total once a call has been charged, and the
+    `device` from `hello_ack`. A
     segment whose fact is unknown is omitted rather than rendered as `none`: a
     bar that blamed the provider before the first `status` arrived would send
     the reader after the wrong thing.
+  - The model segment is `provider/model`, and `provider/model/level` when
+    `status.llm.thinking` names a level. The level is one fact with the model it
+    belongs to — it is that model's setting, not the provider's — so it rides in
+    the same segment rather than standing alone where a narrow bar could drop it
+    and keep the model. All three are what the device is *configured* to call
+    (`04` §3.9), not what last answered, so the segment is there from the first
+    `status` after boot rather than from the first successful call; `llm down`
+    still reports the separate fact that the last call did not succeed.
   - Two facts sit immediately behind the link word, because the bar drops from
     the right: `SAFE MODE` while safe mode is active, and the uptime from
     `status.uptime_s` as one compact segment — `45s`, `12m05s`, `3h04m`, `1d2h`.
@@ -194,11 +203,15 @@ The primary interaction pane.
   - The bar is redrawn when a fact changes: `hello_ack`, a `status` frame, the
     `status` command's own reply (a `/status` is a command, not a push, and a bar
     that ignored it would stay empty until the device volunteered one), a usage
-    frame, a link-state transition (a drop emits no frame of its own), mount and
-    a resize. Never on a keystroke. It is one row and drops whole trailing
-    segments when the terminal is too narrow, so a narrow window loses the
-    rightmost facts rather than showing half a word or the composer. The link
-    word is never dropped: an empty bar would say less than a short one.
+    frame, a link-state transition (a drop emits no frame of its own), every
+    applied `config.set`, mount and a resize. The `config.set` case is its own
+    redraw because the bar names the configured model and level: the device does
+    not push a fresh `status` on a write, so a bar left to the 30 s timer would
+    name the model the reader had just replaced. Never on a keystroke. It is one
+    row and drops whole trailing segments when the terminal is too narrow, so a
+    narrow window loses the rightmost facts rather than showing half a word or
+    the composer. The link word is never dropped: an empty bar would say less
+    than a short one.
   - When `agent.start` arrives, a spinner is displayed.
   - `agent.tool` and `agent.tool_result` are rendered as collapsed "tool calls" (expandable).
   - `agent.final` stops the spinner and renders the assistant's answer. When the
@@ -263,7 +276,7 @@ by; a blank line is not, because the pane has those inside a message too.
 |                                                                       |
 | User: [ /tasks list ]                                                 |
 +-----------------------------------------------------------------------+
-| linked | 3h04m | openai/gpt-4o-mini | idle | up | -58dBm              |
+| linked | 3h04m | openai/gpt-4o-mini/high | idle | up | -58dBm           |
 | > Hello agent!                                                        |
 +-----------------------------------------------------------------------+
 ```

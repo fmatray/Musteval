@@ -67,6 +67,9 @@ STATUS = {
     "llm": {
         "provider": "test",
         "model": "test-echo",
+        # The double sets no thinking level, so the honest report is null — the same
+        # shape a device with no `extra_body.reasoning_effort` sends (`04` §3.9).
+        "thinking": None,
         "available": True,
         "last_error": None,
         "calls_hour": 0,

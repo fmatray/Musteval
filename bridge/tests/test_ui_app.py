@@ -332,6 +332,88 @@ async def test_a_settings_row_write_sends_config_set_with_the_typed_path():
     await _run(_device(), body)
 
 
+async def test_a_settings_write_repaints_the_model_the_bar_names():
+    """`05` §5.1: the bar names the configured model, and `config.set` is the write
+    that changes it. Waiting for the next unsolicited `status` left the bar naming
+    the model the reader had just replaced for up to 30 s."""
+    inner = _device()
+    seen = {"writes": 0}
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("name") == "config.set":
+            seen["writes"] += 1
+            return [_result(frame, "config.set",
+                            {"path": frame["args"]["path"], "applied": True})]
+        if frame.get("name") == "status" and seen["writes"]:
+            status = dict(STATUS)
+            status["llm"] = {**STATUS["llm"], "model": "gpt-replaced",
+                             "thinking": "high"}
+            return [_result(frame, "status", status)]
+        return inner(line)
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ValuePrompt
+
+        app.action_show("settings")
+        for _ in range(120):
+            if app._config_fetched:
+                break
+            await pilot.pause(0.02)
+        app.run_worker(app.edit_setting("llm.max_tool_rounds"))
+        await _await_screen(pilot, app, ValuePrompt)
+        app.screen.query_one("#value-input").value = "3"
+        await pilot.press("enter")
+        for _ in range(120):
+            if "gpt-replaced" in app.query_one("#chat").bar_line:
+                break
+            await pilot.pause(0.02)
+        assert seen["writes"] == 1
+        assert "openai/gpt-replaced/high" in app.query_one("#chat").bar_line
+
+    await _run(reply, body)
+
+
+async def test_a_write_the_device_did_not_apply_costs_no_status_round_trip():
+    """`05` §5.1: the `status` re-request exists because an *applied* write changed
+    the model the bar names. A write that reports `applied: false` — one awaiting a
+    reboot, or one the device could not make live — changed nothing the bar reads,
+    so asking again is a frame that can only return the same answer."""
+    inner = _device()
+    seen = {"writes": 0, "status_after": 0}
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("name") == "config.set":
+            seen["writes"] += 1
+            return [_result(frame, "config.set",
+                            {"path": frame["args"]["path"], "applied": False,
+                             "requires_reboot": True})]
+        if frame.get("name") == "status" and seen["writes"]:
+            seen["status_after"] += 1
+        return inner(line)
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ValuePrompt
+
+        app.action_show("settings")
+        for _ in range(120):
+            if app._config_fetched:
+                break
+            await pilot.pause(0.02)
+        app.run_worker(app.edit_setting("ntp.timezone"))
+        await _await_screen(pilot, app, ValuePrompt)
+        app.screen.query_one("#value-input").value = "UTC"
+        await pilot.press("enter")
+        await _await_chat(pilot, app, "requires reboot")
+        for _ in range(30):
+            await pilot.pause(0.02)
+        assert seen["writes"] == 1
+        assert seen["status_after"] == 0
+
+    await _run(reply, body)
+
+
 async def test_an_unknown_settings_path_writes_nothing():
     """A path no row owns cannot be coerced, so nothing reaches the wire."""
 

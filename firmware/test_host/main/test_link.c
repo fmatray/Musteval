@@ -612,6 +612,7 @@ TEST_CASE("an idle status reports the honest null for what is absent", "[link]")
     TEST_ASSERT_NOT_NULL(llm);
     TEST_ASSERT_TRUE(json_is_null(json_get(llm, "provider")));
     TEST_ASSERT_TRUE(json_is_null(json_get(llm, "model")));
+    TEST_ASSERT_TRUE(json_is_null(json_get(llm, "thinking")));
     TEST_ASSERT_TRUE(json_is_null(json_get(llm, "last_error")));
     TEST_ASSERT_TRUE(json_is_null(json_get(llm, "limit_hour")));
     TEST_ASSERT_TRUE(json_is_null(json_get(llm, "limit_day")));
@@ -640,6 +641,7 @@ TEST_CASE("a connected status reports every member it was given", "[link]")
     st.tz = "UTC";
     st.llm_provider = "openai";
     st.llm_model = "gpt";
+    st.llm_thinking = "medium";
     st.llm_available = true;
     st.llm_limit_hour = 30;
     st.llm_limit_day = 200;
@@ -661,6 +663,7 @@ TEST_CASE("a connected status reports every member it was given", "[link]")
     json_node_t *llm = json_get(root, "llm");
     TEST_ASSERT_EQUAL_STRING("openai", json_string(json_get(llm, "provider")));
     TEST_ASSERT_EQUAL_STRING("gpt", json_string(json_get(llm, "model")));
+    TEST_ASSERT_EQUAL_STRING("medium", json_string(json_get(llm, "thinking")));
     int64_t limit = 0;
     TEST_ASSERT_TRUE(json_int(json_get(llm, "limit_hour"), &limit));
     TEST_ASSERT_EQUAL_INT(30, limit);

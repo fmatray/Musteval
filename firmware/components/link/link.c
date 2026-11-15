@@ -762,6 +762,7 @@ esp_err_t link_build_status(json_node_t *obj, const link_status_t *st)
          json_add_string(time, "tz", st->tz != NULL ? st->tz : "UTC0") &&
          ADD_NULLABLE(llm, "provider", st->llm_provider) &&
          ADD_NULLABLE(llm, "model", st->llm_model) &&
+         ADD_NULLABLE(llm, "thinking", st->llm_thinking) &&
          json_add_bool(llm, "available", st->llm_available) &&
          ADD_NULLABLE(llm, "last_error", st->llm_last_error) &&
          json_add_int(llm, "calls_hour", st->llm_calls_hour) &&
