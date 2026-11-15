@@ -201,6 +201,34 @@ TEST_CASE("an ip provider is reached with GET", "[geo]")
     TEST_ASSERT_FALSE(geo_kind_posts(GEO_KIND_IP));
 }
 
+/* --- Whether the chain needs a WiFi scan ---------------------------------
+ * A scan in station mode disturbs the link the next request needs, so an `ip`-only
+ * chain must skip it. Observed on the board as an `ESP_ERR_HTTP_CONNECT` against a
+ * provider whose handshake succeeded whenever no scan had just run. */
+
+TEST_CASE("an ip-only chain does not scan", "[geo]")
+{
+    geo_provider_t chain[2] = {
+        {.id = "a", .kind = GEO_KIND_IP},
+        {.id = "b", .kind = GEO_KIND_IP},
+    };
+    TEST_ASSERT_FALSE(geo_chain_needs_scan(chain, 2));
+}
+
+TEST_CASE("a chain with one wifi_scan entry anywhere still scans", "[geo]")
+{
+    geo_provider_t chain[3] = {
+        {.id = "a", .kind = GEO_KIND_IP},
+        {.id = "b", .kind = GEO_KIND_WIFI},
+        {.id = "c", .kind = GEO_KIND_IP},
+    };
+    TEST_ASSERT_TRUE(geo_chain_needs_scan(chain, 3));
+    /* The `wifi_scan` entry being last does not save the scan. */
+    TEST_ASSERT_TRUE(geo_chain_needs_scan(chain + 1, 1));
+    TEST_ASSERT_FALSE(geo_chain_needs_scan(chain, 0));
+    TEST_ASSERT_FALSE(geo_chain_needs_scan(NULL, 0));
+}
+
 /* --- The mqtt allowlist ---------------------------------------------------
  * `03-config.md` §mqtt: `topics[]` is the complete publish/subscribe allowlist, and the
  * grammar is deliberately smaller than MQTT's. The grammar itself is `cfg`'s, so these

@@ -126,3 +126,11 @@ bool geo_kind_posts(geo_kind_t kind)
     }
     return true;
 }
+
+bool geo_chain_needs_scan(const geo_provider_t *chain, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (chain[i].kind == GEO_KIND_WIFI) return true;
+    }
+    return false;
+}

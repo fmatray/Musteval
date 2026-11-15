@@ -869,8 +869,17 @@ static esp_err_t call_geo_locate(json_doc_t **out, const char **wire_code, char 
     geo_fix_t fix = {0};
     esp_err_t err = geo_locate(&fix);
     if (err != ESP_OK) {
-        set_why(why, why_cap, err == ESP_ERR_TIMEOUT ? "geo.locate: no provider answered"
-                                                     : "geo.locate: every provider failed");
+        /* The chain's own reason, so the message names the provider and what it did
+         * rather than repeating the tool name. `geo_last_error` is empty only when no
+         * provider was tried at all, which `geo_init` has already refused. */
+        const char *cause = geo_last_error();
+        if (cause != NULL && cause[0] != '\0') {
+            snprintf(why, why_cap, "geo.locate: %s", cause);
+        } else {
+            set_why(why, why_cap,
+                    err == ESP_ERR_TIMEOUT ? "geo.locate: no provider answered"
+                                           : "geo.locate: every provider failed");
+        }
         /* `tools/geo.md` §Errors names both: the chain exhausted is `E_GEO`, the chain
          * that ran out of time is `E_TIMEOUT`. They are different readings — one says
          * every provider refused or failed, the other says none answered in time — and

@@ -32,6 +32,7 @@ typedef struct {
 } geo_state_t;
 
 static geo_state_t s_state;
+static char s_last_error[GEO_ERR_MAX];
 /* The scanned APs as the provider sees them. Two parallel arrays because the body
  * builder takes them that way; both are the protocol's own cap. */
 static char    s_bssid[GEO_BSSIDS_CAP][18];
@@ -155,28 +156,35 @@ esp_err_t geo_locate(geo_fix_t *out)
         return ESP_OK;
     }
 
-    /* Step 2: scan, strongest first, keep `geo.max_bssids`. `net_scan_condense` is the
-     * owner of that ordering, so the same rule the `/wifi` screen uses is the one the
-     * provider payload uses. */
-    net_scan_entry_t entries[GEO_SCAN_MAX];
-    size_t count = 0;
-    bool truncated = false;
-    esp_err_t err = net_scan(entries, GEO_SCAN_MAX, &count, &truncated);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "locate: scan failed: %s", esp_err_to_name(err));
-        count = 0; /* an `ip`-only chain still has a provider to try */
-    } else {
-        net_scan_condense(entries, &count, GEO_SCAN_MAX, &truncated);
-    }
+    /* Step 2: scan only when some entry can use the result. A chain of `ip` providers
+     * has nothing to send a BSSID list to, and an `esp_wifi_scan_start` in station mode
+     * disturbs the link the very next request needs: the scan made the TLS connect that
+     * followed it fail with `ESP_ERR_HTTP_CONNECT` on a board whose link was healthy.
+     * `GEO_SCAN_MAX` entries are 1.4 KiB of this stack, so an `ip`-only chain also
+     * stops paying for an array it cannot read. */
+    bool need_scan = geo_chain_needs_scan(s_state.providers, s_state.count);
 
+    size_t count = 0;
     size_t usable = 0;
-    for (size_t i = 0; i < count && usable < (size_t)s_state.max_bssids; i++) {
-        /* A positioning provider wants the radio's address, not the network's name.
-         * `net_scan` already formatted it from the driver record. */
-        if (entries[i].bssid[0] == '\0') continue;
-        snprintf(s_bssid[usable], sizeof s_bssid[usable], "%s", entries[i].bssid);
-        s_rssi[usable] = entries[i].rssi;
-        usable++;
+    if (need_scan) {
+        net_scan_entry_t entries[GEO_SCAN_MAX];
+        bool truncated = false;
+        esp_err_t err = net_scan(entries, GEO_SCAN_MAX, &count, &truncated);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "locate: scan failed: %s", esp_err_to_name(err));
+            count = 0; /* an `ip` entry later in the chain is still worth trying */
+        } else {
+            net_scan_condense(entries, &count, GEO_SCAN_MAX, &truncated);
+        }
+
+        for (size_t i = 0; i < count && usable < (size_t)s_state.max_bssids; i++) {
+            /* A positioning provider wants the radio's address, not the network's
+             * name. `net_scan` already formatted it from the driver record. */
+            if (entries[i].bssid[0] == '\0') continue;
+            snprintf(s_bssid[usable], sizeof s_bssid[usable], "%s", entries[i].bssid);
+            s_rssi[usable] = entries[i].rssi;
+            usable++;
+        }
     }
 
     static char s_body[GEO_BODY_MAX];
@@ -220,10 +228,17 @@ esp_err_t geo_locate(geo_fix_t *out)
             candidate.source_ts = (int64_t)clock_now();
             s_fix = candidate;
             s_have_fix = true;
+            s_last_error[0] = '\0';
             *out = candidate;
             return ESP_OK;
         }
-        ESP_LOGW(TAG, "locate: %s: %s (http %d)", p->id, esp_err_to_name(r), (int)status);
+        /* Kept for the command surface as well as the log: `geo_locate`'s return code
+         * cannot carry the difference between a DNS miss and a refused handshake, and
+         * those need different repairs. The last failed provider is the one worth
+         * naming - the chain stopped there. */
+        snprintf(s_last_error, sizeof s_last_error, "%s: %s (http %d)", p->id,
+                 esp_err_to_name(r), (int)status);
+        ESP_LOGW(TAG, "locate: %s", s_last_error);
         last = r;
     }
 
@@ -236,6 +251,11 @@ esp_err_t geo_locate(geo_fix_t *out)
      * will refuse again. */
     if (last == ESP_ERR_TIMEOUT) return ESP_ERR_TIMEOUT;
     return last == ESP_OK ? ESP_ERR_NOT_FOUND : last;
+}
+
+const char *geo_last_error(void)
+{
+    return s_last_error;
 }
 
 

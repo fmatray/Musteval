@@ -532,12 +532,20 @@ which `mqtt` assembles before raising a single `mqtt.message`; a payload past
 - `geo_locate(geo_fix_t *out)`: blocking. Returns `E_CONFIG` when
   `geo.enabled` is false, `E_GEO` when every provider fails, `E_TIMEOUT` on
   `geo.timeout_ms`.
+- `geo_last_error()`: the last failed provider and why, as
+  `"<id>: <esp_err_to_name> (http <status>)"`, or empty after a success. The return
+  code cannot distinguish a DNS miss from a refused handshake from a 500, and those
+  are three different repairs; this is the string the tool reports in its place of
+  "every provider failed".
 
 Flow:
 
 1. Return the cached fix when its age is under `geo.cache_ttl_s`.
-2. `esp_wifi_scan_start` (blocking), sort by RSSI, keep the
-   `geo.max_bssids` strongest.
+2. `esp_wifi_scan_start` (blocking) — **only when some `geo.providers[]` entry is a
+   `wifi_scan`** (`geo_chain_needs_scan`) — sort by RSSI, keep the `geo.max_bssids`
+   strongest. An `ip`-only chain skips the scan entirely: scanning in station mode
+   disturbs the link the request that follows needs, and the scan's 1.4 KiB of stack
+   buys a BSSID list nothing in the chain can send.
 3. Walk `geo.providers[]` in the order it was written, whichever `kind` each entry
    is. A `wifi_scan` entry is a `POST` of `[{bssid, rssi}]`; an `ip` entry is a `GET`
    with no key and no body, because such a provider reads the caller's address off

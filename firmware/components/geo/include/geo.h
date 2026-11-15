@@ -11,6 +11,10 @@
 
 #include "esp_err.h"
 
+/* The reported reason's ceiling, matching the per-provider tail the log already
+ * prints: "<id>: <esp_err_to_name> (http <status>)". */
+#define GEO_ERR_MAX 128
+
 /* `03-config.md` §geo bounds. */
 #define GEO_MAX_PROVIDERS 4
 #define GEO_CACHE_TTL_S_DEFAULT 900
@@ -61,6 +65,13 @@ bool geo_enabled(void);
  * `geo.timeout_ms` per provider. Board-only. */
 esp_err_t geo_locate(geo_fix_t *out);
 
+/* Why the last `geo_locate` failed, for the caller that has to explain it. Empty after
+ * a success, and never longer than `GEO_ERR_MAX` - 1. Without it a chain failure is
+ * reported as "every provider failed" whichever way it failed: a DNS miss, a refused
+ * TLS handshake and a provider that answered 500 are three different repairs, and the
+ * command surface cannot tell the reader which one to make. Board-only. */
+const char *geo_last_error(void);
+
 /* The cached fix, if one has been taken, for `04-protocol.md` §3.9's `geo` object.
  * Returns false before the first successful lookup, which is the JSON null §3.9
  * requires: an object of zeroes would report a real place in the Gulf of Guinea.
@@ -103,3 +114,9 @@ const geo_provider_t *geo_provider_at(const geo_provider_t *chain, size_t count,
  * connection, so the chain reports a failure that has nothing to do with the network.
  * Pure, so the verb is proven on the host and neither kind can drift. */
 bool geo_kind_posts(geo_kind_t kind);
+
+/* True when some entry in the chain needs a WiFi scan, i.e. carries `GEO_KIND_WIFI`.
+ * An `ip`-only chain must not scan: scanning in station mode disturbs the link the
+ * request needs, and the caller pays 1.4 KiB of stack for a list it cannot send. Pure,
+ * so the rule is asserted on the host rather than discovered as a connect failure. */
+bool geo_chain_needs_scan(const geo_provider_t *chain, size_t count);
