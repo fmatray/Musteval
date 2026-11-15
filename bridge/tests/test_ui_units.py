@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from bridge.ui import settings as settings_mod
+from bridge.ui import config as config_mod
 from bridge.ui.help import _summary, suggest
 from bridge.ui.history import PromptHistory
 from bridge.ui.onboard import Answers, verdict_model, verdict_network, verdict_provider
@@ -20,61 +20,61 @@ from bridge.ui.splash import _gradient
 from bridge.ui.testing import chat_lines
 
 
-# --- settings coercion (`03-config.md` §Full schema) ------------------------
+# --- config coercion (`03-config.md` §Full schema) --------------------------
 
 
 def test_a_bool_row_accepts_the_four_spellings_and_refuses_the_rest():
-    """`settings.py` takes `true/1/yes/on`, so a reader typing `True` or `yes` must
+    """`config.py` takes `true/1/yes/on`, so a reader typing `True` or `yes` must
     not be told their value is invalid."""
     row = _row("tools.allow_dangerous")
     for text in ("true", "1", "yes", "on", "TRUE"):
-        assert settings_mod.coerce(row, text) is True
+        assert config_mod.coerce(row, text) is True
     for text in ("false", "0", "no", "off"):
-        assert settings_mod.coerce(row, text) is False
+        assert config_mod.coerce(row, text) is False
     with pytest.raises(ValueError, match="expects true or false"):
-        settings_mod.coerce(row, "maybe")
+        config_mod.coerce(row, "maybe")
 
 
 def test_an_enum_row_is_checked_against_the_words_the_bound_cell_names():
     row = _row("device.log_level")
-    assert settings_mod.coerce(row, "debug") == "debug"
+    assert config_mod.coerce(row, "debug") == "debug"
     with pytest.raises(ValueError, match="expects one of"):
-        settings_mod.coerce(row, "verbose")
+        config_mod.coerce(row, "verbose")
 
 
 def test_a_list_row_splits_on_commas_and_an_empty_field_is_the_empty_list():
     """An emptied field is how a reader removes every host, so `""` must not become
     `[""]` — that would be a hostname no request can match."""
     ints = _row("wifi.retry_backoff_ms")
-    assert settings_mod.coerce(ints, "1000, 2000") == [1000, 2000]
-    assert settings_mod.coerce(ints, "") == []
+    assert config_mod.coerce(ints, "1000, 2000") == [1000, 2000]
+    assert config_mod.coerce(ints, "") == []
     with pytest.raises(ValueError, match="comma-separated integers"):
-        settings_mod.coerce(ints, "1000,soon")
+        config_mod.coerce(ints, "1000,soon")
 
     strings = _row("ntp.servers[]")
-    assert settings_mod.coerce(strings, "a.test, b.test") == ["a.test", "b.test"]
-    assert settings_mod.coerce(strings, "") == []
+    assert config_mod.coerce(strings, "a.test, b.test") == ["a.test", "b.test"]
+    assert config_mod.coerce(strings, "") == []
 
 
 def test_a_string_row_is_taken_verbatim_but_an_int_row_is_not():
     """A string may carry spaces (`agent.system_prompt` does not, but a name might);
     an int row must reject them rather than guess."""
-    assert settings_mod.coerce(_row("ntp.timezone"), "UTC0") == "UTC0"
-    assert settings_mod.coerce(_row("ntp.sync_interval_s"), " 3600 ") == 3600
+    assert config_mod.coerce(_row("ntp.timezone"), "UTC0") == "UTC0"
+    assert config_mod.coerce(_row("ntp.sync_interval_s"), " 3600 ") == 3600
     with pytest.raises(ValueError, match="expects an integer"):
-        settings_mod.coerce(_row("ntp.sync_interval_s"), "soon")
+        config_mod.coerce(_row("ntp.sync_interval_s"), "soon")
 
 
 def test_a_kind_the_table_has_no_row_for_is_an_error_not_a_silent_string():
     """A new kind added to the table without a branch here would otherwise store the
     raw text and let the device refuse it later, where the reader cannot see why."""
-    row = settings_mod.ConfigRow("made.up", "object", {}, "anything", "made")
+    row = config_mod.ConfigRow("made.up", "object", {}, "anything", "made")
     with pytest.raises(ValueError, match="unsupported kind 'object'"):
-        settings_mod.coerce(row, "whatever")
+        config_mod.coerce(row, "whatever")
 
 
-def _row(path: str) -> settings_mod.ConfigRow:
-    return next(candidate for candidate in settings_mod.ROWS if candidate.path == path)
+def _row(path: str) -> config_mod.ConfigRow:
+    return next(candidate for candidate in config_mod.ROWS if candidate.path == path)
 
 
 # --- help completion (`05` §5.6) --------------------------------------------

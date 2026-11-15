@@ -306,7 +306,7 @@ and routes each decoded frame to exactly one screen, per `05-bridge.md` §10.
 
 Three of its modules hold state a screen should not: `history.py` keeps the
 composer's prompt ring (bounded; persisted as NDJSON under the user config dir,
-which is the only I/O in the module), `settings.py` holds the `03-config.md`
+which is the only I/O in the module), `config.py` holds the `03-config.md`
 schema as rows — one per scalar or simple-list key — with `coerce` and
 `render_value` as the only two ways across the text/value boundary, and
 `logs.py` keeps the bounded log buffer, the tag/level `LogFilter` and the

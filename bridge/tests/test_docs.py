@@ -275,7 +275,7 @@ OBJECT_ARRAY_PREFIXES = ("wifi.networks[]", "llm.providers[]", "mcp.servers[]",
 
 def test_the_settings_rows_cover_exactly_the_editable_schema_rows():
     """`05` §5.7: a schema key with no row is a setting the user cannot reach."""
-    from bridge.ui.settings import ROWS
+    from bridge.ui.config import ROWS
 
     # Not `KEY_ALIASES`: that map turns one row's key into its per-entry bound
     # form for `BOUNDS`, it does not rename the schema path.

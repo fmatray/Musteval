@@ -451,8 +451,8 @@ classDiagram
       skip_model : bool
     }
   }
-  namespace ui_settings {
-    class ConfigRow["ConfigRow<br/>bridge/ui/settings.py:23"] {
+  namespace ui_config {
+    class ConfigRow["ConfigRow<br/>bridge/ui/config.py:23"] {
       <<dataclass(frozen=True)>>
       .. data ..
       path : str
@@ -616,7 +616,7 @@ classDiagram
 |`TaskPrompt`|`ui.modals.task`|[bridge/ui/task_prompt.py:19](../bridge/ui/task_prompt.py#L19)|
 |`Answers`|`ui.onboard`|[bridge/ui/onboard.py:72](../bridge/ui/onboard.py#L72)|
 |`SlashHighlighter`|`ui.render`|[bridge/ui/render.py:412](../bridge/ui/render.py#L412)|
-|`ConfigRow`|`ui.settings`|[bridge/ui/settings.py:23](../bridge/ui/settings.py#L23)|
+|`ConfigRow`|`ui.config`|[bridge/ui/config.py:23](../bridge/ui/config.py#L23)|
 |`ModalHost`|`ui.testing`|[bridge/ui/testing.py:17](../bridge/ui/testing.py#L17)|
 |`ModalCanvas`|`ui.testing`|[bridge/ui/testing.py:37](../bridge/ui/testing.py#L37)|
 

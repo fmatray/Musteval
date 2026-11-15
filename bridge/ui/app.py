@@ -55,7 +55,7 @@ from ..protocol import (
     sandbox_normalise,
     sandbox_parent,
 )
-from .settings import ROWS, coerce, flatten, lookup, render_value
+from .config import ROWS, coerce, flatten, lookup, render_value
 from .splash import SPLASH_SECONDS, pick_tip, render_splash
 from . import onboard
 from .render import (

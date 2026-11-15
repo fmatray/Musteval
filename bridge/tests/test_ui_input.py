@@ -22,7 +22,7 @@ from bridge.ui.history import MAX_ENTRIES, PromptHistory, history_path
 from bridge.ui.testing import chat_lines
 from bridge.ui.modals import ConfirmPrompt, FilterPrompt, ValuePrompt
 from bridge.ui.task_prompt import TaskPrompt
-from bridge.ui.settings import (
+from bridge.ui.config import (
     ROWS,
     coerce,
     flatten,
@@ -1332,13 +1332,13 @@ def test_an_int_list_rejects_a_word_among_the_numbers():
 
 
 def _range_of(row):
-    from bridge.ui.settings import _range
+    from bridge.ui.config import _range
 
     return _range(row.bound)
 
 
 def _tokens(row):
-    from bridge.ui.settings import _BACKTICKED, _INTEGER
+    from bridge.ui.config import _BACKTICKED, _INTEGER
 
     return [token for token in _BACKTICKED.findall(row.bound) if _INTEGER.fullmatch(token)]
 

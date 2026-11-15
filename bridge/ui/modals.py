@@ -363,7 +363,7 @@ class _StepBox(PromptBox[Any]):
     def _existing(current: dict[str, Any], path: str) -> object | None:
         """One config value by dotted path, from either shape `app.py` may hold.
 
-        `app.py` keeps the config flattened (`settings.flatten`), so a nested read
+        `app.py` keeps the config flattened (`config.flatten`), so a nested read
         finds nothing and every field opens empty. Both shapes are accepted because
         these screens are constructed directly in tests with a nested document.
         """
