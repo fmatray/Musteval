@@ -7,12 +7,16 @@ given a UI surface, or an example that no longer decodes.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
 
+from bridge.commands import LOCAL_COMMANDS, parse
 from bridge.protocol import DEVICE_TO_BRIDGE, Frame, ProtocolError, decode_line, encode
 from bridge.ui import app as ui
 
@@ -373,6 +377,74 @@ def test_the_binding_tables_match_the_screens_they_describe():
         cls = getattr(ui, SCREEN_CLASSES[screen])
         actual = {b.key[5:] for b in cls.BINDINGS if b.key.startswith("ctrl+")}
         assert actual == letters, f"{screen}: code {sorted(actual)}, doc {sorted(letters)}"
+
+
+# -- `05-bridge.md` §7 vs `bridge/commands.py` vs `bridge/ui/app.py` ------
+
+
+def _table_block(section: str) -> str:
+    """The first table of a section: its lines and nothing after them.
+
+    `_section` keeps sub-headings, and §7.1–§7.3 each open a table of their own.
+    """
+    block = []
+    for line in section.splitlines():
+        if line.startswith("|"):
+            block.append(line)
+        elif block:
+            break
+    return "\n".join(block)
+
+
+def _heads_of(func) -> set[str]:
+    """String constants `func` compares its `head` local against.
+
+    Derived from the source, not typed out: a hand-kept list is the thing that
+    goes stale when a verb is added (`AGENTS.md`, cross-doc invariant 3).
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    found = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)):
+            continue
+        if node.left.id != "head":
+            continue
+        for op, value in zip(node.ops, node.comparators):
+            if not isinstance(op, (ast.Eq, ast.In)):
+                continue
+            for item in value.elts if isinstance(value, ast.Tuple) else [value]:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    found.add(item.value)
+    return found
+
+
+def test_the_slash_command_table_matches_the_code_that_handles_it():
+    """`05` §7's table and the code are one fact said twice: a row with no handler
+    is a command that does nothing, and a head with no row is a command the user
+    cannot discover. All three dispatch sites are checked, not just `parse`: a
+    UI-only verb such as `/model` is never seen by `parse` at all."""
+    rows = _table_rows(_table_block(_section(_read("05-bridge.md"), "7. Slash Commands")))
+    assert len(rows) >= 30, f"§7's table has {len(rows)} rows"
+    documented = set()
+    for row in rows:
+        span = re.fullmatch(r"`(/[^`]+)`", row[0])
+        assert span, f"§7 row {row[0]!r} does not open with a slash command"
+        documented.add(span.group(1).split()[0].lstrip("/"))
+
+    sites = {
+        "parse": _heads_of(parse),
+        "LOCAL_COMMANDS": set(LOCAL_COMMANDS),
+        "_run_command": _heads_of(ui.BridgeApp._run_command),
+    }
+    assert all(sites.values()), f"a dispatch site yielded nothing: {sites}"
+    assert not documented - set().union(*sites.values()), (
+        f"05 §7 documents {sorted(documented - set().union(*sites.values()))} "
+        "with no handler"
+    )
+    for where, heads in sites.items():
+        assert not heads - documented, (
+            f"{where} dispatches {sorted(heads - documented)}, undocumented in 05 §7"
+        )
 
 
 # -- `02-firmware.md` §7.1 vs `docs/tools/*.md` vs the registry -------------
