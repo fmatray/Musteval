@@ -41,9 +41,11 @@ Returns a position fix: the cached one if it is still fresh, otherwise a new loo
 No arguments; the provider chain and all bounds come from config, so the model cannot
 widen a scan or pick a provider.
 
-Flow when the cache is cold: scan with `esp_wifi_scan_start`, sort by RSSI, keep the
-`geo.max_bssids` strongest, walk the chain, then cache and return the winner
-(`../02-firmware.md` §geo). The call is blocking and runs on the agent task, so a cold
+Flow when the cache is cold: when some `geo.providers[]` entry is a `wifi_scan`, scan
+with `esp_wifi_scan_start`, sort by RSSI and keep the `geo.max_bssids` strongest; an
+`ip`-only chain skips the scan entirely, because it has no use for the result and the
+scan disturbs the link the request needs (`geo_chain_needs_scan`,
+`../02-firmware.md` §geo). Then walk the chain, cache and return the winner. The call is blocking and runs on the agent task, so a cold
 lookup holds the agent loop for the duration of the chain (`../02-firmware.md` §3.3).
 
 **Time bounds.** `geo.timeout_ms` (default 5000) applies to **each provider attempt**,
