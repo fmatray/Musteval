@@ -1,7 +1,7 @@
 """`app.py`'s command dispatcher, its screen actions and its onboarding steps.
 
 `_run_command` is one long `if` chain and each arm is a different reader intention:
-`/files` normalises its path before the screen opens, `/diag` refetches rather than
+`/files` normalises its path before the screen opens, `/sys diag` refetches rather
 rendering the last grid, `/secret set` collects the value in a masked modal. Driving
 each arm through `submit` is what proves the screen the reader ends up on, and the
 `ChatScreen` actions are driven directly because a container binding only fires with
@@ -57,22 +57,36 @@ async def _until(pilot, predicate, rounds: int = 160) -> None:
 
 
 async def test_a_bare_command_opens_its_screen_and_a_sub_command_stays_in_chat():
-    """`05` §7: `/status` shows the grid, but a sub-command answers in chat — moving
+    """`05` §7: `/tasks` shows the tree, but a sub-command answers in chat — moving
     the reader to a screen that will not show the answer is the bug this prevents."""
 
     async def body(app, pilot):
-        app.submit("/status")
-        await _until(pilot, lambda: app.query_one("#status").display)
-        assert app.query_one("#status").display is True
         app.submit("/tasks")
         await _until(pilot, lambda: app.query_one("#tasks").display)
         assert app.query_one("#tasks").display is True
         app.submit("/mqtt")
         await _until(pilot, lambda: app.query_one("#mqtt").display)
         assert app.query_one("#mqtt").display is True
-        app.submit("/status now")
+        app.submit("/mqtt publish s1 t p")
         await _until(pilot, lambda: app.query_one("#chat").display)
         assert app.query_one("#chat").display is True
+
+    await _run(_device(), body)
+
+
+async def test_sys_status_opens_the_grid_and_sys_diag_stays_in_chat():
+    """`05` §7: the two verbs read one frame and differ in where the answer lands.
+    `/sys status` is the former `/status`, so it moves the reader; `/sys diag`
+    prints counters without taking the screen away."""
+
+    async def body(app, pilot):
+        app.submit("/sys diag")
+        await _await_chat(pilot, app, "heap")
+        assert app.query_one("#chat").display is True
+        assert app.query_one("#status").display is False
+        app.submit("/sys status")
+        await _until(pilot, lambda: app.query_one("#status").display)
+        assert app.query_one("#status").display is True
 
     await _run(_device(), body)
 
@@ -86,7 +100,7 @@ async def test_bare_config_and_config_edit_open_the_settings_screen():
         app.submit("/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
         assert app.query_one("#settings").display is True
-        app.submit("/status")
+        app.submit("/sys status")
         await _until(pilot, lambda: app.query_one("#status").display)
         app.submit("/config edit")
         await _until(pilot, lambda: app.query_one("#settings").display)
@@ -159,7 +173,7 @@ async def test_diag_refetches_rather_than_rendering_a_stale_grid():
 
     async def body(app, pilot):
         before = len([f for f in _frames(app) if f.get("name") == "status"])
-        app.submit("/diag")
+        app.submit("/sys diag")
         await _until(
             pilot,
             lambda: len([f for f in _frames(app) if f.get("name") == "status"]) > before,
@@ -263,12 +277,12 @@ async def test_tab_applies_the_listed_choice_without_sending_it():
         chat = app.query_one("#chat")
         field = chat.query_one("#chat-input")
         field.focus()
-        field.value = "/sta"
+        field.value = "/sy"
         await pilot.pause(0.1)
         before = len(_frames(app))
         chat.action_accept_completion()
         await pilot.pause(0.05)
-        assert field.value == "/status"
+        assert field.value == "/sys"
         assert len(_frames(app)) == before
 
     await _run(_device(), body)

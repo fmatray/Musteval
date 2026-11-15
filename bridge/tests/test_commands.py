@@ -26,7 +26,7 @@ def _ids():
 
 def test_every_produced_name_is_a_frozen_command():
     texts = [
-        "/status", "/reload", "/reboot", "/templates", "/template t1", "/geo",
+        "/sys status", "/sys reload", "/sys reboot", "/templates", "/template t1", "/geo",
         "/tasks", "/run t1", "/config get a.b", "/config set a.b c", "/mqtt",
         "/mqtt publish s1 t p", "/fs put /skills/a.md",
         "/sandbox", "/sandbox list /workspace/runs", "/sandbox read /workspace/a.txt",
@@ -39,15 +39,32 @@ def test_every_produced_name_is_a_frozen_command():
                 assert frame.body["name"] in COMMAND_NAMES
 
 
-def test_status_builds_a_status_command():
-    (frame,) = parse("/status")
+def test_sys_status_builds_a_status_command():
+    (frame,) = parse("/sys status")
     assert frame.type == "command"
     assert frame.body == {"name": "status", "args": {}}
 
 
-def test_reload_and_reboot():
-    assert parse("/reload")[0].body["name"] == "reload"
-    assert parse("/reboot")[0].body["name"] == "reboot"
+def test_sys_reload_and_reboot():
+    assert parse("/sys reload")[0].body["name"] == "reload"
+    assert parse("/sys reboot")[0].body["name"] == "reboot"
+
+
+def test_the_four_former_top_level_commands_are_gone():
+    """`05` §7: one head owns them now, so the old spellings are unknown commands."""
+    for text in ("/status", "/reload", "/reboot", "/diag"):
+        with pytest.raises(CommandError) as excinfo:
+            parse(text)
+        assert "unknown command" in str(excinfo.value)
+
+
+def test_a_sys_verb_that_is_not_a_verb_is_a_usage_error_naming_the_forms():
+    with pytest.raises(CommandError) as excinfo:
+        parse("/sys")
+    assert str(excinfo.value) == "usage: /sys status|diag|reload|reboot|reset-counter"
+    with pytest.raises(CommandError) as excinfo:
+        parse("/sys restart")
+    assert str(excinfo.value) == "usage: /sys status|diag|reload|reboot|reset-counter"
 
 
 def test_rejects_a_non_slash_line():
@@ -175,9 +192,9 @@ def test_an_mqtt_subcommand_that_is_not_publish_is_a_usage_error():
     assert str(excinfo.value) == "usage: /mqtt [publish <srv> <topic> <payload>]"
 
 
-def test_diag_is_an_alias_for_status():
-    """`05` §6.4 maps `/diag` onto `status`, so a screen has one source."""
-    (frame,) = parse("/diag")
+def test_sys_diag_is_an_alias_for_status():
+    """`05` §6.4 maps `/sys diag` onto `status`, so a screen has one source."""
+    (frame,) = parse("/sys diag")
     assert frame.body == {"name": "status", "args": {}}
 
 
@@ -447,7 +464,10 @@ def test_sys_reset_counter_builds_a_command():
     assert frame.body == {"name": "sys.reset_counter", "args": {}}
 
 def test_sys_reset_counter_rejects_bad_sub():
-    with pytest.raises(CommandError, match="usage: /sys reset-counter"):
+    """A verb outside the table names every form, rather than one of the five."""
+    with pytest.raises(
+        CommandError, match="usage: /sys status\\|diag\\|reload\\|reboot\\|reset-counter"
+    ):
         parse("/sys bogus")
 
 
@@ -465,13 +485,14 @@ def _refused(text, state=None) -> str:
 @pytest.mark.parametrize(
     "text,expected_usage",
     [
-        ("/status extra", "usage: /status"),
-        ("/reload extra", "usage: /reload"),
-        ("/reboot extra", "usage: /reboot"),
+        ("/sys status extra", "usage: /sys status"),
+        ("/sys diag extra", "usage: /sys diag"),
+        ("/sys reload extra", "usage: /sys reload"),
+        ("/sys reboot extra", "usage: /sys reboot"),
+        ("/sys reset-counter extra", "usage: /sys reset-counter"),
         ("/templates extra", "usage: /templates"),
         ("/geo extra", "usage: /geo"),
         ("/cancel extra", "usage: /cancel"),
-        ("/diag extra", "usage: /diag"),
         ("/retry extra", "usage: /retry"),
         ("/template morning junk", "usage: /template <name>"),
         ("/run t1 junk", "usage: /run <id>"),

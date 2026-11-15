@@ -58,7 +58,7 @@ async def test_clearing_the_input_empties_the_composer_and_the_candidates():
         chat = app.query_one("#chat", ChatScreen)
         field = chat.query_one("#chat-input")
         field.focus()
-        field.value = "/sta"
+        field.value = "/sy"
         await pilot.pause(0.1)
         assert chat._candidates
         before = len(_frames(app))
@@ -79,7 +79,7 @@ async def test_clearing_the_input_also_closes_the_candidate_list():
         chat = app.query_one("#chat", ChatScreen)
         field = chat.query_one("#chat-input")
         field.focus()
-        field.value = "/sta"
+        field.value = "/sy"
         await pilot.pause(0.1)
         assert chat._candidates
         chat.action_clear_input()
@@ -357,13 +357,13 @@ async def test_the_narrow_panel_drops_the_help_column_rather_than_wrapping():
         await pilot.pause(0.15)
         panel = chat.query_one("#completion")
         wide = str(panel.content)
-        assert "force a status refresh" in wide
+        assert "read the device, or reload, reboot" in wide
         panel.styles.width = 12
         await pilot.pause(0.2)
         chat._render_options()
         narrow = str(panel.content)
-        assert "force a status refresh" not in narrow
-        assert "/status" in narrow, "the row itself is what must survive"
+        assert "read the device, or reload, reboot" not in narrow
+        assert "/sys" in narrow, "the row itself is what must survive"
 
     await _run(_device(), body)
 

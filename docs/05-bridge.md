@@ -201,7 +201,7 @@ The primary interaction pane.
     three tries to come up is about to take three tries again. All of it comes
     from the last `status` the bridge holds; none of it costs a frame.
   - The bar is redrawn when a fact changes: `hello_ack`, a `status` frame, the
-    `status` command's own reply (a `/status` is a command, not a push, and a bar
+    `status` command's own reply (a `/sys status` is a command, not a push, and a bar
     that ignored it would stay empty until the device volunteered one), a usage
     frame, a link-state transition (a drop emits no frame of its own), every
     applied `config.set`, mount and a resize. The `config.set` case is its own
@@ -281,7 +281,7 @@ by; a blank line is not, because the pane has those inside a message too.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.2 Status Screen (`/status`, F3)
+### 5.2 Status Screen (`/sys status`, F3)
 Displays real-time device health.
 
 - **Source**: `status` message (periodic or commanded).
@@ -421,10 +421,9 @@ The modal itself, over whatever screen was open:
 | Help  Device | Chat | Info | Screens                         |
 +--------------------------------------------------------------+
 | Device commands                                              |
-|   /status                                                    |
-|       force a status refresh                                 |
-|   /sys reset-counter                                         |
-|       clear the boot-failure counter                         |
+|   /sys status|diag|reload|reboot|reset-counter               |
+|       read the device, or reload, reboot and clear its       |
+|       failure counter                                        |
 +--------------------------------------------------------------+
 ```
 
@@ -736,9 +735,11 @@ alphabetical table, for looking a command up by name rather than by kind.
 
 | Command | Protocol Mapping | Args | Note |
 |---|---|---|---|
-| `/status` | `command {name:"status"}` | none | Forces status refresh; also switches to the Status screen |
-| `/reload` | `command {name:"reload"}` | none | Re-reads flash configs |
-| `/reboot` | `command {name:"reboot"}` | none | Restarts device |
+| `/sys status` | `command {name:"status"}` | none | Forces status refresh; also switches to the Status screen |
+| `/sys reload` | `command {name:"reload"}` | none | Re-reads flash configs |
+| `/sys reboot` | `command {name:"reboot"}` | none | Restarts device |
+| `/sys reset-counter` | `command {name:"sys.reset_counter"}` | none | Clears the boot-failure counter |
+| `/sys diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only, and it stays in chat rather than opening the screen; the frame it reuses is `status` |
 | `/tasks` | `command {name:"tasks.list"}` | none | Lists tasks in chat; also switches to the Tasks screen |
 | `/run <id>` | `command {name:"tasks.run"}` | `id` | Runs a task now; confirms in chat with the `run_id` that `/cancel` and the status screen name |
 | `/tasks add` | `command {name:"tasks.set"}` | `task` | Opens a blank task modal, then sends it |
@@ -758,7 +759,6 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/sandbox mkdir <p>` | `command {name:"sandbox.mkdir"}` | `path` | Creates one directory; refuses outside sandbox before sending |
 | `/sandbox move <f> <t>` | `command {name:"sandbox.move"}` | `from, to` | Renames or relocates a file or directory |
 | `/sandbox delete <p> [-r]` | `command {name:"sandbox.delete"}` | `path, recursive?` | Deletes one entry; recursive removes populated directories |
-| `/sys reset-counter` | `command {name:"sys.reset_counter"}` | none | Clears the boot-failure counter |
 | `/wifi scan` | `command {name:"wifi.scan"}` | none | Lists the access points the radio can hear, strongest first. The scan holds the radio, so a run in flight answers `E_BUSY` rather than steering the station mid-run |
 | `/wifi status` | `command {name:"wifi.status"}` | none | Reads the station's state, SSID, RSSI and IP without touching it. Busy-safe, so it answers during a run |
 | `/wifi connect` | `command {name:"wifi.connect"}` | none | Joins the best configured network, as the boot sequence does; the join runs on its own task, so the prompt stays responsive while it waits |
@@ -774,7 +774,6 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
 | `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |
-| `/diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only; the frame it reuses is `status` |
 | `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
 | `/model [name]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `name` | Sets the model of `llm.providers[0]`. With no argument it opens a picker of the provider's published models, pre-filled with the stored one and accepting a typed name instead; with one it writes that name directly. The write is the whole `llm.providers` array, so the rest of the entry moves untouched (§7.3) |
 | `/cancel` | `cancel` | none | Cancels current run |
@@ -792,8 +791,10 @@ Commands marked `(Local)` render from state the bridge already holds from
 its whole purpose is to send the frames in its mapping. The five rows that are
 neither `command` nor `(Local)` send the frame named in their mapping instead:
 `/secret set` sends `secret.set`, `/retry` sends `prompt`, `/ping device` sends
-`ping` while `/ping router|llm|ntp` sends `net.ping`, `/diag` sends `status`, and
-`/cancel` sends `cancel`.
+`ping` while `/ping router|llm|ntp` sends `net.ping`, and `/cancel` sends `cancel`.
+`/sys diag` and `/sys status` are `command` rows because both send `status`; they
+differ in what the bridge does with the reply, which is why the verb is not
+collapsed into the frame name.
 
 `/onboard`'s writes are whole-value sets rather than per-leaf paths:
 `config.set` with path `wifi.networks.0.ssid` assumes index 0 exists, and `04` §4.9
@@ -1080,7 +1081,7 @@ as the MCP tool names (`04-protocol.md` §3.2). Declarative tools are therefore
 discoverable in v1: `weather_now` and `web_search` appear in that list when their
 files parsed. What stays unavailable is the *file* view — no frame carries the
 `/tools/` directory listing, so the bridge can name each declarative tool but cannot
-show its schema, description or which file defined it. `/reload` reports `tools` in
+show its schema, description or which file defined it. `/sys reload` reports `tools` in
 `reloaded[]` when the directory parsed, without naming them. Showing schemas needs a
 `tools.list` command, which v1 does not have.
 

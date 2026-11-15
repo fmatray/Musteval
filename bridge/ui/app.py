@@ -1953,8 +1953,11 @@ class BridgeApp(App):
         # `05-bridge.md` §7: the bare form opens its screen; a sub-command such as
         # `/mqtt publish` answers in chat, so it lands there rather than moving
         # the reader to a screen that will not show the answer.
-        if head in ("status", "tasks", "mqtt"):
+        if head in ("tasks", "mqtt"):
             self.action_show(head if len(words) == 1 else "chat")
+        if head == "sys" and words[1:2] == ["status"]:
+            # `/sys status` is the former `/status`: refresh and show the screen.
+            self.action_show("status")
         if head == "config" and words[1:2] in ([], ["edit"]):
             # `05` §5.7: `/config` and `/config edit` open the settings screen; `get`
             # and `set` stay device frames. A surplus word is named rather than
@@ -1988,14 +1991,15 @@ class BridgeApp(App):
         if head == "thinking":
             await self._thinking(words[1:])
             return
-        if head == "diag":
+        if head == "sys" and words[1:2] == ["diag"]:
             # `05-bridge.md` §7: reuses the `status` frame, renders only the
             # diagnostic half, so the chat gets fresh counters rather than the
-            # last screen refresh.
+            # last screen refresh. It stays in chat rather than moving the reader
+            # to the screen, which is what the verb asks for.
             if await self._request("status") is None:
                 # `_request` already said why. Rendering the cached `status` here
                 # would print last refresh's counters under a comment promising
-                # fresh ones, and would read as the answer to `/diag`.
+                # fresh ones, and would read as the answer to `/sys diag`.
                 return
             self._chat().write("\n".join(render_diag(self._last_status)))
             return

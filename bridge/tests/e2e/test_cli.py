@@ -37,7 +37,7 @@ def agent():
 
 
 def test_send_status_prints_the_status_object(agent, capsys):
-    code = main(["--target", "test", "--port", agent.port, "--send", "/status"])
+    code = main(["--target", "test", "--port", agent.port, "--send", "/sys status"])
     out = capsys.readouterr().out
     assert code == 0
     assert "'boot_id': '00000001'" in out
@@ -65,7 +65,7 @@ def test_wrong_token_is_refused_before_any_command(capsys):
     strict = Agent("--token", "sekrit")
     try:
         code = main(["--target", "test", "--port", strict.port,
-                     "--token", "wrong", "--send", "/status"])
+                     "--token", "wrong", "--send", "/sys status"])
     finally:
         strict.stop()
     captured = capsys.readouterr()
@@ -80,7 +80,7 @@ def test_json_switch_writes_redacted_frames(agent, tmp_path):
         [
             "--target", "test", "--port", agent.port,
             "--json", "--log-file", str(log),
-            "--send", "/status",
+            "--send", "/sys status",
         ]
     )
     assert code == 0
@@ -114,7 +114,7 @@ def test_json_logging_writes_every_frame_to_the_named_file(agent, tmp_path, caps
     file must hold the frames rather than being created empty."""
     log = tmp_path / "frames.ndjson"
     assert main(["--target", "test", "--port", agent.port, "--json", "--log-file", str(log),
-                 "--send", "/status"]) == 0
+                 "--send", "/sys status"]) == 0
     lines = [line for line in log.read_text().splitlines() if line.strip()]
     assert any('"hello"' in line for line in lines)
     assert any('"status"' in line or '"command_result"' in line for line in lines)
@@ -140,8 +140,13 @@ def test_no_device_is_a_usage_error_not_a_traceback(monkeypatch, capsys):
 
 
 def test_a_usage_error_in_a_slash_command_exits_two(agent, capsys):
-    """`05` §6: a malformed command is the reader's mistake, so it is `2`, not `1`."""
-    code = main(["--target", "test", "--port", agent.port, "--send", "/config"])
+    """`05` §6: a malformed command is the reader's mistake, so it is `2`, not `1`.
+
+    The verb is what makes it malformed: `/sys` is a real head with a closed verb set,
+    so a word outside it is refused here rather than sent as a name the device has
+    never heard of.
+    """
+    code = main(["--target", "test", "--port", agent.port, "--send", "/sys zzz"])
     assert code == 2
     assert "usage" in capsys.readouterr().err.lower()
 
@@ -162,7 +167,7 @@ def test_a_fire_and_forget_command_does_not_wait_for_a_reply(agent, capsys):
 def test_two_sends_run_in_sequence(agent, capsys):
     """A `--send` may be repeated: each one runs after the previous reply."""
     code = main(
-        ["--target", "test", "--port", agent.port, "--send", "/status", "--send", "hi"]
+        ["--target", "test", "--port", agent.port, "--send", "/sys status", "--send", "hi"]
     )
     out = capsys.readouterr().out
     assert code == 0
@@ -188,7 +193,7 @@ def test_a_connect_timeout_is_reported_as_not_connected(monkeypatch, capsys):
         "bridge.__main__.SerialTransport", lambda *a, **k: FakeTransport(on_write=silent)
     )
     monkeypatch.setattr("bridge.__main__.check_target", lambda *a: None)
-    assert main(["--target", "test", "--port", "/dev/irrelevant", "--send", "/status"]) == 1
+    assert main(["--target", "test", "--port", "/dev/irrelevant", "--send", "/sys status"]) == 1
     assert "not connected" in capsys.readouterr().err
 
 

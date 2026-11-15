@@ -28,7 +28,6 @@ Column meanings:
 | `/config get <path>` | `path` | `config.get` | Dumps one value |
 | `/config set <path> <value>` | `path`, then the value as the rest of the line | `config.set` | Writes one value |
 | `/context` | none | (Local) | Last `input_bytes` and observed token totals |
-| `/diag` | none | `status` | Renders the diagnostic half of a fresh `status` |
 | `/export` | none | (Local) | Names the `bridge-export-<ts>.md` file it wrote |
 | `/files [<path>]` | optional sandbox `path`, `/workspace/` by default | (Local) | Opens the Files screen; the screen then sends `sandbox.list` |
 | `/fs put <path>` | `path` inside the import allowlist | `fs.put` | Prompts for a local file, uploads it in 2 KiB chunks |
@@ -46,8 +45,6 @@ Column meanings:
 | `/ping ntp` | `ntp` | `net.ping` | The device ICMPs its first NTP server |
 | `/ping router` | `router` | `net.ping` | The device ICMPs its default gateway |
 | `/quit` | none | (Local) | Exits the bridge |
-| `/reboot` | none | `reboot` | Restarts the device |
-| `/reload` | none | `reload` | Re-reads the flash configs |
 | `/retry` | none | `prompt` | Resends the last prompt verbatim; refused when there is none |
 | `/run <id>` | task `id` | `tasks.run` | Runs a task now and names the `run_id` |
 | `/sandbox` | none | `sandbox.list` | Lists the sandbox root, `/workspace/` |
@@ -57,8 +54,11 @@ Column meanings:
 | `/sandbox move <from> <to>` | `from`, `to` | `sandbox.move` | Renames or relocates |
 | `/sandbox read <path>` | `path` | `sandbox.read` | Prints one file; a file is written from the Files screen, never from chat |
 | `/secret set <key>` | `key` | `secret.set` | Value is prompted, masked, and never echoed |
-| `/status` | none | `status` | Forces a refresh and switches to the Status screen |
+| `/sys diag` | `diag` | `status` | Renders the diagnostic half of a fresh `status`, in chat |
+| `/sys reboot` | `reboot` | `reboot` | Restarts the device |
+| `/sys reload` | `reload` | `reload` | Re-reads the flash configs |
 | `/sys reset-counter` | `reset-counter` | `sys.reset_counter` | Clears the boot-failure counter |
+| `/sys status` | `status` | `status` | Forces a refresh and switches to the Status screen |
 | `/tasks` | none | `tasks.list` | Lists tasks and switches to the Tasks screen |
 | `/tasks add` | none taken from the line | (none) | Refused with `a task body must be supplied (add opens a modal)`; a new task is authored with `Ctrl+N` on the Tasks screen |
 | `/tasks delete <id>` | task `id` | `tasks.delete` | Confirms first; the one irreversible command |

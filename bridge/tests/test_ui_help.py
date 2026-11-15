@@ -40,7 +40,7 @@ from .test_ui import _reply
 
 def test_every_device_command_is_documented():
     documented = {command.name for command in COMMANDS if not command.local}
-    for name in ("status", "reload", "reboot", "tasks", "run", "config", "secret",
+    for name in ("sys", "tasks", "run", "config", "secret",
                  "templates", "template", "mqtt", "geo", "todo", "fs", "retry", "ping",
                  "cancel", "model"):
         assert name in documented, name
@@ -51,27 +51,37 @@ def test_every_local_command_is_documented():
     assert documented == set(LOCAL_COMMANDS)
 
 
-def test_diag_is_a_device_command_not_a_local_one():
-    """`05` §7 maps `/diag` to the `status` frame, so it costs one round trip."""
-    diag = next(command for command in COMMANDS if command.name == "diag")
-    assert diag.local is False
-    assert "diag" not in LOCAL_COMMANDS
+def test_sys_is_a_device_command_covering_both_frame_shapes():
+    """`05` §7 gives `/sys` every former top-level head, `diag` included, so the
+    whole family is one row and none of its verbs is local."""
+    sys_command = next(command for command in COMMANDS if command.name == "sys")
+    assert sys_command.local is False
+    assert "sys" not in LOCAL_COMMANDS
+    for verb in ("status", "diag", "reload", "reboot"):
+        assert verb not in LOCAL_COMMANDS
 
 
 def test_help_text_lists_every_head():
+    """A row is a line whose first cell is the head. Substring matching would pass on
+    `/tool` because `/tools` contains it, so the row itself is what is checked."""
+    heads = {
+        line.split()[0]
+        for line in HELP_TEXT.splitlines()
+        if line.startswith("  /")
+    }
     for command in COMMANDS:
-        assert command.name in HELP_TEXT, command.name
+        assert f"/{command.name}" in heads, command.name
     assert len(HELP_TEXT.splitlines()) > len(COMMANDS)
 
 
-async def test_diag_requests_status_and_renders_the_counters():
-    """`/diag` reuses the `status` frame but prints only the diagnostic half."""
+async def test_sys_diag_requests_status_and_renders_the_counters():
+    """`/sys diag` reuses the `status` frame but prints only the diagnostic half."""
     transport = FakeTransport(on_write=_reply)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _app(pilot)
-        app.submit("/diag")
+        app.submit("/sys diag")
         for _ in range(60):
             if "safe_mode" in _log(app):
                 break
@@ -95,7 +105,7 @@ def test_help_fits_an_eighty_column_terminal():
 @pytest.mark.parametrize(
     ("typed", "expected"),
     [
-        ("/sta", "/status"),
+        ("/sy", "/sys"),
         ("/temp", "/template"),
         ("/config g", "/config get"),
         ("/config s", "/config set"),
@@ -111,7 +121,7 @@ def test_suggest_completes_a_unique_prefix(typed, expected):
     assert suggest(typed) == expected
 
 
-@pytest.mark.parametrize("typed", ["", "hello", "/", "/zzz", "/t", "/status", "/status ", "/tasks "])
+@pytest.mark.parametrize("typed", ["", "hello", "/", "/zzz", "/t", "/sys", "/sys ", "/tasks "])
 def test_suggest_declines_what_it_cannot_complete(typed):
     assert suggest(typed) is None
 
@@ -128,7 +138,7 @@ def test_options_lists_every_command_for_a_bare_slash():
 @pytest.mark.parametrize(
     ("typed", "expected"),
     [
-        ("/st", ["/status"]),
+        ("/sy", ["/sys"]),
         ("/tasks ad", ["/tasks add"]),
         ("/ping r", ["/ping router"]),
         ("/ping ", ["/ping device", "/ping router", "/ping llm", "/ping ntp"]),
@@ -138,10 +148,32 @@ def test_options_filters_a_unique_prefix(typed, expected):
     assert [candidate.text for candidate in options(typed)] == expected
 
 
+def test_sys_usage_names_every_verb():
+    """`05-bridge.md` §7: the five verbs are the whole surface of `/sys`."""
+    sys_command = next(command for command in COMMANDS if command.name == "sys")
+    assert sys_command.usage == "/sys status|diag|reload|reboot|reset-counter"
+
+
+def test_every_sys_verb_has_its_own_line():
+    rows = {candidate.text: candidate.help for candidate in options("/sys ")}
+    assert list(rows) == [
+        "/sys status", "/sys diag", "/sys reload", "/sys reboot", "/sys reset-counter"
+    ]
+    assert all(rows.values()), rows
+
+
 def test_ping_usage_names_every_target():
     """`05-bridge.md` §7: the four targets are the whole surface of `/ping`."""
     ping = next(command for command in COMMANDS if command.name == "ping")
     assert ping.usage == "/ping device|router|llm|ntp"
+
+
+def test_a_head_with_no_subcommands_offers_nothing_after_a_space():
+    """`05` §5.1: the list answers "which form does what" only where forms exist.
+    Falling back to the head's summary would offer `/clear clear the pane as the
+    thing to type, which is not a form the parser accepts."""
+    assert options("/clear ") == []
+    assert options("/clear x") == []
 
 
 def test_options_keeps_an_exact_match():
@@ -166,7 +198,7 @@ def test_options_filters_a_partial_subcommand():
     assert [candidate.text for candidate in options("/config s")] == ["/config set"]
 
 
-@pytest.mark.parametrize("typed", ["hello", "/zzz", "/status ", "/tasks zz"])
+@pytest.mark.parametrize("typed", ["hello", "/zzz", "/sys status ", "/tasks zz"])
 def test_options_declines_what_it_cannot_complete(typed):
     assert options(typed) == []
 

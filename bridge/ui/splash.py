@@ -59,7 +59,7 @@ TIPS: tuple[str, ...] = (
     "/config edit lists every scalar in config.json without a dotted path",
     "/secret set api_key prompts masked and stores the value in NVS, never in a file",
     "/tasks add schedules a recurring prompt that runs on the device, not here",
-    "F3 shows the last status frame; /status forces a fresh one",
+    "F3 shows the last status frame; /sys status forces a fresh one",
     "Ctrl+R reconnects without restarting the bridge",
     "/files browses the agent sandbox, and /fs put uploads a local file to userfs",
     "/usage totals tokens for this link session, /context shows what is in the window",

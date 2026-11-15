@@ -287,7 +287,7 @@ that state as an argument; the module stores nothing, so a stale cache produces
 a frame that re-creates the task, as specified in `05-bridge.md` §7.
 
 **`(Local)` commands are not here,** and that is deliberate. `05-bridge.md` §7 marks
-seven rows `(Local)`, plus `/diag` which reuses the `status` frame for local
+seven rows `(Local)`, plus `/sys diag`, which reuses the `status` frame for local
 rendering: each renders state the bridge already received
 (`hello_ack`, `status`, `agent.final`) and sends no frame. A pure function that
 imported only `protocol` could not produce the text they show, so filing them here
@@ -411,7 +411,7 @@ would be an L2 import of an L3 package — the first illegal edge.
 | `protocol` + `link` + `client` | Full headless client: handshake, ping-pong, correlation, reconnect | A test harness, a CLI, a CI smoke test against hardware |
 
 `commands.py` travels with every row: it is pure and imports only `protocol`, so a
-headless tool can reuse slash-command parsing to turn `/status` into a `command`
+headless tool can reuse slash-command parsing to turn `/sys status` into a `command`
 frame without importing a widget.
 
 What **cannot** be lifted is `bridge/ui/`. It is Textual-shaped by definition:

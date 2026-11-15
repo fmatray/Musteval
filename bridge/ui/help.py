@@ -41,19 +41,22 @@ class CommandHelp:
 #: vanishing from the modal.
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Device": (
-        "status", "reload", "reboot", "tasks", "run", "config", "secret",
-        "templates", "template", "mqtt", "geo", "wifi", "todo", "fs", "sandbox", "sys",
+        "sys", "tasks", "run", "config", "secret",
+        "templates", "template", "mqtt", "geo", "wifi", "todo", "fs", "sandbox",
     ),
-    "Chat": ("retry", "ping", "cancel", "clear", "diag", "thinking", "model", "export"),
+    "Chat": ("retry", "ping", "cancel", "clear", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context"),
     "Screens": ("onboard", "files", "logs", "help", "quit"),
 }
 
 #: `05-bridge.md` §7, device commands first, then local ones.
 COMMANDS: tuple[CommandHelp, ...] = (
-    CommandHelp("status", "/status", "force a status refresh", False),
-    CommandHelp("reload", "/reload", "re-read the flash configs", False),
-    CommandHelp("reboot", "/reboot", "restart the device", False),
+    CommandHelp(
+        "sys",
+        "/sys status|diag|reload|reboot|reset-counter",
+        "read the device, or reload, reboot and clear its failure counter",
+        False,
+    ),
     CommandHelp(
         "tasks",
         "/tasks | /tasks add | /tasks set <id> | /tasks enable <id>"
@@ -92,12 +95,6 @@ COMMANDS: tuple[CommandHelp, ...] = (
         "browse and edit the agent sandbox from chat",
         False,
     ),
-    CommandHelp(
-        "sys",
-        "/sys reset-counter",
-        "clear the boot-failure counter",
-        False,
-    ),
     CommandHelp("retry", "/retry", "resend the last prompt", False),
     CommandHelp(
         "ping",
@@ -121,7 +118,6 @@ COMMANDS: tuple[CommandHelp, ...] = (
     ),
     CommandHelp("wifi", "/wifi scan|status|connect|disconnect|reconnect",
                 "scan the radio, or read and steer the station", False),
-    CommandHelp("diag", "/diag", "render the diagnostic half of status", False),
     CommandHelp("tools", "/tools", "list built-in and MCP tools", True),
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),
     CommandHelp("usage", "/usage", "token totals for this link session", True),
@@ -142,7 +138,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "mqtt": ("publish",),
     "fs": ("put",),
     "sandbox": ("list", "read", "mkdir", "move", "delete"),
-    "sys": ("reset-counter",),
+    "sys": ("status", "diag", "reload", "reboot", "reset-counter"),
     "secret": ("set",),
     "ping": ("device", "router", "llm", "ntp"),
     "wifi": ("scan", "status", "connect", "disconnect", "reconnect"),
@@ -177,7 +173,13 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "move": "move or rename a path",
         "delete": "remove a path",
     },
-    "sys": {"reset-counter": "clear the boot-failure counter"},
+    "sys": {
+        "status": "force a status refresh and show the screen",
+        "diag": "render the diagnostic half of status",
+        "reload": "re-read the flash configs",
+        "reboot": "restart the device",
+        "reset-counter": "clear the boot-failure counter",
+    },
     "secret": {"set": "store a secret, prompted and masked"},
     "ping": {
         "device": "ping the link itself",

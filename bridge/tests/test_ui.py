@@ -736,9 +736,9 @@ async def test_the_prompt_bar_is_visible_and_refreshes_with_the_status():
         assert first.startswith("linked")
         assert "test-agent" in first
 
-        # A status arriving changes the bar without any keystroke: `/status` is
+        # A status arriving changes the bar without any keystroke: `/sys status` is
         # an ordinary command and its reply is what feeds the bar.
-        app.submit("/status")
+        app.submit("/sys status")
         await pilot.pause(0.3)
         after = app.query_one("#chat").bar_line
         assert "openai/gpt" in after and "-55dBm" in after

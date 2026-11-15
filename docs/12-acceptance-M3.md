@@ -15,7 +15,7 @@ present (`.venv/bin/python`). Commands are shown exactly as typed.
 
 ## Preconditions
 
-- [X] `bin/bridge --send /status` prints a JSON object. If it does not, the board
+- [X] `bin/bridge --send "/sys status"` prints a JSON object. If it does not, the board
       is not on the link and nothing below will work.
 
 Read its `boot_id`: the reboot below changes it, so it is how you tell a fresh boot
@@ -26,7 +26,7 @@ reboots trips safe mode on the fourth boot. Before every reboot below, clear it:
 - [X] `bin/bridge --send "/sys reset-counter"` answers `{"previous":N,"reset":"boot_failures","safe_mode":false}`.
 
 Safe mode skips the radio, the clock and the model, so a boot in that state proves
-nothing about M3. If `/status` shows `sys.safe_mode: true`, run the command above
+nothing about M3. If `/sys status` shows `sys.safe_mode: true`, run the command above
 and reboot before continuing.
 
 ## M3.1 WiFi association and the `E_WIFI` path
@@ -35,7 +35,7 @@ The board's `wifi.networks[0]` names an SSID this host cannot serve, so the
 expected outcome is a named refusal, not a connection. That is the half of the
 criterion a reader without a hotspot can still prove.
 
-- [X] `bin/bridge --send /status` shows `wifi.state: failed`, `wifi.ssid: null`,
+- [X] `bin/bridge --send "/sys status"` shows `wifi.state: failed`, `wifi.ssid: null`,
       `wifi.ip: null` and `wifi.failovers: 1`.
 
 One refused network reports `failovers: 1`, the number of entries tried. With a
@@ -47,7 +47,7 @@ while the device boots: `link_start` runs after the log hook is installed, so
 frames emitted before the handshake are not replayed.
 
 - [X] `bin/bridge`, dismiss the splash with `Esc`, `F2` for Chat.
-- [X] In the chat bar, type `/sys reset-counter` and press Enter, then `/reboot`
+- [X] In the chat bar, type `/sys reset-counter` and press Enter, then `/sys reboot`
       and press Enter. Logs (`F5`) gains the lines below, in this order. `F5`
       follows the tail, so they appear within a second of the device restarting.
 
@@ -63,7 +63,7 @@ one that can drive the port.
 | `warn` | `musteval` | `boot stops before the scheduler: counter stays at N` |
 
 `N` is `sys.boot_failures` after this boot, so it reads `1` when you ran the reset
-just before. It is the same number `/status` reports, and it is the one that reaches
+just before. It is the same number `/sys status` reports, and it is the one that reaches
 the safe-mode threshold. The `net` tag is the module; the `musteval` lines are the
 boot sequence deciding what to do about it. `E_WIFI` appears in both because
 `ESP_ERR_INVALID_STATE` would read as a programming error rather than "no network"
@@ -97,13 +97,13 @@ last entry"). The association itself needs an access point; this host has none.
 
 ## M3.2 Clock sync and `time.now`
 
-- [X] `bin/bridge --send /status` shows `time.synced: false` and `time.tz: UTC0`
+- [X] `bin/bridge --send "/sys status"` shows `time.synced: false` and `time.tz: UTC0`
       while `wifi.state` is `failed`.
 
 `time.tz` is `UTC0` rather than `UTC`: `UTC` is a zone name the C library may not
 know, and `UTC0` is always a valid POSIX string (`03-config.md` §ntp).
 
-- [X] `bin/bridge --send /status` twice, a minute apart. `time.unix` grows by
+- [X] `bin/bridge --send "/sys status"` twice, a minute apart. `time.unix` grows by
       roughly the elapsed seconds and stays far below the current epoch.
 
 An unsynced board reports the RTC's own count, not wall time. The field has the
@@ -141,7 +141,7 @@ this host cannot provide. With credentials this becomes: associate, wait for
 
 ## M3.3 The LLM status shape
 
-- [X] `bin/bridge --send /status` shows `llm.limit_hour: 100` and
+- [X] `bin/bridge --send "/sys status"` shows `llm.limit_hour: 100` and
       `llm.limit_day: 1000` on a board whose `/config.json` has no `llm` limits.
 
 Those are the compiled defaults, which is the observable half of "the budget is
@@ -150,7 +150,7 @@ enforced": the numbers the module will charge against are visible before any cal
 they describe the last **successful** call, not the configured chain. A device that
 has never answered a call reports `null`, and that is not a fault.
 
-- [X] `bin/bridge --send /status` keeps `llm.calls_hour: 0` and
+- [X] `bin/bridge --send "/sys status"` keeps `llm.calls_hour: 0` and
       `llm.calls_day: 0`. Nothing charges the budget until a call is attempted.
 
 ### Gap: prompt → `agent.start` → `agent.final`
@@ -188,7 +188,7 @@ failed. It has no hand-run route today, which is why it is here rather than abov
 `llm.max_calls_per_hour` is read by `llm_init`, which runs once at boot. A
 `config.set` of that path answers `requires_reboot: false`, so the bridge prints
 `llm.max_calls_per_hour applied` and the reader is told the new value is live. It
-is not: `/status` keeps reporting `llm.limit_hour: 100` until the device reboots.
+is not: `/sys status` keeps reporting `llm.limit_hour: 100` until the device reboots.
 
 The board's `/config.json` has no `llm.max_calls_per_hour`, and a typed set cannot
 create one, so the defect cannot be reached from the bridge at all:
@@ -198,7 +198,7 @@ create one, so the defect cannot be reached from the bridge at all:
 
 The staleness was measured by driving the session directly, with the whole `llm`
 object rather than a leaf: `{"applied":true,"path":"llm","requires_reboot":false}`,
-then `/status` still `limit_hour: 100`, then `limit_hour: 2` after a reboot.
+then `/sys status` still `limit_hour: 100`, then `limit_hour: 2` after a reboot.
 
 `04-protocol.md` §4.9 says `false` for `requires_reboot` means the new value is
 active immediately, and the comment in `handle_config_set` names `wifi.*` and
@@ -206,7 +206,7 @@ active immediately, and the comment in `handle_config_set` names `wifi.*` and
 list and is not in it.
 
 Until that is fixed, treat a `config.set` of any M3 key as needing a reboot and
-verify with `/status` rather than trusting the reply.
+verify with `/sys status` rather than trusting the reply.
 
 ## Host suite
 
@@ -231,7 +231,7 @@ failing or an HTTP response arriving: those need the board and a network.
 - Do not reboot more than three times without `bin/bridge --send "/sys reset-counter"`.
   The fourth boot enters safe mode and skips the radio, the clock and the model, so
   every M3 check above then reads as "not configured" rather than "not working".
-  `bin/bridge --send /reload` also clears the counter.
+  `bin/bridge --send "/sys reload"` also clears the counter.
 - Do not read `status.llm.provider: null` as "no provider configured". It reports
   the last successful call, and no call can succeed before M4. Use `config.get llm`
   to see the chain.

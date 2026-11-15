@@ -81,7 +81,7 @@ def _row(path: str) -> config_mod.ConfigRow:
 
 
 def test_a_command_completes_to_its_whole_name():
-    assert suggest("/sta") == "/status"
+    assert suggest("/sy") == "/sys"
     assert suggest("/") is None  # every name shares no useful prefix beyond `/`
 
 
@@ -93,13 +93,13 @@ def test_a_sub_command_completes_inside_its_own_verb():
 def test_a_finished_word_and_an_unknown_verb_get_no_suggestion():
     """A trailing space means the word is done; suggesting it again would make the
     completion list flicker on every keystroke of an argument."""
-    assert suggest("/status ") is None
+    assert suggest("/sys ") is None
     assert suggest("not a command") is None
     assert suggest("/nosuchverb a") is None
 
 
 def test_a_summary_is_the_catalogue_row_or_nothing():
-    assert _summary("status")
+    assert _summary("sys")
     assert _summary("nosuchcommand") == ""
 
 

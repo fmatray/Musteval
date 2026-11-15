@@ -124,15 +124,6 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     if head in LOCAL_COMMANDS:
         return []
 
-    if head == "status":
-        _exact(rest, 0, "/status")
-        return [_command("status")]
-    if head == "reload":
-        _exact(rest, 0, "/reload")
-        return [_command("reload")]
-    if head == "reboot":
-        _exact(rest, 0, "/reboot")
-        return [_command("reboot")]
     if head == "templates":
         _exact(rest, 0, "/templates")
         return [_command("templates.list")]
@@ -186,9 +177,6 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         return [
             Frame(type="prompt", id=new_id("b"), ts=0, body={"text": state.last_prompt})
         ]
-    if head == "diag":
-        _exact(rest, 0, "/diag")
-        return [_command("status")]
     if head == "secret":
         if not rest or rest[0] != "set":
             raise CommandError("usage: /secret set <key>")
@@ -230,9 +218,25 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     if head == "tasks":
         return _tasks(rest, state)
     if head == "sys":
-        if rest[:1] != ["reset-counter"] or len(rest) > 1:
-            raise CommandError("usage: /sys reset-counter")
-        return [_command("sys.reset_counter")]
+        # `05-bridge.md` §7: one head, four of its verbs are the former top-level
+        # commands. `/sys status` and `/sys diag` share the `status` frame because
+        # they read the same object; the UI tells them apart by the verb.
+        if rest[:1] == ["reset-counter"]:
+            _exact(rest[1:], 0, "/sys reset-counter")
+            return [_command("sys.reset_counter")]
+        if rest[:1] == ["status"]:
+            _exact(rest[1:], 0, "/sys status")
+            return [_command("status")]
+        if rest[:1] == ["diag"]:
+            _exact(rest[1:], 0, "/sys diag")
+            return [_command("status")]
+        if rest[:1] == ["reload"]:
+            _exact(rest[1:], 0, "/sys reload")
+            return [_command("reload")]
+        if rest[:1] == ["reboot"]:
+            _exact(rest[1:], 0, "/sys reboot")
+            return [_command("reboot")]
+        raise CommandError("usage: /sys status|diag|reload|reboot|reset-counter")
 
     raise CommandError(f"unknown command: /{head}")
 

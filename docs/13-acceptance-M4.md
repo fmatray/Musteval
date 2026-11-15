@@ -25,7 +25,7 @@ present (`.venv/bin/python`). Commands are shown exactly as typed.
 
 ## Preconditions
 
-- [X] `bin/bridge --send /status` prints a JSON object. If it does not, the board
+- [X] `bin/bridge --send "/sys status"` prints a JSON object. If it does not, the board
       is not on the link and nothing below will work.
 
 Read `sys.boot_failures`. Every boot increments it, and only `reload` or
@@ -34,7 +34,7 @@ boot, and safe mode skips the radio, the clock, the model and `agent_start`:
 
 - [X] `bin/bridge --send "/sys reset-counter"` answers `{"previous":N,"reset":"boot_failures","safe_mode":false}`.
 
-- [X] `bin/bridge --send /status` shows `sys.safe_mode: false`.
+- [X] `bin/bridge --send "/sys status"` shows `sys.safe_mode: false`.
 
 A run started in safe mode answers `E_SAFE_MODE` rather than running, so every
 check below a `safe_mode: true` reading proves nothing about M4.
@@ -64,8 +64,8 @@ attempt answers `E_LLM_RATE` without opening a socket. The board's
 object is written whole:
 
 - [X] Set the whole `llm` object with `max_calls_per_hour` smaller than
-      `llm.calls_hour` (see `/status`), then `/reload`.
-- [X] `bin/bridge --send /status` reports the new `llm.limit_hour`.
+      `llm.calls_hour` (see `/sys status`), then `/sys reload`.
+- [X] `bin/bridge --send "/sys status"` reports the new `llm.limit_hour`.
 - [X] `bin/bridge --send "hi"` answers
       `{"code":"E_LLM_RATE","message":"call budget exhausted","retryable":true}`.
 
@@ -85,7 +85,7 @@ take the budget out of the way when checking a different failure:
 `hello_ack` carries the names the device will accept, which is the frozen set of
 `00-overview.md` §7 minus the tools that are conditionally present.
 
-- [X] `bin/bridge --send /status` and read the `hello_ack` line, or run the bridge
+- [X] `bin/bridge --send "/sys status"` and read the `hello_ack` line, or run the bridge
       and read the Chat header.
 - [X] Twenty-two names are advertised, in §7 order, from `gpio.read` through
       `sys.diagnostics`.
@@ -239,7 +239,7 @@ had left unflashed are now observed, and the session found two more defects.
 Observed on the board, in this order:
 
 - **`sandbox.delete` recursive during a run → `E_BUSY`.** With `agent.busy: true`
-  read from `/status`, `{"path":"/workspace/pt","recursive":true}` answered
+  read from `/sys status`, `{"path":"/workspace/pt","recursive":true}` answered
   `{"code":"E_BUSY","message":"recursive delete refused while a run is in flight"}`.
 - **The prompt queue's third entry → `E_BUSY` with its depth.** Three prompts
   during one run answered
@@ -345,7 +345,7 @@ nothing else, leaving `safe_mode: false` while the radio, the clock, the model a
 the agent loop were still not started — every prompt then refused for a reason no
 frame named.
 
-- [X] After `/reload`, `bin/bridge --send /status` shows `sys.safe_mode: false` and
+- [X] After `/sys reload`, `bin/bridge --send "/sys status"` shows `sys.safe_mode: false` and
       a prompt reaches the provider chain rather than answering `E_SAFE_MODE`.
 
 - [X] A boot that trips safe mode answers `prompt` with
@@ -358,7 +358,7 @@ frame named.
 The wizard is hand-testable without credentials because a scan and a config write
 need no provider. Recover from safe mode first if the board is in it.
 
-- [X] `bin/bridge --send "/sys reset-counter"`, then `bin/bridge --send /status`,
+- [X] `bin/bridge --send "/sys reset-counter"`, then `bin/bridge --send "/sys status"`,
       shows `sys.safe_mode: false`. A scan brings the station interface up itself,
       so no configured network is required for the next step.
 - [X] `wifi.scan` against the board returns the networks the radio hears,
@@ -429,7 +429,7 @@ need no provider. Recover from safe mode first if the board is in it.
       index.
 - [ ] `/onboard` step 1 with a real SSID and passphrase, the chat line reading
       `network: joined <ssid>` and `time: zone <tz> applied`, then
-      `bin/bridge --send /status` agreeing with both. **Gap**: needs the credentials
+      `bin/bridge --send "/sys status"` agreeing with both. **Gap**: needs the credentials
       of the network, which are the reader's, not this file's. The verdicts
       themselves are asserted against canned `status` replies in
       `bridge/tests/test_ui_onboard.py`; what is unproven is that the board's real
@@ -474,7 +474,7 @@ name above to see the individual line.
   the agent loop.
 - Do not read a silent link after a prompt as a hang. An `agent.start` with no
   terminal frame is a defect, and it was one: a frame with no `id` is dropped by
-  `link_emit_body` without a log line. Check `/status` for `agent.busy` and
+  `link_emit_body` without a log line. Check `/sys status` for `agent.busy` and
   `agent.run_id` before concluding anything about the run.
 - Do not treat `llm.calls_hour` as meaningful after a boot loop. A run that spent
   the chain in a loop left the counter at a number far above the hourly cap; the

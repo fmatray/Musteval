@@ -10,7 +10,7 @@ present (`.venv/bin/python`). Commands are shown exactly as typed.
 
 ## Preconditions
 
-- [X] `bin/bridge --send /status` prints a JSON object. If it does not, the
+- [X] `bin/bridge --send "/sys status"` prints a JSON object. If it does not, the
       board is not on the link and nothing below will work.
 
 Read its `boot_id`. Keep it: several checks below compare it to prove the device
@@ -20,7 +20,7 @@ did not reboot.
 
 ### M1.1 Bridge connects, `hello`/`hello_ack` exchanged
 
-- [X] `bin/bridge --send /status` prints a JSON object and exits `0`.
+- [X] `bin/bridge --send "/sys status"` prints a JSON object and exits `0`.
 
 `--send` performs the full handshake before the command, so a printed object is
 the `hello`/`hello_ack` round trip succeeding. There is no separate "connected"
@@ -60,7 +60,7 @@ the TUI and not a `--send` command.
 
 ### M1.3 `status` returns device state
 
-- [X] `bin/bridge --send /status` prints keys `agent`, `boot_id`, `geo`, `llm`,
+- [X] `bin/bridge --send "/sys status"` prints keys `agent`, `boot_id`, `geo`, `llm`,
       `mcp`, `mem`, `mqtt`, `storage`, `sys`, `time`, `uptime_s`, `wifi`.
 
 ### M1.4 Input validation: oversize and malformed lines
@@ -78,12 +78,12 @@ both halves of `04` §1.2:
       covers the protocol examples instead.
 
 On the board the observable half is recovery: a refused line costs one reply, not
-the link. Watch `boot_id` in `/status` (chat bar, or `F3`):
+the link. Watch `boot_id` in `/sys status` (chat bar, or `F3`):
 
 - [X] `bin/bridge --send "/config set device.log_level loud"` answers a
       `command.result` with `ok:false` and `E_CONFIG`: the device answered a refusal
       and stayed up.
-- [X] `bin/bridge --send /status` still answers and its `boot_id` is unchanged.
+- [X] `bin/bridge --send "/sys status"` still answers and its `boot_id` is unchanged.
 
 The bytes for an oversize line, a malformed line and their `dropped_bytes` counters
 are asserted by the host suite and cannot be typed: the bridge refuses to build such
@@ -105,7 +105,7 @@ produced before `hello` are not replayed.
 
 - [X] Terminal 1: `.venv/bin/python bridge/tools/test_agent.py --port /tmp/ta > /tmp/ta_out &`
       then `sleep 3`. The agent prints the pty it opened on its first stdout line.
-- [X] Terminal 2: `.venv/bin/bridge --target test --port "$(head -1 /tmp/ta_out)" --send /status`
+- [X] Terminal 2: `.venv/bin/bridge --target test --port "$(head -1 /tmp/ta_out)" --send "/sys status"`
       prints a status object and exits `0`, with no board attached.
 
 `--target test` is required: `--target usb` refuses a pty by design
@@ -158,7 +158,7 @@ that message, the spelling is wrong, not the reference.
       type `/secret set wifi_test` and enter `ZZZ-marker-999` as the value, then
       search the terminal scrollback for `ZZZ-marker-999`. It must not appear. Overwrite
       it afterwards by repeating the two steps with the real passphrase.
-- [X] `/reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
+- [X] `/sys reload` prints `{'reloaded': ['config'], 'warnings': []}`: the ref resolves
       again without a reboot.
 
 Measured: `secret.set` answers `{'key': 'wifi_test', 'length': 16, 'stored': true}`
