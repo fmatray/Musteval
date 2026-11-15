@@ -412,8 +412,10 @@ esp_err_t mcp_call(const char *server_id, const char *tool, const json_node_t *a
 
     bool is_error = false;
     bool parsed_call = mcp_parse_call(resp, strlen(resp), out, cap, &is_error);
-    free(body);
     if (!parsed_call) {
+        /* `resp` is the upper half of the one allocation `body` starts, so this read
+         * has to happen before the free below. Reading it after freed the buffer the
+         * whole error message was built from. */
         char message[MCP_ERR_MAX];
         message[0] = '\0';
         mcp_parse_error(resp, strlen(resp), message, sizeof message);
@@ -421,9 +423,11 @@ esp_err_t mcp_call(const char *server_id, const char *tool, const json_node_t *a
             snprintf(why, why_cap, "%s: %s", rt->server.id,
                      message[0] != '\0' ? message : "reply unreadable");
         }
+        free(body);
         raise_event("mcp.error", rt->server.id, why);
         return ESP_ERR_INVALID_RESPONSE;
     }
+    free(body);
     if (is_error) {
         /* A tool-level failure the transport reported as success: `E_MCP`, per
          * `04` §5. */
