@@ -473,6 +473,14 @@ def _refused(text, state=None) -> str:
         ("/config get a.b junk", "usage: /config get <path>"),
         ("/sys reset-counter extra", "usage: /sys reset-counter"),
         ("/fs put /workspace/a junk", "usage: /fs put <path>"),
+        # The wifi verbs refuse by membership rather than `_exact`, so a surplus
+        # word has to reach the same branch as an unknown verb.
+        ("/wifi scan extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
+        ("/wifi status extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
+        ("/wifi connect extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
+        ("/wifi disconnect extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
+        ("/wifi reconnect extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
+        ("/mqtt extra", "usage: /mqtt [publish <srv> <topic> <payload>]"),
     ],
 )
 def test_fixed_arity_refusals(text, expected_usage):
