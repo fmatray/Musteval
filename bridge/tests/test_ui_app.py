@@ -1137,3 +1137,46 @@ def test_a_template_name_is_escaped_before_it_reaches_the_log():
     )
 
 
+async def test_diag_reports_the_failure_rather_than_rendering_a_stale_status():
+    """`05` §7 says `/diag` renders "the diagnostic half of `status`". A failed
+    `status` therefore has nothing to render: printing the cached frame would show
+    last refresh's counters as this command's answer, right under the error saying
+    the device did not answer."""
+
+    failing = {"on": False}
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command" and frame.get("name") == "status":
+            if failing["on"]:
+                return [_result(frame, "status",
+                                {"code": "E_BUSY", "message": "agent busy"},
+                                ok=False)]
+            return [_result(frame, "status", STATUS)]
+        return []
+
+    async def body(app, pilot):
+        # A status on file first: `/diag` after a failed refresh is the case that
+        # matters, and it is the one where a stale render has something to print.
+        app.submit("/status")
+        await _await_chat(pilot, app, "linked")
+        await pilot.pause(0.2)
+        failing["on"] = True
+        before = len(app._last_status)
+        assert before, "the cached status is what makes a stale render possible"
+        app.submit("/diag")
+        await _await_chat(pilot, app, "E_BUSY")
+        await pilot.pause(0.3)
+        text = _text(app)
+        assert "E_BUSY" in text
+        tail = text.split("E_BUSY", 1)[1]
+        assert "heap_free" not in tail, (
+            f"/diag rendered the cached status anyway:\n{tail}"
+        )
+
+    await _run(reply, body)
+
+

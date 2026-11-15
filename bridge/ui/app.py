@@ -1928,10 +1928,12 @@ class BridgeApp(App):
             # `05-bridge.md` §7: reuses the `status` frame, renders only the
             # diagnostic half, so the chat gets fresh counters rather than the
             # last screen refresh.
-            await self._request("status")
-            self._chat().write(
-                "\n".join(render_diag(self._last_status)) if self._last_status else "no status yet"
-            )
+            if await self._request("status") is None:
+                # `_request` already said why. Rendering the cached `status` here
+                # would print last refresh's counters under a comment promising
+                # fresh ones, and would read as the answer to `/diag`.
+                return
+            self._chat().write("\n".join(render_diag(self._last_status)))
             return
         if head == "secret" and self._pending_secret is None:
             # `05-bridge.md` §8.1: masked modal, Esc cancels without sending.
