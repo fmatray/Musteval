@@ -22,6 +22,7 @@ Column meanings:
 | Form | Arguments | Sends | Note |
 |---|---|---|---|
 | `/cancel` | none | `cancel` | `reason: "user"`; stops the run in flight |
+| `/clear` | none | `history.clear` | Forgets the conversation on the device and in the pane |
 | `/config` | none | (Local) | Opens the Settings screen; the screen sends `config.get` and `config.set` |
 | `/config edit` | none | (Local) | Same screen as the bare `/config` |
 | `/config get <path>` | `path` | `config.get` | Dumps one value |

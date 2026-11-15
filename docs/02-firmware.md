@@ -406,12 +406,23 @@ also add the rule that sends a subset (`07-roadmap.md` M5).
   wire (`llm_abort()`). A `cancel` frame therefore ends a run that is inside
   `esp_http_client_perform` instead of waiting out the provider's `timeout_ms`; when
   no request is in flight it takes effect at the next round boundary.
-- `agent_status()`, `agent_start()`, `agent_todo_phases()`, `agent_todo_reset()`.
+- `agent_status()`, `agent_start()`, `agent_todo_phases()`, `agent_todo_reset()`,
+  `agent_history_reset(dropped)`.
   `agent_todo_phases()` returns the live todo phase/task tree. The list is state
   owned by this module, not by the `tools` module, so it outlives a tool call and
   survives across runs until `reload` or reboot. `docs/tools/todo.md` is the canonical
   description of the shape. The loop reads it for the close-out check described in
   §4.1 step 5.
+- `agent_history_reset(dropped)`: forget the conversation (`04-protocol.md` §4.28) and
+  report how many messages went through `dropped`. Refused with
+  `ESP_ERR_INVALID_STATE` while a run is in flight, which the dispatcher reports as
+  `E_BUSY`: the run appends to and trims this same buffer between rounds, so a clear
+  landing mid-run would drop a `tool` message whose `tool_call_id` the assistant turn
+  still names, and the provider refuses the next request. `agent_history_clear` is the
+  pure half — `[]`, `*used = 2` — and is host-tested as the pair clear-then-append,
+  because a clear that a following append cannot build on is a buffer the next prompt
+  cannot use. The todo tree, the task list and the counters `status` reports are other
+  owners' state and are untouched.
 - `agent_todo_apply(args, out, why, why_cap)`: the `todo.apply` command's entry
   (`04-protocol.md` §4.27), and the `todo` tool's apply path — one function behind
   both, so an op cannot come to mean two things. `out` receives `tools/todo.md`

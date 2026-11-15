@@ -1723,6 +1723,17 @@ class BridgeApp(App):
             self._tasks_quiet = True
             self.run_worker(self._request("tasks.list"))
             return
+        if name == "history.clear" and isinstance(result, dict):
+            # `05` §7: the device forgot the conversation first, so the pane and the
+            # counters that describe it can follow. Wiping on a refusal would leave
+            # the reader with an empty pane and a device that still remembers.
+            self._chat().action_clear_log()
+            self._usage_total = 0
+            self._last_input_bytes = 0
+            self._last_prompt = None
+            self._chat().write(f"cleared {result.get('messages', 0)} message(s)")
+            self._refresh_bar()
+            return
         if name == "todo.apply" and isinstance(result, dict):
             self._todo_tree = [
                 phase for phase in result.get("phases") or [] if isinstance(phase, dict)

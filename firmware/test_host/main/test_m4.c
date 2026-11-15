@@ -1337,6 +1337,48 @@ TEST_CASE("history_append reports a message that cannot fit at all", "[m4]")
     TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
     TEST_ASSERT_NOT_NULL(strstr(history, "user"));
 }
+
+/* `04` §4.28: the clear empties the buffer and the very next append works on it.
+ * `*used` must be 2, not 0 — `append` reads 0 as "never written" and rescans
+ * uninitialized bytes looking for `[`. Asserting only that the buffer is `[]` would
+ * pass against a clear that left `*used` at 0 and broke the following append. */
+TEST_CASE("history_clear empties the buffer and the next append still fits", "[m4]")
+{
+    char history[256];
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"first\"}", 8, false));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"assistant\",\"content\":\"reply\"}", 8, false));
+    TEST_ASSERT_EQUAL_size_t(2, agent_history_count(history));
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_clear(history, &used));
+    TEST_ASSERT_EQUAL_size_t(2, used);
+    TEST_ASSERT_EQUAL_STRING("[]", history);
+    TEST_ASSERT_EQUAL_size_t(0, agent_history_count(history));
+    TEST_ASSERT_NULL(strstr(history, "first"));
+
+    /* The pair is the point: a clear that a following append cannot build on is a
+     * buffer the next prompt cannot use. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_append(history, sizeof history, &used,
+        "{\"role\":\"user\",\"content\":\"after\"}", 8, false));
+    TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
+    TEST_ASSERT_NOT_NULL(strstr(history, "after"));
+    TEST_ASSERT_NULL(strstr(history, "first"));
+}
+
+/* A refused argument is refused, not silently ignored: the caller reports
+ * `E_INTERNAL` on this and the bridge tells the reader nothing was cleared. */
+TEST_CASE("history_clear refuses a null buffer", "[m4]")
+{
+    size_t used = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_history_clear(NULL, &used));
+    char history[8] = "[]";
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_history_clear(history, NULL));
+}
+
+/* --- provider reply ------------------------------------------------------- */
+
 /* --- provider reply ------------------------------------------------------- */
 
 static const char *REPLY_TEXT =

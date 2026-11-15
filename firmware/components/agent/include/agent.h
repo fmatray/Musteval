@@ -168,6 +168,12 @@ size_t agent_history_count(const char *history);
  * depth it started from so its unfinished turns never replay. Pure. */
 esp_err_t agent_history_truncate(char *history, size_t *used, uint32_t keep);
 
+/* Empty the buffer in place: `[]`, and `*used` left at 2 rather than 0, because 0
+ * means "never written" to `agent_history_append` and it would then rescan
+ * uninitialized bytes. Pure, so the pair `clear` then `append` is a host test rather
+ * than a claim about the board. */
+esp_err_t agent_history_clear(char *history, size_t *used);
+
 /* --- Provider reply (`llm_assemble_prompt`'s inverse) ---------------------- */
 
 /* One tool call the model asked for, with its arguments left as the provider's own
@@ -322,6 +328,17 @@ void agent_status(agent_status_t *out);
 /* Start the run task. Called once at boot, after `link_start` so frames have a
  * writer (`02-firmware.md` §3.1). Board-only. */
 esp_err_t agent_start(void);
+
+/* Forget the conversation (`04` §4.28). Returns how many messages were dropped,
+ * through `dropped` when it is non-NULL, and `true` when the buffer is now empty.
+ *
+ * Refused with `ESP_ERR_INVALID_STATE` while a run is in flight: the run appends to
+ * and trims this same buffer between rounds, and a tool result dropped behind its
+ * call is a message the provider rejects. The caller reports that as `E_BUSY`.
+ *
+ * Only the conversation is dropped. The todo tree, the task list and the counters
+ * `status` reports are other owners' state. */
+esp_err_t agent_history_reset(size_t *dropped);
 
 /* The live todo tree, which is the state the close-out check reads across runs
  * (`02-firmware.md` §4.1). `reload` clears it. */

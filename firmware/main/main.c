@@ -1094,6 +1094,28 @@ static void answer_command(const json_node_t *frame)
             json_add_bool(result, "safe_mode", s_safe_mode);
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "history.clear") == 0) {
+        /* `04` §4.28: refused while a run is in flight, because the run appends to
+         * this same buffer between rounds. `agent_history_reset` re-checks the flag
+         * rather than trusting this read — two callers race on one bool otherwise. */
+        if (agent_busy()) {
+            emit_failure(name, reply_to, "E_BUSY", "agent run in flight");
+            json_free(body); return;
+        }
+        size_t dropped = 0;
+        esp_err_t herr = agent_history_reset(&dropped);
+        if (herr != ESP_OK) {
+            emit_failure(name, reply_to, "E_INTERNAL", "history not cleared");
+            json_free(body); return;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "history.clear");
+        json_add_bool(root, "ok", true);
+        if (result) {
+            json_add_bool(result, "cleared", true);
+            json_add_int(result, "messages", (int64_t)dropped);
+        }
+        built = ESP_OK;
     } else if (name && strcmp(name, "net.ping") == 0) {
         const char *target = json_string(json_get(args, "target"));
         if (target == NULL ||

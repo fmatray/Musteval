@@ -108,6 +108,21 @@ def test_ping_and_cancel_are_fire_and_forget():
     assert cancel.body["reason"] == "user"
 
 
+def test_clear_asks_the_device_to_forget_the_conversation():
+    # `05` §7: the conversation lives on the device, so `/clear` must reach it. A
+    # bridge-local pane wipe would leave the device history intact and the next
+    # prompt would still carry the turns the reader just dismissed.
+    frame = parse("/clear")[0]
+    assert frame.body == {"name": "history.clear", "args": {}}
+
+
+def test_clear_refuses_an_argument_it_does_not_take():
+    # `04` §4.28 takes `{}`. Dropping a surplus word silently means `/clear all`
+    # appears to clear everything and is answered by a plain clear.
+    with pytest.raises(CommandError, match=r"usage: /clear"):
+        parse("/clear all")
+
+
 @pytest.mark.parametrize(
     "text,usage_error",
     [

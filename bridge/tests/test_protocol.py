@@ -77,10 +77,10 @@ def test_error_codes_are_the_frozen_sixteen():
     assert all(code.startswith("E_") for code in ERROR_CODES)
 
 
-def test_command_names_are_the_frozen_thirty():
-    """16 frozen names plus the fourteen `04` §4 records as this release's amendment."""
-    assert len(COMMAND_NAMES) == 30
-    assert {"sandbox.list", "sandbox.read", "sandbox.delete", "sandbox.write", "sandbox.mkdir", "sandbox.move", "sys.reset_counter", "net.ping", "wifi.scan", "wifi.status", "wifi.connect", "wifi.disconnect", "wifi.reconnect", "todo.apply"} <= COMMAND_NAMES
+def test_command_names_are_the_frozen_thirty_one():
+    """16 frozen names plus the fifteen `04` §4 records as this release's amendment."""
+    assert len(COMMAND_NAMES) == 31
+    assert {"sandbox.list", "sandbox.read", "sandbox.delete", "sandbox.write", "sandbox.mkdir", "sandbox.move", "sys.reset_counter", "net.ping", "wifi.scan", "wifi.status", "wifi.connect", "wifi.disconnect", "wifi.reconnect", "todo.apply", "history.clear"} <= COMMAND_NAMES
 
 
 

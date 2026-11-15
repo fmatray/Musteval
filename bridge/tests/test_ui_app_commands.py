@@ -443,3 +443,49 @@ async def test_an_unreachable_prompt_is_refused_before_the_wire():
         assert before <= len(_frames(app))
 
     await _run(_device(), body)
+
+
+async def test_clear_sends_history_clear_and_wipes_the_pane():
+    """`05` §7: `/clear` forgets the conversation on both sides. The order is the
+    point — the pane goes only after `history.clear` says the device forgot it, so a
+    refusal cannot leave the reader with an empty pane and a device that still
+    remembers every turn the next prompt will carry."""
+
+    async def body(app, pilot):
+        chat = app.query_one("#chat")
+        chat.write("an old turn")
+        assert "an old turn" in _text(app)
+
+        app.submit("/clear")
+        await _until(pilot, lambda: any(f.get("name") == "history.clear"
+                                        for f in _frames(app)))
+        await _until(pilot, lambda: "cleared 4 message(s)" in _text(app))
+
+        assert "cleared 4 message(s)" in _text(app)
+        # The pane is wiped, and the confirmation is the only line left: a leftover
+        # turn here is the failure that motivated the command.
+        assert "an old turn" not in _text(app)
+        # Clearing is a fact about the session, so the counters that describe it go.
+        assert app._usage_total == 0
+        assert app._last_prompt is None
+
+    await _run(_device(), body)
+
+
+async def test_a_refused_clear_keeps_the_pane():
+    """`04` §4.28 refuses mid-run with `E_BUSY`. Wiping anyway would tell the reader
+    the conversation ended while the device still holds every turn of it, and the
+    next prompt would carry all of them back."""
+
+    async def body(app, pilot):
+        chat = app.query_one("#chat")
+        chat.write("an old turn")
+        app.submit("/clear")
+        await _await_chat(pilot, app, "history.clear: E_BUSY")
+        assert "history.clear: E_BUSY" in _text(app), "the refusal was never shown"
+        assert "an old turn" in _text(app)
+
+    await _run(
+        _device({"history.clear": {"code": "E_BUSY", "message": "agent run in flight"}}),
+        body,
+    )

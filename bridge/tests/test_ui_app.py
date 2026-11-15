@@ -141,6 +141,10 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
             if name == "config.set":
                 return [_result(frame, name,
                                 {"path": args.get("path"), "applied": True})]
+            if name == "history.clear":
+                # `04` §4.28: the count is the reply's whole content, so the double
+                # reports one the pane can be checked against.
+                return [_result(frame, name, {"cleared": True, "messages": 4})]
             if name in ("tasks.list", "tasks.set", "tasks.delete", "tasks.run"):
                 return [_result(frame, name,
                                 {"tasks": [{"id": "t1", "description": "water",

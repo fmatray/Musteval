@@ -134,6 +134,10 @@ class TestAgent:
         # The `todo` list the device keeps in `agent` RAM (`tools/todo.md` §State),
         # so a `done` is observable after the `init` that created the task.
         self._todo: list[dict[str, Any]] = []
+        #: The conversation `history.clear` (`04` §4.28) forgets. One entry per
+        #: message, so the count in the reply is a fact about the double's state
+        #: rather than a constant a broken client could also produce.
+        self._history: list[dict[str, Any]] = []
         self._script_index = 0
         self._buf = bytearray()
         self._closed = False
@@ -601,6 +605,23 @@ class TestAgent:
                 reply_to=frame.id,
             )
             return
+        elif name == "history.clear":
+            # `04` §4.28: the count is the only part a client can verify, so the double
+            # keeps the conversation it was asked to forget rather than echoing an
+            # empty `args` back. A prompt after a clear starts from nothing.
+            dropped = len(self._history)
+            self._history = []
+            self.reply(
+                "command.result",
+                {
+                    "name": name,
+                    "ok": True,
+                    "result": {"cleared": True, "messages": dropped},
+                    "duration_ms": 0,
+                },
+                reply_to=frame.id,
+            )
+            return
         elif name == "wifi.scan":
             # `10-test-agent.md` §6: an echo would give the dropdown `args` and no
             # `networks`, which is the failure it shows against a real device.
@@ -708,6 +729,11 @@ class TestAgent:
 
     def _answer_prompt(self, frame: Frame) -> None:
         text = frame.body["text"]
+        # The device keeps the conversation in PSRAM (`02-firmware.md` §4.2), so the
+        # double keeps one too: `history.clear` must report a count it can be wrong
+        # about, and the next prompt must start from nothing after a clear.
+        self._history.append({"role": "user", "content": text})
+        self._history.append({"role": "assistant", "content": text})
         self.run_id = new_id("r")
         self.reply(
             "agent.start",

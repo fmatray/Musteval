@@ -224,7 +224,7 @@ seconds rather than minutes. Cancellation is not a failure and is never retried.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the thirty names in §4. |
+| `name` | string | yes | One of the thirty-one names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -602,7 +602,7 @@ whose trace is dropped is still a correct run.
 
 ## 4. Command catalog
 
-All thirty names, their arguments and their `result` shapes. Unknown names are
+All thirty-one names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -639,6 +639,7 @@ reads are never refused.
 | `wifi.reconnect` | `{}` | wifi object (§3.9) | `E_WIFI` (no configured network joined), `E_BUSY` (run in flight or a connect already in flight), `E_INTERNAL` (connect task not started) | no |
 | `todo.apply` | `{op, task?, phase?, items?, list?, reason?}` | `{phases:[{name, tasks:[{content,status,blocker?}]}]}` | `E_TOOL` (schema violation, `no task matches "<target>"`, or a bound breach), `E_INTERNAL` | yes |
 | `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
+| `history.clear` | `{}` | `{cleared, messages}` | `E_BUSY` (a run is in flight) | no |
 
 
 ### 4.1 `status`
@@ -1359,6 +1360,35 @@ rather than refused.
 
 `E_TOOL` carries the tool's own refusal text in `message`, because it is the sentence
 the model would have been given and the user should read the same one.
+
+### 4.28 `history.clear`
+
+Forgets the conversation the next prompt would carry. The history is device state —
+`agent`'s PSRAM buffer, bounded by `llm.max_history_messages` (`02-firmware.md` §4.2)
+— so a client cannot clear it by forgetting its own scrollback: the next prompt would
+still arrive with every earlier turn attached, and the model would answer a question
+about a conversation the reader believes they ended. This is the only command that
+writes that buffer from outside a run.
+
+```json
+{"v":1,"type":"command","id":"b-43","ts":1730572620,"name":"history.clear","args":{}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-53","ts":1730572620,"reply_to":"b-43","name":"history.clear","ok":true,"result":{"cleared":true,"messages":6},"duration_ms":2}
+```
+
+`messages` is how many messages were dropped, so the reader can tell a real clear
+from a no-op on an already-empty buffer; both answer `cleared: true`.
+
+**Refused with `E_BUSY` while a run is in flight.** A run appends to and trims the
+same buffer between rounds (`02-firmware.md` §4.1), and a tool call whose result was
+dropped mid-run is a message the provider refuses, so the clear waits rather than
+tearing the conversation the run is paying for. This is the `reboot` rule, not the
+`wifi.status` one: the command mutates state a run owns.
+
+The clear does not touch the todo tree, the task list, `/prompts`, `/skills` or the
+counters `status` reports. It forgets the conversation and nothing else.
 
 ## 5. Error codes
 

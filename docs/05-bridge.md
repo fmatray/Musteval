@@ -765,6 +765,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
 | `/model [name]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `name` | Sets the model of `llm.providers[0]`. With no argument it opens a picker of the provider's published models, pre-filled with the stored one and accepting a typed name instead; with one it writes that name directly. The write is the whole `llm.providers` array, so the rest of the entry moves untouched (§7.3) |
 | `/cancel` | `cancel` | none | Cancels current run |
+| `/clear` | `command {name:"history.clear"}` | none | Forgets the conversation on both sides: the device's PSRAM history and this pane's scrollback. Refused with `E_BUSY` while a run is in flight, and then nothing is cleared on either side |
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
 | `/config` | (Local) | none | Opens the settings screen (`05` §5.7); the screen sends `config.get` and `config.set` |
@@ -1078,9 +1079,15 @@ without a `/config get` round trip.
 Deliberately absent, because the device has no surface for them: `/compact` (the
 device keeps `llm.max_history_messages` messages, trims oldest-first, pins the
 running question so it cannot evict itself, and has no summarisation step to
-invoke), `/clear` (history lives on the device in PSRAM and has no reset command),
-and `/mcp add|remove|test` (MCP servers are config-file entries; changing them
-means `config.set` and `reload`).
+invoke), and `/mcp add|remove|test` (MCP servers are config-file entries; changing
+them means `config.set` and `reload`).
+
+`/clear` used to be on that list, on the grounds that history lives on the device in
+PSRAM and had no reset command. That made the command impossible rather than
+unnecessary: a pane wipe alone would leave the device history intact, so the next
+prompt would still carry the turns the reader had just dismissed. It sends
+`history.clear` (`04-protocol.md` §4.28) and clears the pane only after the device
+confirms, so the two never disagree about what the conversation is.
 
 ### 7.3 `/model`
 

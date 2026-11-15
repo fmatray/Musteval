@@ -44,7 +44,7 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
         "status", "reload", "reboot", "tasks", "run", "config", "secret",
         "templates", "template", "mqtt", "geo", "wifi", "todo", "fs", "sandbox", "sys",
     ),
-    "Chat": ("retry", "ping", "cancel", "diag", "thinking", "model", "export"),
+    "Chat": ("retry", "ping", "cancel", "clear", "diag", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context"),
     "Screens": ("onboard", "files", "logs", "help", "quit"),
 }
@@ -106,6 +106,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
         False,
     ),
     CommandHelp("cancel", "/cancel", "cancel the current run", False),
+    CommandHelp("clear", "/clear", "forget the conversation on both sides", False),
     CommandHelp(
         "thinking",
         "/thinking | /thinking <level>",

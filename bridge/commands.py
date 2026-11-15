@@ -174,6 +174,11 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     if head == "cancel":
         _exact(rest, 0, "/cancel")
         return [Frame(type="cancel", id=new_id("b"), ts=0, body={"reason": "user"})]
+    if head == "clear":
+        # `05` §7: the pane is wiped by `ui`, after this reply says the device forgot
+        # the conversation too. `04` §4.28 refuses mid-run, and then nothing is wiped.
+        _exact(rest, 0, "/clear")
+        return [_command("history.clear")]
     if head == "retry":
         _exact(rest, 0, "/retry")
         if not state.last_prompt:

@@ -977,3 +977,15 @@ void agent_status(agent_status_t *out)
     out->run_id = s_busy ? s_run_id : NULL;
     out->queue_depth = s_queue != NULL ? (int32_t)uxQueueMessagesWaiting(s_queue) : 0;
 }
+
+/* `04` §4.28: the one writer from outside a run. Refused while one is live, because
+ * the run appends its round to this same buffer and a tool result dropped behind its
+ * own call is a message the provider rejects. `agent_history_clear` is pure and
+ * host-tested; this is the borrow plus the refusal. */
+esp_err_t agent_history_reset(size_t *dropped)
+{
+    if (dropped != NULL) *dropped = 0;
+    if (s_busy || s_history == NULL) return ESP_ERR_INVALID_STATE;
+    if (dropped != NULL) *dropped = agent_history_count(s_history);
+    return agent_history_clear(s_history, &s_history_used);
+}

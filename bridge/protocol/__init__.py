@@ -113,6 +113,8 @@ COMMAND_NAMES = frozenset(
         "wifi.reconnect",
         # `04-protocol.md` §4.25: ICMP reachability from the device itself.
         "net.ping",
+        # `04-protocol.md` §4.28: forget the conversation the next prompt carries.
+        "history.clear",
     }
 )
 

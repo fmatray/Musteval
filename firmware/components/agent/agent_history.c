@@ -168,6 +168,20 @@ esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages,
     return ESP_OK;
 }
 
+/* Empty the buffer. `*used` becomes 2, not 0: `append` treats 0 as "this static was
+ * never written" and would scan uninitialized bytes for `[` (`02-firmware.md` §4.2).
+ * The two-byte `[]` is what every other path leaves behind for an empty history, so
+ * `clear` then `append` costs no special case in the writer. */
+esp_err_t agent_history_clear(char *history, size_t *used)
+{
+    if (history == NULL || used == NULL) return ESP_ERR_INVALID_ARG;
+    history[0] = '[';
+    history[1] = ']';
+    history[2] = '\0';
+    *used = 2;
+    return ESP_OK;
+}
+
 /* Keep only the first `keep` messages, in place. Used when a run aborts part-way:
  * its half-finished assistant/tool turns must not be replayed, because a
  * `role:"tool"` message without its matching call is refused by the provider. */
