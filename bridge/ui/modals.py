@@ -634,9 +634,13 @@ class ModelStep(_StepBox):
                 classes="step-label",
                 markup=False,
             ),
+            # Sorted by name, like `/model`'s list (`05` §7.1): the provider's
+            # publication order is not a reading order. `_options` is shared with the
+            # SSID list, which is strongest-first and must keep that order, so the
+            # sort is here rather than inside it.
             self._select(
-                self._options(self.models, self.model),
-                self.model or (self.models[0] if self.models else ""),
+                self._options(sorted(self.models), self.model),
+                self.model or (sorted(self.models)[0] if self.models else ""),
                 "step-model-select",
                 allow_blank=True,
             ),
@@ -806,17 +810,31 @@ class ModelPicker(PromptBox[str | None]):
             )
 
     def _names(self) -> list[str]:
-        """The list, plus the stored name when the provider did not publish it, so
-        Enter on the first row is the model already stored.
+        """The provider's list, sorted by name, with the stored name in it.
+
+        Sorted because a provider's publication order is its own business — Ollama's
+        is roughly newest-first, OpenRouter's mixes families — and a reader looking
+        for `gpt-oss:120b` scans a roll call, not a ranking (`05` §7.1).
 
         A stored name the fetch did not return — `gemma4:cloud` against the cloud
-        list, which is the state of the first device this ran on — would otherwise be
-        one keystroke away only on the typing tab.
+        list, which is the state of the first device this ran on — is added, and the
+        cursor goes to it: Enter on an unvisited list must not adopt a model the
+        reader never chose.
         """
-        names = list(self.models)
-        if self.current and self.current not in names:
-            names.insert(0, self.current)
+        names = sorted(set(self.models) | ({self.current} if self.current else set()))
         return names
+
+    def on_mount(self) -> None:
+        # Sorting moved the stored name off row 0, and the highlight defaults to the
+        # first row: without this, Enter on the list tab adopts whatever sorts first
+        # — a model nobody chose, written silently to `llm.providers[0].model`.
+        rows = self.query("#step-model-list")
+        if rows and self.current:
+            names = self._names()
+            if self.current in names:
+                self.query_one("#step-model-list").highlighted = names.index(
+                    self.current
+                )
 
     def _active(self) -> str:
         return self.query_one("#step-model-tabs", TabbedContent).active

@@ -1115,13 +1115,21 @@ command sends the existing `config.get` and `config.set`.
   winning, and because the field was seeded with the stored model it was never empty —
   so it always won, and picking from the list did nothing at all. Two surfaces with a
   precedence rule between them is the bug; two tabs have no precedence to get wrong.
-- **The list tab is where the cursor starts, and only when there is a list.** The
-  stored name is offered as a row (first, when the provider omits it) so `Enter`
-  without moving re-commits it, and a provider that answered nothing opens on the type
-  tab instead, because a list tab with no rows is a dead end the reader has to `Tab`
-  out of. The auto-focus names the widget inside the *visible* tab: focusing one inside
-  a hidden `TabPane` switches the pane, which is the same "the reader is somewhere they
-  did not ask to be" failure.
+- **The rows are sorted by name.** A provider's publication order is its own
+  business — Ollama answers roughly newest-first and OpenRouter mixes families and
+  vendors — so an unsorted list is a roll call, not a reading order, and a reader
+  looking for `gpt-oss:120b` cannot scan it. The stored name joins the set and is
+  sorted with it rather than pinned to row 0: pinning it was how an unpublished name
+  came to look like the provider's first suggestion. The wizard's model `Select` is the same list and
+  is sorted the same way (`05` §7.1); the SSID `Select` is not, because strongest-first
+  *is* the reading order for a scan.
+- **The cursor starts on the stored name, and the list tab is the one that opens when
+  there is a list.** `Enter` without moving re-commits the model already configured,
+  so sorting can never silently adopt a name nobody chose. A provider that answered
+  nothing opens on the type tab instead, because a list tab with no rows is a dead end
+  the reader has to `Tab` out of. The auto-focus names the widget inside the *visible*
+  tab: focusing one inside a hidden `TabPane` switches the pane, which is the same "the
+  reader is somewhere they did not ask to be" failure.
 - **The type tab keeps the stored name pre-filled.** There it cannot outrank anything,
   and `Ctrl+U` then retyping is cheaper than retyping from empty.
 - **`/model <name>` skips the fetch entirely.** The name is written as given: that

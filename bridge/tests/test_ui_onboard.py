@@ -427,6 +427,28 @@ async def test_the_model_step_offers_the_fetched_list_and_selects_the_first():
     assert answered["model"] == "a/one"
 
 
+async def test_the_model_step_sorts_the_fetched_list_by_name():
+    """`05` §7.1: the wizard's drop list is the same list `/model` offers, so it is
+    read the same way. OpenRouter returns families in its own order, and the first
+    row is the step's default answer — an unsorted list therefore defaults to
+    whatever the provider happens to rank first."""
+    app = _app(Device())
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ModelStep(models=["z-ai/glm-5.3", "anthropic/claude", "openai/gpt-5"], provider="openrouter")
+        )
+        assert await _mounted(pilot, "#step-model-select")
+        select = app.screen.query_one("#step-model-select")
+        answered = app.screen.answer()
+    offered = [str(value) for _, value in select._options if isinstance(value, str)]
+    assert offered == [
+        "anthropic/claude",
+        "openai/gpt-5",
+        "z-ai/glm-5.3",
+    ]
+    assert answered["model"] == "anthropic/claude"
+
+
 async def test_the_model_step_hides_thinking_where_the_provider_takes_none():
     """`05` §7.1: a level the provider rejects turns every call into a 400.
 
@@ -1333,6 +1355,36 @@ async def test_the_model_picker_takes_the_highlighted_row_from_the_list_tab():
         app.modal.action_submit()
         await pilot.pause()
     assert app.dismissed["value"] == "glm-5.3"
+
+
+async def test_the_model_picker_lists_names_in_order_and_puts_the_cursor_on_the_stored_one():
+    """`05` §7.1: the provider's publication order is not a reading order. Ollama
+    answers roughly newest-first, so an unsorted list scatters `gemma4` among `kimi`
+    and `glm`; sorting is what lets a reader scan for a name.
+
+    The cursor follows the stored model rather than the sorted list's first row —
+    the stored name is the one Enter must not silently replace."""
+    async with _picker(["kimi-k2.6", "gemma4:31b", "glm-5.3"], "gemma4:31b") as (
+        pilot,
+        app,
+    ):
+        rows = app.modal.query_one("#step-model-list")
+        offered = [str(option.id) for option in rows._options]
+        await pilot.pause()
+    assert offered == ["gemma4:31b", "glm-5.3", "kimi-k2.6"]
+    assert rows.highlighted == 0
+
+
+async def test_the_model_picker_sorts_a_list_the_provider_did_not_send_sorted():
+    """The stored name absent from the fetch lands in its sorted place, not at row 0:
+    a stored `m` would otherwise appear before every published name, which reads as
+    a model the provider ranks first."""
+    async with _picker(["zeta", "alpha", "mike"], "mike") as (pilot, app):
+        rows = app.modal.query_one("#step-model-list")
+        offered = [str(option.id) for option in rows._options]
+        await pilot.pause()
+    assert offered == ["alpha", "mike", "zeta"]
+    assert rows.highlighted == 1
 
 
 async def test_the_model_picker_returns_none_from_a_blank_typing_tab():
