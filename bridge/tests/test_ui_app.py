@@ -1205,3 +1205,54 @@ async def test_a_fire_and_forget_command_reports_a_write_it_could_not_make():
     await _run(reply, body)
 
 
+async def test_fs_put_confirms_the_upload_in_words():
+    """`04` §4.16: the reply is the whole confirmation a reader gets for an upload,
+    and `requires_reboot` is the one field they must act on. A JSON dump buries it."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command" and frame.get("name") == "fs.put":
+            return [_result(frame, "fs.put",
+                            {"path": "/skills/a.md", "bytes": 12,
+                             "created": True, "requires_reboot": True})]
+        return []
+
+    async def body(app, pilot):
+        # The renderer, not the `/fs put` modal: the staging path is covered in
+        # `test_ui.py`, and this asserts what the reply looks like once it lands.
+        await app._request("fs.put", {"path": "/skills/a.md", "data": "",
+                                      "offset": 0, "final": True})
+        await _await_chat(pilot, app, "reboot to apply")
+        text = _text(app)
+        assert "/skills/a.md: 12 bytes, created (reboot to apply)" in text
+        assert "requires_reboot" not in text
+
+    await _run(reply, body)
+
+
+async def test_a_run_is_confirmed_with_the_id_the_status_screen_names():
+    """`04` §4's catalog: `run_id` is what `/cancel` and the status screen refer to,
+    so it is
+    the one thing the confirmation has to carry."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command" and frame.get("name") == "tasks.run":
+            return [_result(frame, "tasks.run",
+                            {"task_id": "t1", "run_id": "r-9"})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/run t1")
+        await _await_chat(pilot, app, "started run r-9")
+        text = _text(app)
+        assert "started run r-9" in text
+        assert "run_id" not in text
+
+    await _run(reply, body)

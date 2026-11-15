@@ -721,7 +721,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/reload` | `command {name:"reload"}` | none | Re-reads flash configs |
 | `/reboot` | `command {name:"reboot"}` | none | Restarts device |
 | `/tasks` | `command {name:"tasks.list"}` | none | Lists tasks in chat; also switches to the Tasks screen |
-| `/run <id>` | `command {name:"tasks.run"}` | `id` | Runs a task now |
+| `/run <id>` | `command {name:"tasks.run"}` | `id` | Runs a task now; confirms in chat with the `run_id` that `/cancel` and the status screen name |
 | `/tasks add` | `command {name:"tasks.set"}` | `task` | Opens a blank task modal, then sends it |
 | `/tasks set <id>` | `command {name:"tasks.set"}` | `task` | Opens the cached task in a modal, then sends it |
 | `/tasks enable <id>` | `command {name:"tasks.set"}` | `task` | Resends the task with `enabled: true` |
@@ -733,7 +733,7 @@ Slash commands in the Chat input are mapped to protocol frames.
 | `/templates` | `command {name:"templates.list"}`| none | Lists prompt templates |
 | `/template <n>` | `command {name:"template.get"}` | `name` | Dumps template text |
 | `/mqtt` | `command {name:"mqtt.status"}` | none | Lists brokers and state; also switches to the MQTT screen |
-| `/fs put <p>` | `command {name:"fs.put"}` | `path, data, offset, final` | Uploads a local file to `userfs` in 2 KiB chunks; refuses a path outside the allowlist before sending |
+| `/fs put <p>` | `command {name:"fs.put"}` | `path, data, offset, final` | Asks for a local file, uploads it to `userfs` in 2 KiB chunks, and reports its size and whether a reboot applies it; refuses a path outside the allowlist before sending |
 | `/files` | `command {name:"sandbox.list"}` | `path?` | Opens the Files screen at `/workspace/` |
 | `/files <p>` | `command {name:"sandbox.list"}` | `path` | Opens the Files screen at that sandbox directory |
 | `/sandbox mkdir <p>` | `command {name:"sandbox.mkdir"}` | `path` | Creates one directory; refuses outside sandbox before sending |
@@ -988,12 +988,16 @@ from two regions that share a zone still differ in `timezone`, so the map is reg
 all, and the continental zone is the safer of the two.
 
 4. **Link token**: the value sent as `hello.token` is a bridge-side config value that the user sets when provisioning the device (`06-security.md` §9); it is not a slash command and the bridge never prints it.
-`/fs put <p>` is the one command that sends more than one frame per invocation: it
-4 KiB RX line cannot carry an 8 KiB skill. A rejected chunk aborts the upload and
-leaves the previous version of the file untouched, because the device only renames
-the staged file into place on `final: true`. The bridge refuses a path outside the
-`fs.put` allowlist before sending anything, and reports a built-in target as a
-refusal rather than retrying under another name.
+
+`/fs put <p>` is the one command that sends more than one frame per invocation: the
+4 KiB RX line cannot carry an 8 KiB skill, so the file goes in 2 KiB chunks. The
+source is chosen from an `Upload from` prompt at the moment the command runs, because
+`fs.put` is the only operation that carries bytes the device did not ask for and no
+other screen fills that slot. A rejected chunk aborts the upload and leaves the
+previous version of the file untouched, because the device only renames the staged
+file into place on `final: true`. The bridge refuses a path outside the `fs.put`
+allowlist before sending anything, and reports a built-in target as a refusal rather
+than retrying under another name.
 
 `/tasks add` takes no `<id>`: the id is a field inside the task body, so a blank
 modal with every field empty is the only unambiguous starting point. Typing

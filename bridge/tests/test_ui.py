@@ -14,7 +14,7 @@ from bridge.client import Session
 from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode, reset_ids
 
-from bridge.ui.modals import HelpModal
+from bridge.ui.modals import HelpModal, ValuePrompt
 from bridge.ui.testing import chat_input
 from bridge.ui.render import (
     clip,
@@ -1048,4 +1048,125 @@ async def test_toggling_the_selected_task_flips_enabled():
         set_frames = [f for f in sent if f.get("name") == "tasks.set"]
         assert set_frames, "tasks.set was not sent"
         assert set_frames[0]["args"]["task"]["enabled"] is False
+        await session.close()
+
+
+# -- `/fs put` staging (`05-bridge.md` §7) -----------------------------------
+
+
+async def _connect(pilot, app) -> None:
+    for _ in range(50):
+        if app.session.state.value == "connected":
+            break
+        await pilot.pause(0.02)
+
+
+async def _fs_put_modal(pilot, app, source: str) -> None:
+    """Answer the `Upload from` prompt `/fs put` opens, the way a reader does."""
+    for _ in range(120):
+        if isinstance(app.screen, ValuePrompt):
+            await pilot.pause(0.05)
+            app.screen.query_one("#value-input").value = source
+            await pilot.press("enter")
+            return
+        await pilot.pause(0.02)
+    raise AssertionError(f"no upload prompt; screen is {app.screen!r}")
+
+
+def _written(transport) -> list[dict]:
+    return [json.loads(line) for line in transport.written]
+
+
+async def test_fs_put_asks_for_the_host_file_and_chunks_it(tmp_path):
+    """`/fs put` was unreachable: `parse` refuses without `upload_bytes`, and only
+    the Files screen's `Ctrl+O` ever loaded one — into the sandbox, not userfs.
+    The prompt is what makes the documented command runnable, and the frames carry
+    the file under the device's RX cap."""
+    import base64
+
+    from bridge.commands import FS_PUT_CHUNK_BYTES
+    from bridge.ui import BridgeApp
+
+    data = b"z" * (FS_PUT_CHUNK_BYTES * 2 + 10)
+    source = tmp_path / "skill.md"
+    source.write_bytes(data)
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connect(pilot, app)
+        await pilot.pause(0.2)
+        app.submit("/fs put /skills/skill.md")
+        await _fs_put_modal(pilot, app, str(source))
+        for _ in range(120):
+            puts = [f for f in _written(transport) if f.get("name") == "fs.put"]
+            if puts and puts[-1]["args"]["final"]:
+                break
+            await pilot.pause(0.02)
+        puts = [f for f in _written(transport) if f.get("name") == "fs.put"]
+        assert [f["args"]["path"] for f in puts] == ["/skills/skill.md"] * 3
+        assert [f["args"]["offset"] for f in puts] == [
+            0, FS_PUT_CHUNK_BYTES, FS_PUT_CHUNK_BYTES * 2
+        ]
+        assert [f["args"]["final"] for f in puts] == [False, False, True]
+        rebuilt = b"".join(base64.b64decode(f["args"]["data"]) for f in puts)
+        assert rebuilt == data
+        await session.close()
+
+
+async def test_fs_put_cancelled_at_the_prompt_sends_nothing():
+    """Esc is a cancel, not an upload of nothing: the reader gets no error line
+    either, the same shape as `Ctrl+O`'s empty answer."""
+    from bridge.ui import BridgeApp
+    from bridge.ui.testing import chat_lines
+
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connect(pilot, app)
+        await pilot.pause(0.2)
+        before = len(transport.written)
+        app.submit("/fs put /skills/skill.md")
+        for _ in range(120):
+            if isinstance(app.screen, ValuePrompt):
+                break
+            await pilot.pause(0.02)
+        await pilot.press("escape")
+        for _ in range(120):
+            if not isinstance(app.screen, ValuePrompt):
+                break
+            await pilot.pause(0.02)
+        await pilot.pause(0.2)
+        assert len(transport.written) == before
+        text = "\n".join(chat_lines(app))
+        assert "no file loaded" not in text and "✗" not in text
+        await session.close()
+
+
+async def test_fs_put_of_an_unreadable_path_names_it_and_sends_nothing(tmp_path):
+    """A path that is not there is reported by name in chat, and no frame leaves:
+    a silent half-upload would leave the device staging a file forever."""
+    from bridge.ui import BridgeApp
+    from bridge.ui.testing import chat_lines
+
+    missing = tmp_path / "absent.md"
+    transport = FakeTransport(on_write=_reply)
+    session = Session(transport, ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test() as pilot:
+        await _connect(pilot, app)
+        await pilot.pause(0.2)
+        before = len(transport.written)
+        app.submit("/fs put /skills/skill.md")
+        await _fs_put_modal(pilot, app, str(missing))
+        for _ in range(120):
+            if str(missing) in "".join(chat_lines(app)):
+                break
+            await pilot.pause(0.02)
+        text = "".join(chat_lines(app))
+        assert str(missing) in text
+        assert "No such file" in text
+        assert not [f for f in _written(transport) if f.get("name") == "fs.put"]
+        assert len(transport.written) == before
         await session.close()

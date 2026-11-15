@@ -1791,6 +1791,19 @@ class BridgeApp(App):
             for line in wifi_scan_lines(result):
                 self._chat().write(line)
             return
+        if name == "fs.put" and isinstance(result, dict):
+            # `04` §4.16: the reply is the whole confirmation of an upload, so it is
+            # said in words. `requires_reboot` is the one field a reader must act on.
+            line = f"{result.get('path')}: {result.get('bytes')} bytes, "
+            line += "created" if result.get("created") else "replaced"
+            if result.get("requires_reboot"):
+                line += " (reboot to apply)"
+            self._chat().write(line)
+            return
+        if name == "tasks.run" and isinstance(result, dict):
+            # `04` §4 catalog: the run id is what `/cancel` and the status screen name.
+            self._chat().write(f"started run {result.get('run_id')}")
+            return
         if name == "net.ping" and isinstance(result, dict):
             # `04` §4.25: one line. 100 % loss is a result the device measured, not
             # an error frame, so it is shown as the answer it is — but coloured as
@@ -1958,11 +1971,26 @@ class BridgeApp(App):
             if not await self.push_screen_wait(ConfirmPrompt(f"Delete task {words[2]}?")):
                 self._chat().write("delete cancelled")
                 return
+        # `05-bridge.md` §7: `fs.put` takes its bytes over the wire, so the one
+        # command that carries a file asks for it here; nothing else loads one.
+        upload_bytes: bytes | None = None
+        if words[:2] == ["fs", "put"]:
+            source = await self.push_screen_wait(ValuePrompt("Upload from", ""))
+            if not source:
+                return
+            path = os.path.expanduser(source)
+            try:
+                with open(path, "rb") as handle:
+                    upload_bytes = handle.read()
+            except OSError as exc:
+                self._chat().write(f"{path}: {exc.strerror or exc}", kind="error")
+                return
         # Built after the modals: a secret prompt fills the value `parse` reads.
         state = CommandState(
             tasks=self._tasks,
             last_prompt=self._last_prompt,
             secret_value=self._secret_value(),
+            upload_bytes=upload_bytes,
         )
         try:
             frames = parse(text, state)
