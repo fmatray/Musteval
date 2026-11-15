@@ -530,3 +530,45 @@ def test_a_ping_target_never_falls_back_to_device():
     with pytest.raises(CommandError):
         parse("/ping", CommandState())
 
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/config.json",
+        "/tasks.json",
+        "/skills/brief.md",
+        "/prompts/daily.md",
+        "/tools/weather_now.json",
+    ],
+)
+def test_fs_put_accepts_every_path_the_device_allowlists(path):
+    """`04` §4.16 lists the two documents and the three directories an import may
+    target. A path the device accepts must not be refused here, or the command is
+    dead for a file the device would have taken."""
+    (frame,) = parse(f"/fs put {path}", CommandState(upload_bytes=b"a"))
+    assert frame.body["args"]["path"] == path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspace/a.txt",  # the sandbox is not userfs
+        "/skills/a.txt",  # the directory fixes the extension
+        "/tools/a.md",
+        "/prompts/.md",  # a dotfile has no stem and would list as a template
+        "/skills/",
+        "/config.json.bak",
+        "/skills/../workspace/a.md",  # canonicalises out of the allowlist
+        "/",
+    ],
+)
+def test_fs_put_refuses_a_path_outside_the_allowlist_before_sending(path):
+    """`05` §7: the bridge refuses before sending anything, so a doomed upload
+    costs no round trip. The message names the allowlist rather than repeating the
+    path, because the reader has to know what would have worked."""
+    with pytest.raises(CommandError) as exc:
+        parse(f"/fs put {path}", CommandState(upload_bytes=b"a"))
+    assert str(exc.value) == (
+        "path is outside /config.json, /tasks.json, /skills/, /prompts/, /tools/"
+    )

@@ -21,6 +21,7 @@ from .protocol import (
     Frame,
     SandboxPathError,
     new_id,
+    userfs_import_ok,
     sandbox_normalise,
 )
 
@@ -70,8 +71,9 @@ class CommandState:
     tasks: list[dict[str, Any]] = field(default_factory=list)
     last_prompt: str | None = None
     secret_value: str | None = None
+    #: The bytes `/fs put` sends. Read once, chunked by `_fs_put`: the device's RX
+    #: line is 4 KiB, so an 8 KiB skill is several frames.
     upload_bytes: bytes | None = None
-    upload_path: str | None = None
 
 
 def _command(name: str, args: dict[str, Any] | None = None) -> Frame:
@@ -530,6 +532,12 @@ def _fs_put(path: str, state: CommandState) -> list[Frame]:
         raise CommandError("no file loaded to upload")
     if not path.startswith("/"):
         raise CommandError(f"path must be absolute: {path}")
+    if not userfs_import_ok(path):
+        # `05` §7: refused here so a doomed upload costs no round trip. The device
+        # is still the authority; this is the same rule stated twice on purpose.
+        raise CommandError(
+            "path is outside /config.json, /tasks.json, /skills/, /prompts/, /tools/"
+        )
     chunks = [
         state.upload_bytes[i : i + FS_PUT_CHUNK_BYTES]
         for i in range(0, len(state.upload_bytes), FS_PUT_CHUNK_BYTES)
