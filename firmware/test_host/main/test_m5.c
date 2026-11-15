@@ -11,6 +11,7 @@
 
 #include "sched.h"
 #include "tools.h"
+#include "test_util.h"
 #include "unity.h"
 
 /* One minimal task object, in the shape `03-config.md` §tasks documents. */
@@ -101,14 +102,15 @@ TEST_CASE("a duplicate id rejects the whole file", "[m5]")
 TEST_CASE("seventeen tasks exceed the cap", "[m5]")
 {
     char json[2048];
-    int written = snprintf(json, sizeof json, "{\"version\":1,\"tasks\":[");
+    size_t written = catf(json, sizeof json, 0, "{\"version\":1,\"tasks\":[");
     for (int i = 0; i < SCHED_MAX_TASKS + 1; i++) {
-        written += snprintf(json + written, sizeof json - written,
-                            "%s{\"id\":\"t%d\",\"trigger\":{\"type\":\"boot\"},"
-                            "\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}",
-                            i == 0 ? "" : ",", i);
+        written = catf(json, sizeof json, written,
+                       "%s{\"id\":\"t%d\",\"trigger\":{\"type\":\"boot\"},"
+                       "\"action\":{\"kind\":\"prompt\",\"prompt\":\"x\"}}",
+                       i == 0 ? "" : ",", i);
     }
-    snprintf(json + written, sizeof json - written, "]}");
+    written = catf(json, sizeof json, written, "]}");
+    (void)written;
 
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, load(json));
 }
@@ -1224,7 +1226,7 @@ TEST_CASE("vars beyond the declarations the struct holds are refused, not trunca
     char vars[1024];
     size_t at = 0;
     for (int i = 0; i < SCHED_MAX_VARS + 1; i++) {
-        at += (size_t)snprintf(vars + at, sizeof vars - at, "%s\"v%d\":\"x\"", i ? "," : "", i);
+        at = catf(vars, sizeof vars, at, "%s\"v%d\":\"x\"", i ? "," : "", i);
     }
     int written = snprintf(file, sizeof file,
                            "{\"version\":1,\"tasks\":[{\"id\":\"a\","

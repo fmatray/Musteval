@@ -159,9 +159,11 @@ static esp_err_t call_i2c(const char *tool, const tools_context_t *ctx,
         add_int(root, "addr", addr);
         add_int(root, "len", len);
         char hex[129];
+        static const char DIGITS[] = "0123456789abcdef";
         size_t at = 0;
-        for (size_t i = 0; i < (size_t)len && at + 3 < sizeof hex; i++) {
-            at += (size_t)snprintf(hex + at, sizeof hex - at, "%02x", buf[i]);
+        for (size_t i = 0; i < (size_t)len; i++) {
+            hex[at++] = DIGITS[buf[i] >> 4];
+            hex[at++] = DIGITS[buf[i] & 0x0f];
         }
         hex[at] = '\0';
         json_add_string(root, "hex", hex);

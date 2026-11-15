@@ -9,6 +9,7 @@
 
 #include "mcp.h"
 #include "store.h"
+#include "test_util.h"
 
 /* --- The namespace --------------------------------------------------------
  * `00-overview.md` §7 fixes the model-facing name as `mcp.<server_id>.<tool_name>`.
@@ -204,13 +205,13 @@ TEST_CASE("a tool with no schema still gets the accepting one", "[mcp]")
 TEST_CASE("a tool list past the cap reports truncation", "[mcp]")
 {
     char body[4096];
-    size_t used = (size_t)snprintf(body, sizeof body,
-                                   "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[");
+    size_t used = catf(body, sizeof body, 0,
+                       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[");
     for (int i = 0; i < MCP_MAX_TOOLS + 2; i++) {
-        used += (size_t)snprintf(body + used, sizeof body - used, "%s{\"name\":\"t%d\"}",
-                                 i > 0 ? "," : "", i);
+        used = catf(body, sizeof body, used, "%s{\"name\":\"t%d\"}", i > 0 ? "," : "", i);
     }
-    snprintf(body + used, sizeof body - used, "]}}");
+    used = catf(body, sizeof body, used, "]}}");
+    (void)used;
 
     mcp_tool_set_t set = {0};
     bool truncated = false;

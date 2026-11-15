@@ -11,6 +11,7 @@
 #include "cfg.h"
 #include "clock.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 #include "net.h"
 #include "store.h"
 
@@ -225,7 +226,7 @@ esp_err_t geo_locate(geo_fix_t *out)
                                    body_len > 0 ? body_len : 2, &candidate, &status);
         /* The key is out of scope after the attempt; wipe it so a stack dump of a
          * failed lookup is not a credential dump (`06-security.md` §11). */
-        memset(key, 0, sizeof key);
+        mbedtls_platform_zeroize(key, sizeof key);
         if (r == ESP_OK) {
             snprintf(candidate.provider, sizeof candidate.provider, "%s", p->id);
             candidate.source_ts = (int64_t)clock_now();

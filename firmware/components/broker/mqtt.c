@@ -13,6 +13,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 #include "mqtt_client.h"
 #include "store.h"
 
@@ -248,7 +249,7 @@ static esp_err_t start_server(mqtt_runtime_t *rt, const mqtt_server_t *server)
     rt->client = esp_mqtt_client_init(&config);
     /* The password is copied into the client's own storage by `esp_mqtt_client_init`;
      * the local buffer is wiped so a later stack dump is not a credential dump. */
-    memset(password, 0, sizeof password);
+    mbedtls_platform_zeroize(password, sizeof password);
     if (rt->client == NULL) return ESP_ERR_NO_MEM;
 
     rt->rx = heap_caps_malloc(MQTT_PAYLOAD_MAX + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

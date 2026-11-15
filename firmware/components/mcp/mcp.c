@@ -18,6 +18,7 @@
 #include "cfg.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 #include "net.h"
 #include "store.h"
 
@@ -234,7 +235,7 @@ static esp_err_t post(mcp_runtime_t *rt, const char *body, size_t len, char *res
                                 len, rt->server.timeout_ms, &res);
     /* Out of scope after the request: a stack dump of a failed call is not a
      * credential dump (`06-security.md` §11). */
-    memset(auth, 0, sizeof auth);
+    mbedtls_platform_zeroize(auth, sizeof auth);
 
     if (err != ESP_OK) {
         free(res.body);

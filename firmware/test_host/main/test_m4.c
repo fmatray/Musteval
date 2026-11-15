@@ -14,6 +14,7 @@
 #include "skills.h"
 #include "store.h"
 #include "sys.h"
+#include "test_util.h"
 #include "tools.h"
 
 /* The shipped tool array for the frozen 25-tool registry, measured from
@@ -214,13 +215,13 @@ TEST_CASE("todo bounds refuse and leave the list unchanged", "[m4]")
 
     /* 33 tasks in one append: refused, nothing partially inserted. */
     char big[2048];
-    size_t used = (size_t)snprintf(big, sizeof big,
-                                   "{\"op\":\"append\",\"phase\":\"Tasks\",\"items\":[");
+    size_t used = catf(big, sizeof big, 0,
+                       "{\"op\":\"append\",\"phase\":\"Tasks\",\"items\":[");
     for (int i = 0; i < 33; i++) {
-        used += (size_t)snprintf(big + used, sizeof big - used, "%s\"t%d\"",
-                                 i == 0 ? "" : ",", i);
+        used = catf(big, sizeof big, used, "%s\"t%d\"", i == 0 ? "" : ",", i);
     }
-    snprintf(big + used, sizeof big - used, "]}");
+    used = catf(big, sizeof big, used, "]}");
+    (void)used;
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op(list, big));
     TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
 
@@ -1336,7 +1337,6 @@ TEST_CASE("history_append reports a message that cannot fit at all", "[m4]")
     TEST_ASSERT_EQUAL_size_t(1, agent_history_count(history));
     TEST_ASSERT_NOT_NULL(strstr(history, "user"));
 }
-
 /* --- provider reply ------------------------------------------------------- */
 
 static const char *REPLY_TEXT =
@@ -2332,30 +2332,27 @@ TEST_CASE("todo refuses each bound with its own message", "[m4]")
     TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
 
     /* Nested `init` with 33 items in total across two phases. */
-    size_t used = (size_t)snprintf(call, sizeof call,
+    size_t used = catf(call, sizeof call, 0,
         "{\"op\":\"init\",\"list\":[{\"phase\":\"a\",\"items\":[");
     for (int i = 0; i < 17; i++) {
-        used += (size_t)snprintf(call + used, sizeof call - used, "%s\"n%d\"",
-                                 i == 0 ? "" : ",", i);
+        used = catf(call, sizeof call, used, "%s\"n%d\"", i == 0 ? "" : ",", i);
     }
-    used += (size_t)snprintf(call + used, sizeof call - used, "]},{\"phase\":\"b\",\"items\":[");
+    used = catf(call, sizeof call, used, "]},{\"phase\":\"b\",\"items\":[");
     for (int i = 0; i < 16; i++) {
-        used += (size_t)snprintf(call + used, sizeof call - used, "%s\"m%d\"",
-                                 i == 0 ? "" : ",", i);
+        used = catf(call, sizeof call, used, "%s\"m%d\"", i == 0 ? "" : ",", i);
     }
-    snprintf(call + used, sizeof call - used, "]}]}");
+    used = catf(call, sizeof call, used, "]}]}");
     why[0] = '\0';
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list, call, why, sizeof why));
     TEST_ASSERT_NOT_NULL(strstr(why, "at most 32 tasks"));
     TEST_ASSERT_EQUAL_MEMORY(&before, list, sizeof before);
 
     /* Flat `init` with 33 items, and one with an over-long item. */
-    used = (size_t)snprintf(call, sizeof call, "{\"op\":\"init\",\"phase\":\"a\",\"items\":[");
+    used = catf(call, sizeof call, 0, "{\"op\":\"init\",\"phase\":\"a\",\"items\":[");
     for (int i = 0; i < 33; i++) {
-        used += (size_t)snprintf(call + used, sizeof call - used, "%s\"n%d\"",
-                                 i == 0 ? "" : ",", i);
+        used = catf(call, sizeof call, used, "%s\"n%d\"", i == 0 ? "" : ",", i);
     }
-    snprintf(call + used, sizeof call - used, "]}");
+    used = catf(call, sizeof call, used, "]}");
     why[0] = '\0';
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE, todo_op_why(list, call, why, sizeof why));
     TEST_ASSERT_NOT_NULL(strstr(why, "at most 32 tasks"));

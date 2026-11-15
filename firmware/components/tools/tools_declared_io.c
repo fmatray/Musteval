@@ -15,6 +15,7 @@
 
 #include "cfg.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 
 #define TAG "tools"
 
@@ -128,7 +129,7 @@ static bool ref_resolves(const char *key, void *ctx)
     char value[CFG_SECRET_MAX];
     size_t len = 0;
     esp_err_t err = cfg_resolve_secret(key, value, sizeof value, &len);
-    if (err == ESP_OK) memset(value, 0, sizeof value);
+    if (err == ESP_OK) mbedtls_platform_zeroize(value, sizeof value);
     return err == ESP_OK;
 }
 
@@ -256,7 +257,7 @@ static esp_err_t request(const tools_declared_t *tool, const json_node_t *args,
             } else {
                 snprintf(values[count], sizeof values[count], "%s", expanded);
             }
-            memset(expanded, 0, sizeof expanded);
+            mbedtls_platform_zeroize(expanded, sizeof expanded);
             snprintf(names[count], sizeof names[count], "%s", key);
             name_ptrs[count] = names[count];
             value_ptrs[count] = values[count];
