@@ -7,6 +7,14 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 # PSRAM is not general heap without this (docs/01-hardware.md §2)
 CONFIG_SPIRAM_USE_MALLOC=y
+# A TLS handshake allocates its input buffer from the internal pool by default:
+# `MBEDTLS_SSL_IN_CONTENT_LEN` is 16384 and `SPIRAM_MALLOC_ALWAYSINTERNAL` is 16384, so
+# every handshake takes the whole DMA-capable pool and the WiFi driver's next allocation
+# fails (`wifi:m f null`), which surfaced as `ESP_ERR_HTTP_CONNECT`. Move both the TLS
+# buffers and the WiFi/LWIP pools into the 8 MiB part; internal SRAM is then left to the
+# DMA descriptors that alone can use it.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # Custom partition table (docs/01-hardware.md §4)
 CONFIG_PARTITION_TABLE_CUSTOM=y

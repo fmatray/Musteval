@@ -40,10 +40,10 @@ build (`CONFIG_SPIRAM_MODE_OCT=y`) and it is *not* usable as a general heap unle
 
 | Resource | Budget for Musteval | Notes |
 |---|---|---|
-| Internal SRAM | FreeRTOS tasks, TLS record buffers, NDJSON scratch | Never satisfied from PSRAM; mbedTLS DMA-capable allocations must stay internal |
+| Internal SRAM | FreeRTOS tasks, NDJSON scratch, DMA descriptors | `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` moves mbedTLS's own allocations out; what remains is what only internal SRAM can satisfy |
 | PSRAM | History buffers, tool-result spill, `/workspace/` file staging | Octal mode steals GPIO33–37 (see §6.1) |
 | Flash | App partition + LittleFS (`docs/00-overview.md` §3) | 8 MiB is ample; LittleFS sized at build time |
-| MQTT clients | One `esp_mqtt_client_handle_t` + RX buffer per `mqtt.servers[]` entry | Bounded by `mqtt.max_servers` (default 4); a `tls: true` entry adds an mbedTLS session to internal SRAM |
+| MQTT clients | One `esp_mqtt_client_handle_t` + RX buffer per `mqtt.servers[]` entry | Bounded by `mqtt.max_servers` (default 4); a `tls: true` entry adds an mbedTLS session, whose allocations are PSRAM |
 | Geo scan buffer | `wifi_ap_record_t` array of `geo.max_bssids` entries plus one provider response buffer | Default 12 entries (~1.3 KiB in internal SRAM); freed as soon as the fix is returned |
 
 Rules:
@@ -60,6 +60,15 @@ Rules:
   `MALLOC_CAP_SPIRAM`.
 - MQTT client contexts and the geo scan buffer stay in internal SRAM: both are
   DMA-reachable network buffers and must not be satisfied from PSRAM.
+- mbedTLS allocates from PSRAM (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`), and so do the
+  WiFi and LWIP pools (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`). Left at their
+  defaults, a single handshake asks for `MBEDTLS_SSL_IN_CONTENT_LEN` (16 KiB) out of a
+  pool that `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384` had already confined to
+  internal SRAM; the next WiFi allocation then fails (`wifi:m f null`) and the request
+  surfaces as `ESP_ERR_HTTP_CONNECT`, which reads like a DNS fault and is not one.
+- `status.mem` reports the internal and PSRAM pools separately
+  (`heap_caps_get_free_size` with `MALLOC_CAP_INTERNAL` and `MALLOC_CAP_SPIRAM`), per
+  `docs/04-protocol.md` §3.12. A single total hides the only number that can run out.
 - Firmware must degrade, not abort, when a PSRAM allocation fails: drop the oldest
   history entry and log a `log` message at `warn`.
 

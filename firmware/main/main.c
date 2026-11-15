@@ -1025,8 +1025,15 @@ static void answer_command(const json_node_t *frame)
             .userfs_total = (int64_t)ufs_total,
             .wsfs_used = (int64_t)wfs_used,
             .wsfs_total = (int64_t)wfs_total,
-            .heap_free = (int64_t)esp_get_free_heap_size(),
-            .psram_free = 0,
+            /* `04-protocol.md` §3.12 defines `heap_free` as *internal* heap and
+             * `psram_free` as PSRAM, so neither may be a bare total: with PSRAM in
+             * the default pool `esp_get_free_heap_size` reports both and reads as
+             * ample while internal SRAM — the only pool the WiFi driver and the DMA
+             * descriptors can use — is nearly gone. That is exactly how an
+             * `ESP_ERR_HTTP_CONNECT` looked like a DNS problem for hours. */
+            .heap_free = (int64_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL |
+                                                          MALLOC_CAP_8BIT),
+            .psram_free = (int64_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
             .wifi_state = net_connected()      ? "connected"
                           : net.state == NET_STATE_FAILED    ? "failed"
                           : net.state == NET_STATE_CONNECTING ? "connecting"
