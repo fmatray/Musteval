@@ -1073,7 +1073,13 @@ class BridgeApp(App):
                 # and its `result` never carries the value (`04` §4.10).
                 await self._request_secret(frame)
             else:
-                await self.session.send(frame)
+                # `cancel`, `ping`, `ack`: no reply to wait for, but the write can
+                # still fail. Uncaught it escapes the worker as `WorkerFailed`,
+                # which is a crash, not the line saying the frame never left.
+                try:
+                    await self.session.send(frame)
+                except SessionError as exc:
+                    self._chat().write(f"{exc}", kind="error")
 
     # -- lifecycle ------------------------------------------------------
 

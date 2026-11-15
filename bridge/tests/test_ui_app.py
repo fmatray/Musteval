@@ -1180,3 +1180,28 @@ async def test_diag_reports_the_failure_rather_than_rendering_a_stale_status():
     await _run(reply, body)
 
 
+async def test_a_fire_and_forget_command_reports_a_write_it_could_not_make():
+    """`/cancel` and `/ping` are `send`, not `request`: nothing waits for a reply.
+    The write itself can still fail, and `TransportError` becomes `SessionError` on
+    the way up (`09` §7). Left uncaught it escapes the worker, so the reader sees a
+    crash instead of the line saying the frame never left (`05-bridge.md` §4.1)."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        return []
+
+    async def body(app, pilot):
+        await app.session._transport.close()
+        app.submit("/cancel")
+        await _await_chat(pilot, app, "transport is not open")
+        text = _text(app)
+        assert "transport is not open" in text
+        # An error line, not a normal one: the reader must see the frame failed.
+        assert "✗" in text
+
+    await _run(reply, body)
+
+
