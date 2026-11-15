@@ -52,6 +52,9 @@ esp_err_t geo_init(void)
 {
     memset(&s_state, 0, sizeof s_state);
     s_have_fix = false;
+    /* A reason belongs to the chain that produced it. A `reload` installs a new
+     * chain, so the old reason describes providers that are no longer configured. */
+    s_last_error[0] = '\0';
     s_state.cache_ttl_s = GEO_CACHE_TTL_S_DEFAULT;
     s_state.timeout_ms = GEO_TIMEOUT_MS_DEFAULT;
     s_state.max_bssids = GEO_MAX_BSSIDS_DEFAULT;
