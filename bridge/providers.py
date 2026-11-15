@@ -21,16 +21,17 @@ from typing import Callable
 THINKING_NONE = "none"
 THINKING_REASONING_EFFORT = "reasoning_effort"
 
-#: The level names a picker offers, lowest first (`05` §7.1). `xhigh` is the top of
-#: the ladder; `max` and `minimal` are real values on some surfaces but belong to no
-#: rung of it, so they are expressible and never offered.
-THINKING_LEVELS = ("none", "low", "medium", "high", "xhigh")
+#: The level names a picker offers, lowest first (`05` §7.1). `max` is the top of the
+#: ladder — Ollama publishes it for most of its thinking models — and `minimal` is a
+#: real value on some surfaces that belongs to no rung, so it is expressible and never
+#: offered.
+THINKING_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
 
-#: The levels Ollama's request surface can express for any of its thinking models
-#: (`05` §7.2). `none` and `medium` are not among them: Ollama resolves an
-#: unsupported name to the model's own default, and several models default to their
-#: highest effort, so `none` would make thinking more intense rather than off.
-OLLAMA_LEVELS = ("low", "high")
+#: Ollama's per-model capability endpoint, relative to the base URL's origin. It is
+#: the only surface that answers "which levels does *this* model take"; a provider
+#: row is a statement about every model of that provider, and that is why `max` was
+#: invisible before (`05` §7.1).
+SHOW_PATH = "/api/show"
 
 #: The levels Mistral's documented reasoning models have in common
 #: (`docs.mistral.ai/inference/conversations/reasoning`). `mistral-large-4-0` takes
@@ -53,6 +54,11 @@ class Provider:
     label: str
     base_url: str
     models_url: str = ""
+    #: The endpoint that answers which levels *one model* takes, when the provider has
+    #: one. Ollama's `POST /api/show` returns `thinking: {values, default}`, and it is
+    #: the only surface that can say why `glm-5.3` offers `max` and `gemma4` does not
+    #: (`05` §7.1). Empty means the provider publishes no per-model answer.
+    show_url: str = ""
     thinking: str = THINKING_NONE
     needs_key: bool = True
     #: The levels this provider's request surface can express, when that is narrower
@@ -173,27 +179,28 @@ BUILTIN: tuple[Provider, ...] = (
         # needs no key: names are public (`docs.ollama.com/cloud`).
         models_url="https://ollama.com/v1/models",
         # `docs.ollama.com/api/openai-compatibility` lists `reasoning_effort` as a
-        # supported field, and `/api/show` publishes each model's own `values`.
-        # The catalog cannot know which model the reader will pick, so it offers
-        # the levels every published thinking model takes. A model with boolean
-        # controls maps `none` to `false` and any named level to `true`.
+        # supported field, and `POST /api/show` publishes each model's own
+        # `thinking.values` — measured: `deepseek-v4.1-flash` answers
+        # `[false, "low", "high", "max"]`. That endpoint is the answer for a chosen
+        # model; this row is the fallback while nobody has chosen one, so it offers
+        # the whole ladder (`05` §7.1).
         #
-        # `low` and `high` only. The names are model-defined and an unsupported one
-        # is not clamped, it resolves to the model's default — which is often the
-        # highest (`glm-5.3-flash` defaults to `max`). So `none` would *maximise*
-        # thinking, and `medium` would too; both are unexpressible here. `low` and
-        # `high` are the two names every published thinking model accepts, and on a
-        # boolean model both mean `true` (`05` §7.2).
+        # A boolean `false` in `values` is the off switch and reads as `none` here.
+        # The compatibility layer maps `"none"` to that `false` and every named level
+        # to `true` on a boolean model, so `none` is expressible and no longer
+        # refused: the old `low`/`high` narrowing existed because an unsupported name
+        # resolved to the model default, which is only a hazard for names the model
+        # did not publish — and now we ask it.
+        show_url="https://ollama.com/api/show",
         thinking=THINKING_REASONING_EFFORT,
-        levels=OLLAMA_LEVELS,
     ),
     Provider(
         id="ollama",
         label="Ollama (local)",
         base_url="http://127.0.0.1:11434/v1",
         models_url="http://127.0.0.1:11434/v1/models",
+        show_url="http://127.0.0.1:11434/api/show",
         thinking=THINKING_REASONING_EFFORT,
-        levels=OLLAMA_LEVELS,
         needs_key=False,
     ),
     Provider(
@@ -519,3 +526,71 @@ def models_with_efforts(
         return parse_catalog(fetch(provider.models_url, api_key))
     except Exception:  # noqa: BLE001 - a failed fetch is a chat line, not a crash
         return []
+
+
+def parse_show(payload: bytes) -> tuple[str, ...]:
+    """The levels one model publishes in `POST /api/show`, in ladder order.
+
+    The document is `{"capabilities": [...], "thinking": {"values": [...],
+    "default": "high"}}`. `values` mixes booleans and strings: `false` is the off
+    switch and reads as `none`, any other string is itself. A document without a
+    `thinking` object — a model that cannot think — is an empty tuple, which the
+    caller reads as "this model takes no level" and is different from "no answer".
+
+    Names outside the ladder are kept in the order the provider published them rather
+    than dropped: a model that publishes `"minimal"` takes it, and dropping it is
+    how `max` went missing (`05` §7.1).
+    """
+    try:
+        doc = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return ()
+    if not isinstance(doc, dict):
+        return ()
+    thinking = doc.get("thinking")
+    if not isinstance(thinking, dict):
+        return ()
+    values = thinking.get("values")
+    if not isinstance(values, list):
+        return ()
+    named: list[str] = []
+    for value in values:
+        if value is False:
+            name = THINKING_NONE
+        elif isinstance(value, str) and value:
+            name = value
+        elif value is True:
+            # A boolean-only model: `true` means "thinking on", which the ladder
+            # spells as a named level rather than a second off switch.
+            name = "high"
+        else:
+            continue
+        if name not in named:
+            named.append(name)
+    # Ladder order first, so the picker reads lowest-to-highest; anything the ladder
+    # does not name keeps its published order after them.
+    return tuple(
+        [level for level in THINKING_LEVELS if level in named]
+        + [name for name in named if name not in THINKING_LEVELS]
+    )
+
+
+def levels_for(
+    provider: Provider,
+    model: str,
+    api_key: str = "",
+    fetch: Callable[[str, str], bytes] | None = None,
+) -> tuple[str, ...]:
+    """What one model takes, or `()` when the provider cannot say.
+
+    `fetch` is the caller's HTTP verb, so this module keeps no socket. A provider with
+    no `show_url` answers `()`, and the caller falls back to the row's own levels:
+    OpenRouter states its per-model set in the list response instead, and every other
+    row has no per-model endpoint at all (`05` §7.1).
+    """
+    if fetch is None or not provider.show_url or not model:
+        return ()
+    try:
+        return parse_show(fetch(provider.show_url, api_key, {"model": model}))
+    except Exception:  # noqa: BLE001 - a failed fetch is a chat line, not a crash
+        return ()

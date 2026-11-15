@@ -731,17 +731,29 @@ class ModelStep(_StepBox):
 
 
 class ModelPicker(PromptBox[str | None]):
-    """`05` §7.3 `/model`: the provider's published list, or a typed name.
+    """`05` §7.3 `/model`: the provider's published list on one tab, a typed name on
+    the other.
+
+    Two tabs, not a field beside a list. With both mounted the field was pre-seeded
+    from the stored name and the answer was `typed or chosen`, so the field always
+    won and the list could never be used. A tab holds exactly one answer, so Enter
+    takes what the reader is looking at and nothing else.
 
     The list is offered, not trusted. The fetch runs without the API key — `06` §A1
     keeps it in the device's NVS — so a provider that requires auth on its model
-    endpoint answers nothing and the field is the whole picker. Typed text wins over
-    the selection, the same rule the wizard's step 3 uses.
+    endpoint answers nothing and the typing tab is the whole picker.
     """
 
-    BINDINGS = [Binding("enter", "submit", "Use", show=False)]
-    CSS = _CSS
-    AUTO_FOCUS = "#step-model"
+    BINDINGS = [
+        Binding("tab", "cycle_tab", "Next tab", show=False),
+        Binding("shift+tab", "cycle_tab", "Previous tab", show=False),
+    ]
+    CSS = (
+        _CSS
+        + """
+#step-model-list { height: 12; }
+"""
+    )
 
     def __init__(
         self, provider: str, label: str, models: list[str], current: str
@@ -751,6 +763,10 @@ class ModelPicker(PromptBox[str | None]):
         self.label = label or provider
         self.models = models
         self.current = current
+        # Focusing a widget inside a hidden `TabPane` makes `TabbedContent` switch to
+        # that pane, so the auto-focus target is the widget on the tab the picker
+        # opens on. Left at `#step-model` it silently moved the reader off the list.
+        self.AUTO_FOCUS = "#step-model-list" if models else "#step-model"
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="prompt-box"):
@@ -761,54 +777,75 @@ class ModelPicker(PromptBox[str | None]):
                     classes="prompt-hint",
                     markup=False,
                 )
-                yield Select(
-                    self._choices(),
-                    value=self.current or self.models[0],
-                    allow_blank=False,
-                    id="step-model-select",
-                )
             else:
                 # The reason is the caller's line, in chat: this names the state.
                 yield Static(
                     "no list from this provider; type the model name",
                     classes="prompt-hint",
                 )
-            yield Input(
-                self.current,
-                placeholder="or type a model",
-                suggester=SuggestFromList(self.models, case_sensitive=False)
-                if self.models
-                else None,
-                id="step-model",
+            with TabbedContent(
+                initial="list" if self.models else "type", id="step-model-tabs"
+            ):
+                if self.models:
+                    with TabPane("list", id="list"):
+                        yield OptionList(
+                            *[Option(name, id=name) for name in self._names()],
+                            id="step-model-list",
+                        )
+                with TabPane("type", id="type"):
+                    yield Input(
+                        self.current,
+                        placeholder="type a model name",
+                        suggester=SuggestFromList(self.models, case_sensitive=False)
+                        if self.models
+                        else None,
+                        id="step-model",
+                    )
+            yield Static(
+                "Tab: switch | Enter: use | Esc: cancel", classes="prompt-hint"
             )
-            yield Static("Enter: use | Esc: cancel", classes="prompt-hint")
 
-    def _choices(self) -> list[tuple[str, str]]:
-        """The list, plus the stored name when the provider did not publish it.
+    def _names(self) -> list[str]:
+        """The list, plus the stored name when the provider did not publish it, so
+        Enter on the first row is the model already stored.
 
-        The two controls must agree on what is current. A stored name the fetch did
-        not return — `gemma4:cloud` against the cloud list, which is the state of the
-        first device this ran on — would otherwise leave the field saying one model
-        and the highlight another, and clearing the field would silently move the
-        reader onto a model they never chose.
+        A stored name the fetch did not return — `gemma4:cloud` against the cloud
+        list, which is the state of the first device this ran on — would otherwise be
+        one keystroke away only on the typing tab.
         """
         names = list(self.models)
         if self.current and self.current not in names:
             names.insert(0, self.current)
-        return [(name, name) for name in names]
+        return names
+
+    def _active(self) -> str:
+        return self.query_one("#step-model-tabs", TabbedContent).active
+
+    def action_cycle_tab(self) -> None:
+        if not self.models:
+            return  # one pane: nothing to switch to
+        tabs = self.query_one("#step-model-tabs", TabbedContent)
+        tabs.active = "type" if tabs.active == "list" else "list"
+        self.query_one(
+            "#step-model" if tabs.active == "type" else "#step-model-list"
+        ).focus()
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        event.stop()
+        self.dismiss(str(event.option.id) if event.option.id is not None else None)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         self.action_submit()
 
     def action_submit(self) -> None:
-        typed = self.query_one("#step-model", Input).value.strip()
-        chosen = (
-            self.query_one("#step-model-select", Select).value
-            if self.query("#step-model-select")
-            else ""
-        )
-        self.dismiss(typed or (chosen if isinstance(chosen, str) else "") or None)
+        if self._active() == "list":
+            option = self.query_one("#step-model-list", OptionList).highlighted_option
+            self.dismiss(str(option.id) if option is not None else None)
+            return
+        self.dismiss(self.query_one("#step-model", Input).value.strip() or None)
 
 
 class FilePrompt(PromptBox[str | None]):

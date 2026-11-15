@@ -810,8 +810,9 @@ optional model-list endpoint and the thinking levels the provider's models accep
 | `label` | What the dropdown shows (`OpenAI`, `Ollama (local)`) |
 | `base_url` | The request prefix, version path included, because the firmware appends `/chat/completions` verbatim |
 | `models_url` | Optional; the absolute URL returning the model list, because a custom provider's list may live on another host than its `base_url`. Absent means the provider has no list this bridge can read |
+| `show_url` | Optional; the endpoint answering which levels *one model* takes. Only Ollama has one — `POST <origin>/api/show` with `{"model":"<name>"}`. Absent means the row's `levels` is the widest answer available |
 | `thinking` | `none`, or the `extra_body` member name that expresses a level |
-| `levels` | The subset of the five-name ladder this row's surface can express; absent means none |
+| `levels` | The subset of the six-name ladder this row's surface can express; absent means none |
 | `needs_key` | `false` for a local server that ignores the header but still requires it |
 
 The built-in list covers the providers `03-config.md` §Provider compatibility
@@ -856,9 +857,13 @@ request verbatim and caps at four flat members. So:
 | `none` | none; the field is absent | nothing |
 | `reasoning_effort` | the row's `levels`, narrowed further per model where the list publishes it | `{"reasoning_effort":"<level>"}` |
 
-`none` is off and `xhigh` is the top of the ladder; the five names are the whole
-vocabulary a picker can offer. A row narrows the set with `levels`. That is not a
-preference: it is the set of names the provider's request surface can express.
+`none` is off and `max` is the top of the ladder; the six names are the whole
+vocabulary a picker can offer. `minimal` is a real value on some surfaces and belongs
+to no rung, so it is expressible through the free-form member and never offered: a
+ladder that does not hold a name drops it rather than offering it, which is exactly
+how `max` was invisible before it was added here. A row narrows the set with
+`levels`. That is not a preference: it is the set of names the provider's request
+surface can express.
 **Offered and expressible are different questions.** `reasoning_effort` is a
 free-form name, so a value the device already stores is written back even when the
 row does not list it — otherwise a re-run of the wizard would replace a setting it
@@ -868,10 +873,10 @@ The per-row sets, and why each is what it is:
 
 |Provider|Offered|Why the ladder is trimmed|
 |---|---|---|
-|OpenAI|all five|Its levels are model-dependent and `/v1/models` publishes ids only, so no per-model set exists to narrow by; the two models that 400 on `none` also cannot call tools over Chat Completions, so they are unusable at any level|
-|OpenRouter|per model|Its model list publishes each model's own `supported_efforts`; the whole five-name ladder is the fallback where a model publishes none|
+|OpenAI|all six|Its levels are model-dependent and `/v1/models` publishes ids only, so no per-model set exists to narrow by; the two models that 400 on `none` also cannot call tools over Chat Completions, so they are unusable at any level|
+|OpenRouter|per model|Its model list publishes each model's own `supported_efforts`; the whole six-name ladder is the fallback where a model publishes none|
 |Groq|`low`, `medium`, `high`|`console.groq.com/docs/reasoning` scopes `none`/`default` to Qwen 3.8 27B and `xhigh` to Muse Spark Open, so neither is a name every model takes|
-|Ollama Cloud, Ollama|`low`, `high`|Names are per model and an unsupported one resolves to the model default, often the highest|
+|Ollama Cloud, Ollama|all six, as the fallback|`show_url` is set, so a chosen model's own answer replaces this row; the row is what a model nobody has asked about yet gets, and the full ladder is what the API's own default set is when a provider publishes nothing|
 |vLLM|`none`, `low`, `medium`, `high`|`low`/`medium`/`high` inject `enable_thinking=true` and `none` injects `false`; `xhigh` is not in that mapping, and the docs warn a template silently falls back to *maximum* on a name it does not know|
 |Anthropic|none|Its compatibility layer **ignores** `reasoning_effort`; thinking needs the nested `{"type":"enabled","budget_tokens":N}`, which the flat-scalar rule forbids|
 |Gemini|`low`, `medium`, `high`|Its mapping stops at `high`, and `none` is documented to disable 2.5 models only — reasoning cannot be turned off on 2.5 Pro or the Gemini 3 family|
@@ -881,9 +886,18 @@ The per-row sets, and why each is what it is:
 model.** OpenRouter's list carries a `reasoning` object per model with
 `supported_efforts`, `default_effort` and `mandatory`; 340 of its 460 rows carry the
 object and 216 publish a non-empty effort list. The step reads it from the list it
-already fetched, so a model that takes only `low`/`high` does not invite `xhigh`. When the list carries no such object — every
-other provider — the picker falls back to the row's set, because the alternative is
-guessing per model from a name.
+already fetched, so a model that takes only `low`/`high` does not invite `xhigh`. When
+the list carries no such object — every other provider — the picker falls back to the
+row's set, because the alternative is guessing per model from a name.
+
+**The wizard does not call `show_url`.** It makes one GET per provider and would need
+one POST per model to narrow by a chosen model, so step 3 offers the row's set and
+`/thinking` makes the per-model call instead (§7.2). The consequence is bounded: on
+Ollama the row now holds the whole ladder, and an unsupported name there resolves to
+the model's default rather than failing, so a wizard-chosen level outside the model's
+own set changes nothing and 400s nothing. On the providers whose rows are still
+trimmed — Groq, Gemini, Mistral, vLLM — the row is the intersection over that
+provider's models, so the wizard never offers a name one of them rejects.
 
 `thinking_budget` is not a catalog strategy. It wrote a flat `{"thinking_budget":N}`
 member, which Anthropic's compatibility layer does not read, so the level was inert
@@ -900,20 +914,35 @@ that rejects the member turns every call into a 400. Where the picker is absent,
 provider because that is all the device is told, but the values a request accepts
 belong to the model: Ollama publishes them per model in `/api/show` as
 `{"values": [...], "default": ...}`, and they differ — `gemma4:31b` takes
-`[false, true]`, `gpt-oss:120b` takes `["low","medium","high"]`, `glm-5.3` takes
-`["low","high","max"]`. Narrowing by model happens **only where the list the step
-already fetched publishes it — OpenRouter's list does, above — and never by
-fetching a second endpoint: the wizard makes one GET per provider, and `/api/show`
-is a POST per model.
+`[false, true]`, `gpt-oss:120b` takes `["low","medium","high"]`, and
+`deepseek-v4.1-flash` answers `[false, "low", "high", "max"]`.
 
-**Ollama's rows therefore offer `low` and `high` only.** Ollama applies a supported
-name exactly and *resolves an unsupported one to the model's default*, which is often
-the highest (`glm-5.3-flash` defaults to `max`). So on that surface `none` would
-maximise thinking rather than disable it, and `medium` would too. `low` and `high`
-are the only names every published thinking model accepts, and on a boolean model
-(`gemma4`) both mean `true`, with `none` absent because there is no member that turns
-thinking off on `/chat/completions`. This is a limit of the request surface, not of
-the catalog: `/v1/responses` has `think: false`, the compatible surface does not.
+**A chosen model's own answer wins, and it is asked for.** `POST <origin>/api/show`
+with `{"model":"<name>"}` is the only surface that says what *this* model takes, so
+`show_url` names it, and `/thinking` puts one POST to it per chosen model. The
+answer is cached for the length of one command, never persisted: the level set is a
+fact about the provider's deployment, not about the device. `/model` does not ask it:
+the model has just changed, so the set for the name it would ask about is not the set
+the reader is about to need, and the next `/thinking` asks about the name stored then.
+
+Two consequences follow, and both are the point of the endpoint:
+
+- `false` in `values` is Ollama's off switch, and it reads as `none`. The
+  compatibility layer maps `"none"` onto that `false` and every named level onto
+  `true` on a boolean model, so `none` is expressible on this surface. The old
+  `low`/`high` narrowing existed because an *unsupported* name resolves to the model's
+  default, often the highest — that is a hazard for names a model did not publish, and
+  asking the model is what removes it.
+- A name outside the six-rung ladder is kept, in ladder order after the known rungs,
+  rather than dropped. A model that publishes `minimal` takes it, and dropping names a
+  provider published is how `max` went missing.
+
+**Where no per-model endpoint exists, the row answers.** OpenAI, Groq, Gemini, Mistral
+and vLLM publish no per-model level object, so their rows' `levels` are the answer and
+no second request is made. OpenRouter's list carries each model's
+`reasoning.supported_efforts` inline, so it needs no `show_url` either: the step reads
+it from the list it already fetched. A failure on the show endpoint is silent — the
+row's set is used, and the picker is never empty because a network was.
 
 ### 7.2 `/thinking`
 
@@ -924,14 +953,19 @@ network and the key as well — a form of a full reconfiguration to change one n
 
 | Form | Sends | Answer |
 |---|---|---|
-| `/thinking` | `config.get` | the stored level, and the levels this provider accepts |
-| `/thinking <level>` | `config.get`, then `config.set llm.providers` | the level written, and whether the chain took it |
+| `/thinking` | `config.get`, then one `POST` to the provider's `show_url` when it has one | the stored level, and the levels **this model** accepts |
+| `/thinking <level>` | `config.get`, the level-set lookup, then `config.set llm.providers` | the level written, and whether the chain took it |
 
-- **The levels offered are the catalog's, for the provider the device is already
-  configured with.** `/thinking high` against a provider whose catalog row says
-  `thinking: none` is refused **on the host**, naming the provider, and no frame is
-  sent: the device would accept any flat member and turn every call into a 400, and
-  a 400 arriving on the reader's next prompt is a worse way to learn that.
+- **The levels offered are the chosen model's.** The lookup is `POST
+  <origin>/api/show` for the model the entry names (§7.1), and its answer replaces
+  the row's set. That is the only way `/thinking max` can be offered on a model
+  publishing `max` while `/thinking none` is refused on one that cannot turn
+  thinking off. Where the provider has no per-model endpoint, or the lookup fails,
+  the row's set is the answer.
+- **A level the model does not publish is refused on the host**, naming the model's
+  set, and no frame is sent: the device would accept any flat member and turn every
+  call into a 400, and a 400 arriving on the reader's next prompt is a worse way to
+  learn that. So is a provider whose row says `thinking: none`.
 - **The write is the whole array.** `config.set` on `llm.providers.0.extra_body`
   needs index 0 to exist, and `04` §4.9 will not create an array index; the array
   form also preserves every other member of the entry, which is what makes this a
@@ -939,21 +973,22 @@ network and the key as well — a form of a full reconfiguration to change one n
 - **`none` is a level, where the provider takes one.** It writes
   `{"reasoning_effort":"none"}` rather than deleting the member, because a stale
   explicit level in `extra_body` must not survive a reader turning thinking off.
-- **Where the provider cannot say "off", `/thinking none` is refused, not
-  approximated.** Ollama's rows offer `low` and `high` only (§7.1): its surface
-  resolves an unsupported name to the model's default, and several models default to
-  their highest effort, so writing `"none"` would intensify thinking rather than
-  disable it. The refusal names the levels that do work.
-- **Such a provider's absent member reads as `the provider's default`, never
-  `none`.** `/thinking` with no stored level and no off switch reports that the model
-  thinks at its own default, because `none` would claim a setting the entry does not
-  have. A stored level, whatever its name, is still reported as itself.
-- **A refused level is "not offered", never "not taken".** The row lists the names
-  every model of that provider accepts, so `max` is a level a `glm` model takes and
-  the `ollama-cloud` row still does not offer it. The refusal says so and names the
-  offered levels; it does not tell the reader their model rejects a value it
-  publishes. Setting such a level is a `config.set` of the entry's `extra_body`, and
-  the wizard preserves it on a re-run (§13.6).
+- **Where the model publishes no off switch, `/thinking none` is refused, not
+  approximated.** Ollama's surface resolves an *unsupported* name to the model's
+  default, so writing `"none"` at a model that does not publish it would intensify
+  thinking rather than disable it. A model that publishes `false` does take it, and
+  the compatibility layer maps `"none"` onto that `false` (§7.1). The refusal names
+  the levels that do work.
+- **Such a model's absent member reads as `the provider's default`, never `none`.**
+  `/thinking` with no stored level and no off switch reports that the model thinks at
+  its own default, because `none` would claim a setting the entry does not have. A
+  stored level, whatever its name, is still reported as itself.
+- **A refused level is "not offered", never "not taken".** A set can be the row's
+  intersection over every model of the provider, so `max` may be a level a `glm` model
+  takes while the row does not offer it. The refusal says so and names the offered
+  levels; it does not tell the reader their model rejects a value it publishes.
+  Setting such a level is a `config.set` of the entry's `extra_body`, and the wizard
+  preserves it on a re-run (§13.6).
 - **The reply is the device's, not the request's.** `config.set` reports `applied`
   only when the running chain re-read the document (`04` §4.9), so the chat line
   says `thinking: high` only when the next prompt will use it.
@@ -961,8 +996,8 @@ network and the key as well — a form of a full reconfiguration to change one n
   switches to the settings grid, because `/config` and its `Ctrl+R` refresh are
   the reader asking for that grid. `/thinking` reads the document as an input, so it
   asks for the same reply quietly and its answer lands in the chat pane the reader
-  is looking at. The same rule holds for `/onboard`, which reads the document only
-  to pre-fill its forms.
+  is looking at. The same rule holds for `/onboard`, which reads the document only to
+  pre-fill its forms, and for `/model`, which refreshes the same way after its write.
 
 **Custom providers come from a host file, not a screen.** `~/.config/musteval/
 providers.json` (honouring `XDG_CONFIG_HOME`) is a list of entries in the same shape
@@ -1057,7 +1092,7 @@ command sends the existing `config.get` and `config.set`.
 
 | Form | Sends | Answer |
 |---|---|---|
-| `/model` | `config.get` (only when the config is not already cached), then the picker | the picker, pre-filled with the stored model |
+| `/model` | `config.get`, then the picker | the picker: a **list** tab and a **type** tab |
 | `/model <name>` | the same `config.get`, then `config.set llm.providers` | the name written, and whether the chain took it |
 
 - **The list is fetched from `<stored base_url>/models`, not from the catalog row.**
@@ -1074,9 +1109,21 @@ command sends the existing `config.get` and `config.set`.
   and no frame reads it back), so a provider that guards `/models` yields no list.
   The picker still opens, one chat line says why the list is empty, and the field
   takes whatever is typed; neither outcome is an error.
-- **The typed name wins over the highlighted one.** The picker is an `Input`
-  beside the list, not one or the other, so a model published after the fetch,
-  or never published, is one keystroke away.
+- **One tab, one answer.** The picker opens on a **list** tab and `Tab` reaches a
+  **type** tab: the list tab dismisses the highlighted row, the type tab dismisses the
+  field's text. The earlier shape was an `Input` beside the list with the typed value
+  winning, and because the field was seeded with the stored model it was never empty —
+  so it always won, and picking from the list did nothing at all. Two surfaces with a
+  precedence rule between them is the bug; two tabs have no precedence to get wrong.
+- **The list tab is where the cursor starts, and only when there is a list.** The
+  stored name is offered as a row (first, when the provider omits it) so `Enter`
+  without moving re-commits it, and a provider that answered nothing opens on the type
+  tab instead, because a list tab with no rows is a dead end the reader has to `Tab`
+  out of. The auto-focus names the widget inside the *visible* tab: focusing one inside
+  a hidden `TabPane` switches the pane, which is the same "the reader is somewhere they
+  did not ask to be" failure.
+- **The type tab keeps the stored name pre-filled.** There it cannot outrank anything,
+  and `Ctrl+U` then retyping is cheaper than retyping from empty.
 - **`/model <name>` skips the fetch entirely.** The name is written as given: that
   is the route for a model the provider does not publish, and it is also what a
   reader with a known name wants instead of waiting on a list.

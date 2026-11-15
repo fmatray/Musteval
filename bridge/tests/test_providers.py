@@ -72,8 +72,16 @@ def test_reasoning_effort_levels_map_to_the_member():
     entry = providers.Provider(
         id="x", label="X", base_url="u", thinking=providers.THINKING_REASONING_EFFORT
     )
-    assert entry.thinking_levels == ("none", "low", "medium", "high", "xhigh")
+    assert entry.thinking_levels == (
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
     assert entry.extra_body("none") == {"reasoning_effort": "none"}
+    assert entry.extra_body("max") == {"reasoning_effort": "max"}
     assert entry.extra_body("low") == {"reasoning_effort": "low"}
     assert entry.extra_body("high") == {"reasoning_effort": "high"}
     assert entry.extra_body("xhigh") == {"reasoning_effort": "xhigh"}
@@ -414,9 +422,20 @@ def test_mistral_lists_models_and_offers_only_the_names_every_model_takes():
 # --- the level ladder ------------------------------------------------------
 
 
-def test_xhigh_is_the_top_rung():
-    """`05` §7.1: the ladder is `none` → `low` → `medium` → `high` → `xhigh`."""
-    assert providers.THINKING_LEVELS == ("none", "low", "medium", "high", "xhigh")
+def test_max_is_the_top_rung():
+    """`05` §7.1: the ladder is `none` → `low` → `medium` → `high` → `xhigh` → `max`.
+
+    `max` was missing, which is why a model publishing `[false, "low", "high",
+    "max"]` showed only `low` and `high`: the ladder is what a picker can order, and
+    a name it does not hold was dropped instead of offered."""
+    assert providers.THINKING_LEVELS == (
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
 
 
 @pytest.mark.parametrize(
@@ -424,12 +443,15 @@ def test_xhigh_is_the_top_rung():
     [
         # Its `/v1/models` publishes ids only, so there is no per-model set to narrow
         # by; the two models that refuse `none` also cannot call tools here.
-        ("openai", ("none", "low", "medium", "high", "xhigh")),
-        ("openrouter", ("none", "low", "medium", "high", "xhigh")),
+        ("openai", ("none", "low", "medium", "high", "xhigh", "max")),
+        ("openrouter", ("none", "low", "medium", "high", "xhigh", "max")),
         # `none`/`xhigh` are per-model extras on Groq, not names every model takes.
         ("groq", ("low", "medium", "high")),
-        ("ollama-cloud", ("low", "high")),
-        ("ollama", ("low", "high")),
+        # Ollama's row is the fallback for a model nobody has asked about yet. The
+        # per-model answer comes from `POST /api/show`, which is why the row can hold
+        # the whole ladder: the row no longer claims what any one model takes.
+        ("ollama-cloud", ("none", "low", "medium", "high", "xhigh", "max")),
+        ("ollama", ("none", "low", "medium", "high", "xhigh", "max")),
         ("vllm", ("none", "low", "medium", "high")),
         # The compatibility layer ignores `reasoning_effort` entirely.
         ("anthropic", ()),
@@ -516,9 +538,11 @@ def test_a_mandatory_effort_model_does_not_offer_none():
     assert providers.parse_catalog(payload) == [("always/thinks", ("low", "high"))]
 
 
-def test_names_off_the_ladder_are_not_offered_as_levels():
-    """`minimal` and `max` are real on some surfaces and belong to no rung, so the
-    picker cannot order them; they stay expressible through the free-form member."""
+def test_minimal_stays_off_the_ladder_while_max_is_on_it():
+    """`minimal` is real on some surfaces and belongs to no rung, so the picker cannot
+    order it and it stays expressible through the free-form member. `max` used to be
+    in the same bucket, and that is exactly why it never appeared: a ladder that does
+    not hold a name drops it rather than offering it (`05` §7.1)."""
     payload = json.dumps(
         {
             "data": [
@@ -529,7 +553,10 @@ def test_names_off_the_ladder_are_not_offered_as_levels():
             ]
         }
     ).encode()
-    assert providers.parse_catalog(payload) == [("m", ("high",))]
+    # `max` is a rung now, so it survives the filter and sorts last; `minimal` is
+    # still expressible through the free-form member and never offered.
+    assert providers.parse_catalog(payload) == [("m", ("high", "max"))]
+    assert providers.parse_catalog(payload)[0][1] == ("high", "max")
 
 
 # -- the branches a well-formed file never reaches ---------------------------
@@ -616,3 +643,97 @@ def test_every_region_round_trips_through_its_tz_string():
     for name in names:
         tz, _server = providers.timezone_for(name)
         assert providers.region_for_timezone(tz) == name
+
+
+# --- the per-model answer --------------------------------------------------
+
+
+def test_parse_show_reads_the_values_a_model_publishes():
+    """Measured against `POST https://ollama.com/api/show` for `deepseek-v4.1-flash`,
+    which answers `{"thinking": {"values": [false, "low", "high", "max"], "default":
+    "high"}}`. `false` is the off switch and reads as `none`; `max` surviving is the
+    whole point, since the row-wide set is what hid it (`05` §7.1)."""
+    payload = json.dumps(
+        {
+            "capabilities": ["completion", "thinking"],
+            "thinking": {"values": [False, "low", "high", "max"], "default": "high"},
+        }
+    ).encode()
+    assert providers.parse_show(payload) == ("none", "low", "high", "max")
+
+
+def test_parse_show_orders_by_the_ladder_not_by_the_provider():
+    """The picker reads lowest-to-highest, so a provider that publishes `max` before
+    `low` must still come out in ladder order."""
+    payload = json.dumps(
+        {"thinking": {"values": ["max", "high", "low", False], "default": "max"}}
+    ).encode()
+    assert providers.parse_show(payload) == ("none", "low", "high", "max")
+
+
+def test_parse_show_keeps_a_name_the_ladder_does_not_hold():
+    """`minimal` is a real value on some surfaces. Dropping it is how a model's only
+    setting disappears from its own picker."""
+    payload = json.dumps({"thinking": {"values": ["minimal", "high"]}}).encode()
+    assert providers.parse_show(payload) == ("high", "minimal")
+
+
+def test_a_model_that_cannot_think_publishes_no_values():
+    """No `thinking` object is an empty answer, and the caller reads it as "this model
+    takes no level" — different from "the provider could not be asked"."""
+    assert providers.parse_show(b'{"capabilities": ["completion"]}') == ()
+    assert providers.parse_show(b'{"thinking": {}}') == ()
+    assert providers.parse_show(b'{"thinking": {"values": "low"}}') == ()
+
+
+def test_an_unreadable_show_reply_is_empty_not_a_crash():
+    """A provider that answers an HTML error page must leave the caller on its
+    fallback, not take the app down mid-command (`05` §7.1)."""
+    assert providers.parse_show(b"<html>502 Bad Gateway</html>") == ()
+    assert providers.parse_show(b'["not", "an", "object"]') == ()
+    assert providers.parse_show(b"\xff\xfe not utf-8") == ()
+
+
+def test_levels_for_names_the_model_in_the_request_body():
+    """`POST /api/show` takes `{"model": ...}`. A GET cannot ask this question, and a
+    body without the name would answer for no model at all."""
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def fetch(url: str, key: str, body: dict[str, object] | None = None) -> bytes:
+        seen.append((url, key, body))
+        return json.dumps({"thinking": {"values": [False, "low", "max"]}}).encode()
+
+    entry = providers.find("ollama-cloud")
+    got = providers.levels_for(entry, "deepseek-v4.1-flash", "", fetch)
+    assert got == ("none", "low", "max")
+    assert seen == [(entry.show_url, "", {"model": "deepseek-v4.1-flash"})]
+
+
+def test_levels_for_answers_nothing_when_the_provider_has_no_show_endpoint():
+    """OpenRouter states its per-model set in the list response, and every other row
+    has no per-model endpoint. `()` means "ask the row", not "this model takes
+    nothing"."""
+    called: list[object] = []
+
+    def fetch(url: str, key: str, body: dict[str, object] | None = None) -> bytes:
+        called.append(url)
+        return b"{}"
+
+    assert providers.levels_for(providers.find("openai"), "gpt-5", "", fetch) == ()
+    assert called == [], "no endpoint, so no call"
+
+
+def test_a_failing_show_fetch_falls_back_to_the_row():
+    """A network failure must not empty the picker (`05` §7.1)."""
+    def boom(url: str, key: str, body: dict[str, object] | None = None) -> bytes:
+        raise OSError("network is down")
+
+    assert providers.levels_for(providers.find("ollama-cloud"), "m", "", boom) == ()
+
+
+def test_levels_for_without_a_model_name_asks_nothing():
+    """An entry with no model stored names no model to ask about."""
+    def fetch(url: str, key: str, body: dict[str, object] | None = None) -> bytes:
+        raise AssertionError("nothing to ask about")
+
+    assert providers.levels_for(providers.find("ollama-cloud"), "", "", fetch) == ()

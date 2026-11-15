@@ -2494,9 +2494,11 @@ class BridgeApp(App):
     async def _thinking(self, rest: list[str]) -> None:
         """`05` §7.2: read, or read-modify-write, the provider's thinking level.
 
-        The level is validated against the catalog before any frame is sent: the
-        device accepts any flat `extra_body` member and turns every call into a 400,
-        so a refused word has to be refused here, where it can be named.
+        The level is validated before any frame is sent: the device accepts any flat
+        `extra_body` member and turns every call into a 400, so a refused word has to
+        be refused here, where it can be named. The set comes from the model the entry
+        names, not from the provider row — a row is a statement about every model of
+        that provider and cannot say that one of them takes `max` (`05` §7.1).
         """
         level = rest[0] if rest else ""
         # Both forms read the stored entry: the write is a read-modify-write, and the
@@ -2506,10 +2508,11 @@ class BridgeApp(App):
         if not self._config_fetched:
             await self._fetch_config()
         chain = self._existing("llm.providers")
+        levels = await self._model_levels(chain)
         if not level:
-            self._chat().write(onboard.thinking_line(level, chain))
+            self._chat().write(onboard.thinking_line(level, chain, levels))
             return
-        plan, why = onboard.thinking_writes(level, chain)
+        plan, why = onboard.thinking_writes(level, chain, levels)
         if plan is None:
             self._chat().write(why, kind="error")
             return
@@ -2521,9 +2524,42 @@ class BridgeApp(App):
             self._chat().write(f"thinking: refused ({refused})", kind="error")
             return
         # The device's own answer, not the request's: `config.set` reports `applied`
-        # only when the running chain re-read the document (`04` §4.9).
-        self.run_worker(self._request("config.get"))
+        # only when the running chain re-read the document (`04` §4.9). The refresh is
+        # quiet: a whole-document reply navigates, and `/thinking` reading the
+        # document as an input must not move the reader onto the settings grid.
+        await self._fetch_config()
         self._chat().write(f"thinking: {level}")
+
+    async def _model_levels(
+        self, chain: object
+    ) -> "tuple[str, ...] | None":
+        """The levels the stored model takes, or `None` when nothing knows.
+
+        `None` means "ask the row", which is what both callers do when this answers
+        nothing. The row is the intersection over the provider's models, so it is a
+        safe answer when no per-model surface exists (`05` §7.1).
+
+        Only the per-model endpoint is consulted, deliberately: OpenRouter carries each
+        model's `supported_efforts` inline in its catalog, but that list is 466 names,
+        and re-fetching it to answer `/thinking` would cost more than the row's
+        narrower answer is worth. The wizard's step 3 already has that list and reads
+        it there.
+        """
+        entry_now, _ = onboard.provider_entry(chain)
+        if entry_now is None:
+            return None
+        provider_id = str(entry_now.get("id") or "")
+        model = str(entry_now.get("model") or "")
+        known = providers_mod.find(provider_id) if provider_id else None
+        if known is None or not known.show_url or not model:
+            return None
+        async with self._working(
+            "asking the provider which levels this model takes",
+            f"{model}: one POST, no API key (it stays on the device)",
+        ):
+            return await asyncio.to_thread(
+                providers_mod.levels_for, known, model, "", _http_fetch
+            )
 
     async def _model(self, rest: list[str]) -> None:
         """`05` §7.3: pick from the provider's published list, or name one directly.
@@ -2569,7 +2605,9 @@ class BridgeApp(App):
         if not ok:
             self._chat().write(f"model: refused ({refused})", kind="error")
             return
-        self.run_worker(self._request("config.get"))
+        # Quiet, for the same reason `/thinking`'s refresh is: the reader asked to
+        # set a model, not to be moved onto the settings grid (`05` §7.3).
+        await self._fetch_config()
         self._chat().write(f"model: {chosen}")
 
     async def _model_list(
@@ -2651,18 +2689,23 @@ def _provider_label(
     return host or (known.label if known is not None else provider_id or "provider")
 
 
-def _http_fetch(url: str, key: str) -> bytes:
-    """`GET url` with a bearer token, returning the body.
+def _http_fetch(url: str, key: str, body: dict[str, object] | None = None) -> bytes:
+    """`GET url`, or `POST url` when `body` is given, with a bearer token.
 
     The one socket `/onboard` and `/model` open. It lives in `ui` rather than in
     `providers.py` because `09` §2 keeps L2 pure, and it is a plain `urllib` call
-    because the project ships no HTTP client and one GET does not justify a
-    dependency.
+    because the project ships no HTTP client and a handful of fetches do not justify
+    a dependency.
 
-    A non-http(s) scheme and a non-200 both raise. `models_with_efforts` turns
-    either into an empty list, so the `/model` picker still opens with its field
-    as the whole route.
+    The body form exists for one endpoint: Ollama's `POST /api/show` names the model
+    in the request body, and it is the only surface that says which levels a *chosen*
+    model takes (`05` §7.1).
+
+    A non-http(s) scheme and a non-200 both raise. `models_with_efforts` and
+    `levels_for` turn either into an empty answer, so the `/model` picker still opens
+    with its field as the whole route.
     """
+    import json
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -2671,6 +2714,9 @@ def _http_fetch(url: str, key: str) -> bytes:
     if parts.scheme not in ("http", "https"):
         raise ValueError(f"refusing a non-http scheme: {parts.scheme or '(none)'}")
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    if body is not None:
+        request.data = json.dumps(body).encode("utf-8")
+        request.add_header("Content-Type", "application/json")
     if key:
         request.add_header("Authorization", f"Bearer {key}")
     # The rule cannot see the scheme guard above, which closes exactly the `file://`

@@ -221,7 +221,7 @@ def writes(answers: Answers) -> list[tuple[str, dict[str, object]]]:
 
 
 def thinking_writes(
-    level: str, providers_now: object
+    level: str, providers_now: object, levels: "tuple[str, ...] | None" = None
 ) -> "tuple[list[tuple[str, dict[str, object]]] | None, str]":
     """`/thinking <level>`: the frames that set one entry's level, or why not.
 
@@ -229,6 +229,11 @@ def thinking_writes(
     array: `04` §4.9 will not create a missing index, and writing the array preserves
     every other member of the entry — `05` §7.2's whole point is that a level change
     is not a reconfiguration.
+
+    `levels` is what the *model* takes, when the provider could say. It wins over the
+    row's own set, because the row states what every model of that provider accepts:
+    Ollama publishes `[false, "low", "high", "max"]` for one model and `["low",
+    "high"]` for another, and a row-wide answer hides the difference (`05` §7.1).
 
     Returns `(None, refusal)` when the level cannot be written: an unknown word, a
     provider the catalog does not describe, or a provider whose row takes no level.
@@ -246,16 +251,17 @@ def thinking_writes(
     entry = providers.find(provider_id_)
     if entry is None:
         return None, f"provider {provider_id_!r} is not in this bridge's catalog"
-    if not entry.thinking_levels:
+    offered = tuple(levels) if levels else entry.thinking_levels
+    if not offered:
         return None, f"{provider_id_} takes no thinking level; nothing to set"
-    if level not in entry.thinking_levels:
-        # "offered", not "takes": Ollama's rows list only the names *every* model of
-        # that provider accepts, so `max` is a level a `glm` model takes and its row
-        # still does not offer it (`05` §7.1). The message must not claim the model
-        # rejects what it accepts.
+    if level not in offered:
+        # "offered", not "takes": a provider that cannot answer for the chosen model
+        # leaves the row's set, which is the intersection over its models, so `max`
+        # may be a level the model takes while the row does not offer it (`05` §7.1).
+        # The message must not claim the model rejects what it accepts.
         return None, (
             f"{level!r} is not offered for {provider_id_}; "
-            f"choose from {', '.join(entry.thinking_levels)}"
+            f"choose from {', '.join(offered)}"
         )
     member = entry.without_level(entry_now.get("extra_body"))
     member.update(entry.extra_body(level))
@@ -308,11 +314,14 @@ def model_writes(
     return [("config", {"llm.providers": [updated] + rest})], ""
 
 
-def thinking_line(level: str, providers_now: object) -> str:
+def thinking_line(
+    level: str, providers_now: object, levels: "tuple[str, ...] | None" = None
+) -> str:
     """What `/thinking` says for a provider it can describe: the level, or why not.
 
-    The levels are the catalog's, so the reader learns what the provider accepts
-    without being shown a list the device would refuse.
+    `levels` is the chosen model's own set when the provider publishes one, and the
+    row's set otherwise, so the reader learns what *their model* accepts rather than
+    what every model of the provider has in common (`05` §7.1).
     """
     chain = providers_now if isinstance(providers_now, list) else []
     entry_now = chain[0] if chain and isinstance(chain[0], dict) else {}
@@ -322,18 +331,16 @@ def thinking_line(level: str, providers_now: object) -> str:
     entry = providers.find(provider_id_)
     if entry is None:
         return f"thinking: {provider_id_} is not in this bridge's catalog"
-    if not entry.thinking_levels:
+    offered = tuple(levels) if levels else entry.thinking_levels
+    if not offered:
         return f"thinking: {provider_id_} takes no thinking level"
     level = entry.level_of(entry_now.get("extra_body"))
     # An absent member is not "off" where the surface has no off switch: Ollama's
     # models think at their own default, which several of them set to their highest
     # effort. Saying "none" there would claim a setting the entry does not have.
-    if level == providers.THINKING_NONE and "none" not in entry.thinking_levels:
+    if level == providers.THINKING_NONE and "none" not in offered:
         level = "the provider's default"
-    return (
-        f"thinking: {level}"
-        f" (choose from {', '.join(entry.thinking_levels)})"
-    )
+    return f"thinking: {level} (choose from {', '.join(offered)})"
 
 
 def verdict_network(status: dict[str, object] | None) -> str:

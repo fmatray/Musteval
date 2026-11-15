@@ -98,6 +98,49 @@ def test_the_key_is_sent_only_when_there_is_one(monkeypatch):
     assert seen[0]["auth"] is None
 
 
+def test_a_body_turns_the_fetch_into_a_post(monkeypatch):
+    """`05` §7.1: `POST /api/show` names the model in the request body, so the fetch
+    must carry one — a GET there answers for no model and the level set is lost."""
+    import json as json_mod
+    import urllib.request
+
+    seen: list[dict] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"thinking": {"values": [false, "low", "max"]}}'
+
+    def fake_urlopen(request, timeout=None):
+        seen.append(
+            {
+                "data": request.data,
+                "method": request.get_method(),
+                "content_type": request.get_header("Content-type"),
+            }
+        )
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    body = _http_fetch("https://ollama.com/api/show", "", {"model": "m"})
+    assert body
+    assert seen[0]["method"] == "POST"
+    assert json_mod.loads(seen[0]["data"]) == {"model": "m"}
+    assert seen[0]["content_type"] == "application/json"
+
+    # No body is still the plain GET every other caller makes.
+    seen.clear()
+    _http_fetch("https://ollama.com/v1/models", "")
+    assert seen[0]["method"] == "GET"
+    assert seen[0]["data"] is None
+    assert seen[0]["content_type"] is None
+
+
 # -- `_provider_label` --------------------------------------------------
 
 
@@ -322,5 +365,139 @@ async def test_a_screen_the_reader_already_moved_to_is_not_popped_by_the_spinner
             await pilot.pause(0.05)
         await pilot.pause(0.05)
         assert isinstance(app.screen, ModelPicker), "the step must survive"
+
+    await _run(_device(), body)
+
+
+# -- the refresh after a write must not navigate (`05` §7.2, §7.3) -------
+
+
+def _settings_shown(app) -> bool:
+    """Whether the config grid is the screen the reader is looking at."""
+    return app.query_one("#settings").display
+
+
+async def _let_the_refresh_land(pilot, app) -> None:
+    """Give the post-write `config.get` worker time to answer, then move the reader
+    there if it is going to. A quiet read never does, so this returns with the grid
+    hidden; a navigating one has shown it well inside the loop."""
+    for _ in range(50):
+        await pilot.pause(0.02)
+        if _settings_shown(app):
+            return
+
+
+async def test_a_thinking_write_does_not_move_the_reader_to_the_config_grid():
+    """`05` §7.2: `/thinking` reads the document as an input, so the `config.get`
+    it sends after the write must not switch screens. The whole-document reply
+    navigates unless the read is quiet, and this command's answer belongs in the
+    chat pane the reader is already looking at."""
+    async def body(app, pilot):
+        app._config = _config_with(dict(OLLAMA))
+        app._config_fetched = True
+        await app._thinking(["high"])
+        await _let_the_refresh_land(pilot, app)
+        assert "thinking: high" in _text(app), "the answer landed in chat"
+        assert not _settings_shown(app), "the reader was moved onto the grid"
+
+    await _run(_device(), body)
+
+
+async def test_a_model_write_does_not_move_the_reader_to_the_config_grid():
+    """`05` §7.3: the same rule as `/thinking`. `/model llama3:8b` asked for a
+    model, not for the settings grid, so its own refresh is quiet too."""
+    async def body(app, pilot):
+        app._config = _config_with(dict(OLLAMA))
+        app._config_fetched = True
+        await app._model(["llama3:8b"])
+        await _let_the_refresh_land(pilot, app)
+        assert "model: llama3:8b" in _text(app), "the answer landed in chat"
+        assert not _settings_shown(app), "the reader was moved onto the grid"
+
+    await _run(_device(), body)
+
+
+# -- the level set is the model's, not the row's (`05` §7.1) ----------------
+
+
+async def test_a_thinking_write_offers_what_the_model_publishes(monkeypatch):
+    """The reported defect: `deepseek` answers `POST /api/show` with
+    `[false, "low", "high", "max"]`, and the old row-wide set offered only `low` and
+    `high`, so `max` was refused on the host before any frame was sent."""
+    entry = {**OLLAMA, "model": "deepseek-v4.1-flash"}
+
+    asked: list[tuple[str, object]] = []
+
+    def fake_levels_for(provider, model, key="", fetch=None):
+        asked.append((provider.id, model))
+        return ("none", "low", "high", "max")
+
+    monkeypatch.setattr(providers_mod, "levels_for", fake_levels_for)
+
+    async def body(app, pilot):
+        app._config = _config_with(entry)
+        app._config_fetched = True
+        await app._thinking(["max"])
+        assert asked == [("ollama", "deepseek-v4.1-flash")]
+        sets = _sets(app)
+        assert sets, "the write was sent"
+        assert sets[-1]["args"]["value"][0]["extra_body"]["reasoning_effort"] == "max"
+        assert "thinking: max" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_thinking_read_names_the_levels_the_model_publishes(monkeypatch):
+    """`05` §7.2: with no argument `/thinking` reports the stored level and the set to
+    choose from, and that set is the model's own."""
+    entry = {**OLLAMA, "model": "deepseek-v4.1-flash"}
+
+    monkeypatch.setattr(
+        providers_mod,
+        "levels_for",
+        lambda provider, model, key="", fetch=None: ("none", "low", "high", "max"),
+    )
+
+    async def body(app, pilot):
+        app._config = _config_with(entry)
+        app._config_fetched = True
+        await app._thinking([])
+        said = _text(app)
+        assert "choose from none, low, high, max" in said
+        assert not _sets(app), "a read sends nothing"
+
+    await _run(_device(), body)
+
+
+async def test_a_provider_that_cannot_answer_falls_back_to_the_row(monkeypatch):
+    """`levels_for` returning nothing means the provider has no per-model endpoint or
+    the fetch failed. The row's set is then the answer, so the picker is never empty
+    just because the network was.
+
+    The model is one whose published set is *narrower* than the row, so the fallback
+    is observable: the row's whole ladder appears, which a per-model answer could
+    never produce."""
+    entry = {**OLLAMA, "model": "glm-5.3"}
+
+    monkeypatch.setattr(
+        providers_mod,
+        "levels_for",
+        lambda provider, model, key="", fetch=None: ("low", "high"),
+    )
+
+    async def body(app, pilot):
+        app._config = _config_with(entry)
+        app._config_fetched = True
+        await app._thinking([])
+        assert "choose from low, high" in _text(app)
+        # Now the same entry with no answer from the provider: the row's set, which
+        # the answer above cannot have produced.
+        monkeypatch.setattr(
+            providers_mod,
+            "levels_for",
+            lambda provider, model, key="", fetch=None: (),
+        )
+        await app._thinking([])
+        assert "choose from none, low, medium, high, xhigh, max" in _text(app)
 
     await _run(_device(), body)

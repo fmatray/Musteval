@@ -858,22 +858,33 @@ def test_a_level_write_is_the_whole_array_and_keeps_other_members():
     assert written[1] == chain[1]
 
 
-def test_a_provider_with_no_off_switch_refuses_none_rather_than_approximating():
-    """Corrected when the `thinking_budget` strategy was removed. The old test drove
-    `anthropic` as a budget provider; that surface ignores `reasoning_effort` and its
-    thinking member is nested, which `03-config.md`'s flat-scalar rule forbids, so the
-    row now takes no level at all.
-
-    The rule the test existed for is `05` §7.2's: where a provider cannot say "off",
-    `none` is refused rather than approximated, because Ollama resolves an unsupported
-    name to the model's *default*, and several models default to their highest effort.
-    """
+def test_none_is_offered_on_a_row_whose_surface_can_say_off():
+    """Corrected when the level set became per-model: the old expectation refused
+    `none` for Ollama, on the reasoning that it resolves an unsupported name to the
+    model's default. That reasoning only holds for a name the model did not publish —
+    `POST /api/show` publishes `false` as an explicit off switch, and the
+    compatibility layer maps `"none"` onto it (`05` §7.1). So `none` is written, and
+    the unrelated member survives the rewrite."""
     plan, why = onboard.thinking_writes(
         "none",
         [{"id": "ollama-cloud", "extra_body": {"seed": 7}, "model": "m"}],
     )
+    assert plan is not None, why
+    written = plan[0][1]["llm.providers"][0]
+    assert written["extra_body"] == {"seed": 7, "reasoning_effort": "none"}
+
+
+def test_a_level_the_model_does_not_publish_is_refused_against_that_model():
+    """`05` §7.1: the set is the model's, so a name another model of the same provider
+    takes is still refused here. This is the distinction the two-tab picker exists to
+    make visible: `low`/`high` is one model's set, not its provider's."""
+    chain = [{"id": "ollama-cloud", "model": "m"}]
+    plan, why = onboard.thinking_writes("max", chain, ("low", "high"))
     assert plan is None
-    assert "not offered" in why and "low" in why and "high" in why
+    assert "not offered" in why and "max" in why and "low, high" in why
+    # The same word is accepted once the model itself publishes it.
+    plan, why = onboard.thinking_writes("max", chain, ("low", "high", "max"))
+    assert plan is not None, why
 
     # The row with neither an off switch nor an on switch refuses too, rather than
     # writing a member its provider ignores.
@@ -906,9 +917,12 @@ def test_a_level_the_provider_does_not_take_is_refused_on_the_host():
     plan, why = onboard.thinking_writes("maximal", [{"id": "groq", "model": "m"}])
     assert plan is None
     assert "not offered" in why and "high" in why
-    # Not "the provider does not take it": Ollama's `max` is a real level on some of
-    # its models and absent from the row, and the reader is owed that distinction.
-    plan, why = onboard.thinking_writes("max", [{"id": "ollama-cloud", "model": "m"}])
+    # Not "the provider does not take it": a model's set can be narrower than its
+    # provider's, and the reader is owed that distinction rather than a claim about
+    # the model.
+    plan, why = onboard.thinking_writes(
+        "max", [{"id": "ollama-cloud", "model": "m"}], ("low", "high")
+    )
     assert plan is None
     assert "not offered" in why and "takes" not in why
     plan, why = onboard.thinking_writes("high", [])
@@ -1068,10 +1082,15 @@ def test_an_absent_member_on_an_ollama_entry_reads_as_the_default_not_none():
     model thinks at its own default — `glm-5.3-flash` defaults to `max`. Reporting
     `none` would claim thinking was off when nothing was off (`05` §7.2)."""
     chain = [{"id": "ollama-cloud", "model": "glm-5.3-flash"}]
-    said = onboard.thinking_line("none", chain)
+    # The model's own set: it has no off switch, so an absent member is the default.
+    said = onboard.thinking_line("none", chain, ("low", "high"))
     assert "the provider's default" in said
     assert "none" not in said.split("(")[0]
     assert "low" in said and "high" in said
+    # A set that does hold `none` reports the stored level as itself.
+    assert onboard.thinking_line("none", chain, ("none", "low")) == (
+        "thinking: none (choose from none, low)"
+    )
 
     # A stored level is still reported as itself, even one the row does not offer.
     assert onboard.thinking_line("none", [{"id": "ollama-cloud",
@@ -1124,7 +1143,9 @@ async def test_a_model_step_without_published_efforts_offers_the_row_set():
         )
         assert await _mounted(pilot, "#step-thinking")
         picker = app.screen.query_one("#step-thinking")
-        assert [value for _, value in picker._options] == ["low", "high"]
+        assert [value for _, value in picker._options] == [
+            "none", "low", "medium", "high", "xhigh", "max"
+        ]
 
 
 async def test_the_manual_model_field_completes_from_the_fetched_list():
@@ -1282,13 +1303,14 @@ async def _picker(models: list[str], current: str = "", provider: str = "ollama"
         yield pilot, app
 
 
-async def test_the_model_picker_takes_a_typed_name_over_the_selection():
-    """`05` §7.3: the field sits beside the list, so a name the provider does not
-    publish is still one keystroke away. The device's own entry is that case —
-    `gemma4:cloud` is absent from the cloud list, so a selection-only picker would
-    move the reader off a name that works.
-    """
+async def test_the_model_picker_takes_a_typed_name_from_the_typing_tab():
+    """`05` §7.3: a name the provider does not publish is still reachable, on the
+    tab that holds one answer. The device's own entry is that case — `gemma4:cloud`
+    is absent from the cloud list, so the list alone would move the reader off a
+    name that works."""
     async with _picker(["kimi-k2.6", "glm-5.3"], "gemma4:cloud") as (pilot, app):
+        app.modal.action_cycle_tab()
+        await pilot.pause()
         assert app.modal.query_one("#step-model").value == "gemma4:cloud"
         app.modal.query_one("#step-model").value = "typed-model"
         await pilot.pause()
@@ -1297,14 +1319,32 @@ async def test_the_model_picker_takes_a_typed_name_over_the_selection():
     assert app.dismissed["value"] == "typed-model"
 
 
-async def test_the_model_picker_returns_the_selection_when_the_field_is_blank():
+async def test_the_model_picker_takes_the_highlighted_row_from_the_list_tab():
+    """`05` §7.3: the list tab commits the highlighted row, so a reader who only
+    moves the cursor and presses Enter is not answered from anywhere else. This is
+    the defect the two tabs exist to remove: with a text field beside the list, the
+    pre-seeded field always won and a pick was discarded."""
+    async with _picker(["kimi-k2.6", "glm-5.3"], "gemma4:cloud") as (pilot, app):
+        rows = app.modal.query_one("#step-model-list")
+        # Row 0 is the stored name the provider did not publish, so `glm-5.3` is
+        # not the second row: the test moves the cursor by name, not by offset.
+        rows.highlighted = [str(option.id) for option in rows._options].index("glm-5.3")
+        await pilot.pause()
+        app.modal.action_submit()
+        await pilot.pause()
+    assert app.dismissed["value"] == "glm-5.3"
+
+
+async def test_the_model_picker_returns_none_from_a_blank_typing_tab():
+    """`05` §7.3: a blank field on the typing tab is a cancel of that tab's answer,
+    not a fallback to a row the reader is not looking at."""
     async with _picker(["kimi-k2.6", "glm-5.3"]) as (pilot, app):
-        app.modal.query_one("#step-model-select").value = "glm-5.3"
+        app.modal.action_cycle_tab()
         await pilot.pause()
         app.modal.query_one("#step-model").value = ""
         app.modal.action_submit()
         await pilot.pause()
-    assert app.dismissed["value"] == "glm-5.3"
+    assert app.dismissed["value"] is None
 
 
 async def test_the_model_picker_cancels_to_none():
@@ -1320,7 +1360,7 @@ async def test_the_model_picker_is_just_a_field_when_there_is_no_list():
     403, so for most providers the field is the whole picker and the stored name
     must already be in it."""
     async with _picker([], "gpt-4o-mini", provider="openai") as (pilot, app):
-        assert not app.modal.query("#step-model-select")
+        assert not app.modal.query("#step-model-list")
         assert app.modal.query_one("#step-model").value == "gpt-4o-mini"
         app.modal.action_submit()
         await pilot.pause()
@@ -1417,10 +1457,10 @@ async def test_the_model_picker_lists_the_stored_name_when_the_provider_omits_it
     23 other names. If the list omitted it, the highlight would sit on a model the
     reader never chose and clearing the field would adopt it."""
     async with _picker(["kimi-k2.6", "glm-5.3"], "gemma4:cloud") as (pilot, app):
-        select = app.modal.query_one("#step-model-select")
-        offered = [value for _, value in select._options]
+        rows = app.modal.query_one("#step-model-list")
+        offered = [str(option.id) for option in rows._options]
         assert offered[0] == "gemma4:cloud"
-        assert select.value == "gemma4:cloud"
+        assert rows.highlighted == 0, "the stored name is where the cursor starts"
         # The published names are still all there.
         assert {"kimi-k2.6", "glm-5.3"} <= set(offered)
         app.modal.action_submit()

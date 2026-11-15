@@ -429,20 +429,19 @@ async def test_a_help_modal_lists_every_category_and_closes_on_escape():
 
 async def test_a_model_picker_offers_the_stored_name_once_and_returns_it():
     """`05` §7.3: the picker's list is the provider's, plus the stored name when the
-    fetch did not return it — and typing wins over the selection, the rule step 3
-    follows for the same reason."""
+    fetch did not return it, and the list tab commits the row it highlights."""
     picker = ModelPicker("ollama", "Ollama", ["a", "b"], "b")
     async with _host(picker).run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         screen = pilot.app.screen
-        select = screen.query_one("#step-model-select")
-        values = [value for _, value in select._options]
+        rows = screen.query_one("#step-model-list")
+        values = [str(option.id) for option in rows._options]
         assert values.count("b") == 1, "the stored name is not duplicated"
         assert "a" in values
-        screen.query_one("#step-model").value = "typed-model"
+        rows.highlighted = values.index("a")
         screen.action_submit()
         await pilot.pause(0.05)
-        assert pilot.app.dismissed["value"] == "typed-model"
+        assert pilot.app.dismissed["value"] == "a"
 
 
 async def test_a_model_picker_cancel_returns_none():
@@ -576,21 +575,54 @@ async def test_a_step_box_continues_on_ctrl_s_and_carries_its_answer():
         assert pilot.app.dismissed["value"].base_url == row.base_url
 
 
-async def test_a_picker_takes_the_name_from_enter_and_stops_the_event():
-    """`05` §7.3: `/model` is one question. `Enter` must use what is typed; an
-    `Input.Submitted` left unstopped would bubble past the modal, and the picker
-    would answer from the stale selection instead."""
+async def test_a_picker_takes_the_name_from_enter_on_the_typing_tab():
+    """`05` §7.3: `/model` is one question per tab. `Enter` in the typing tab must
+    use what is typed and stop the event, or `Input.Submitted` would bubble past the
+    modal and the picker would answer from the list tab's highlight instead."""
     picker = ModelPicker("ollama", "Ollama", ["a", "b"], "a")
     async with _host(picker).run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         screen = pilot.app.screen
+        screen.action_cycle_tab()
+        await pilot.pause(0.05)
         field = screen.query_one("#step-model")
         field.value = "typed-model"
-        field.focus()
         await pilot.pause(0.05)
         await pilot.press("enter")
         await pilot.pause(0.05)
         assert pilot.app.dismissed["value"] == "typed-model"
+
+
+async def test_the_picker_opens_on_the_list_tab_with_the_cursor_movable():
+    """`05` §7.3: the defect this rewrite fixes is a list that could not be used.
+    Opening on the list tab with focus inside it is what makes the first arrow key
+    move the highlight rather than the tab strip."""
+    picker = ModelPicker("ollama", "Ollama", ["a", "b"], "a")
+    async with _host(picker).run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        screen = pilot.app.screen
+        assert screen._active() == "list"
+        assert type(screen.focused).__name__ == "OptionList"
+        await pilot.press("down")
+        await pilot.pause(0.05)
+        assert screen.query_one("#step-model-list").highlighted == 1
+
+
+async def test_tab_switches_which_answer_enter_takes():
+    """`05` §7.3: the tabs are not decoration. `Tab` moves to the typing tab and
+    `Enter` there answers from the field; `Tab` again returns to the list."""
+    picker = ModelPicker("ollama", "Ollama", ["a", "b"], "a")
+    async with _host(picker).run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        screen = pilot.app.screen
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert screen._active() == "type"
+        assert screen.focused is screen.query_one("#step-model")
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert screen._active() == "list"
+        assert type(screen.focused).__name__ == "OptionList"
 
 
 async def test_an_enter_in_the_todo_value_field_before_a_verb_does_nothing():

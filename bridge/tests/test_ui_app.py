@@ -656,11 +656,14 @@ async def test_a_typed_model_name_is_written_without_a_picker():
 
     async def body(app, pilot):
         app.submit("/model gpt-4o")
+        # Poll for the line this test asserts, not for the frame: the write is
+        # acknowledged and then the document is re-read quietly (`05` §7.3), so a
+        # `config.set` on the wire is one round trip short of the chat line.
         for _ in range(160):
-            written = [json.loads(line) for line in app.session._transport.written]  # type: ignore[attr-defined]
-            if any(f.get("name") == "config.set" for f in written):
+            if "model: gpt-4o" in _text(app):
                 break
             await pilot.pause(0.02)
+        written = [json.loads(line) for line in app.session._transport.written]  # type: ignore[attr-defined]
         sets = [f for f in written if f.get("name") == "config.set"]
         assert sets and sets[-1]["args"]["path"] == "llm.providers"
         assert sets[-1]["args"]["value"][0]["model"] == "gpt-4o"
