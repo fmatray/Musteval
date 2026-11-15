@@ -1979,6 +1979,34 @@ class BridgeApp(App):
             if not await self.push_screen_wait(ConfirmPrompt(f"Delete task {words[2]}?")):
                 self._chat().write("delete cancelled")
                 return
+        # `05-bridge.md` §7 and §5.3: `add` and `set` both open the task modal, so
+        # neither reaches `parse`. `parse` refuses `add` because a modal cannot be
+        # raised from a pure function, and `set <id>` would otherwise resend the
+        # cached task untouched — a round trip that changes nothing.
+        if words[:2] == ["tasks", "add"]:
+            if len(words) > 2:
+                self._chat().write("usage: /tasks add", kind="error")
+                return
+            edited = await self.push_screen_wait(TaskPrompt(None))
+            if edited is None:
+                self._chat().write("task edit cancelled")
+                return
+            await self._request("tasks.set", {"task": edited})
+            return
+        if words[:2] == ["tasks", "set"] and len(words) >= 3:
+            if len(words) > 3:
+                self._chat().write("usage: /tasks set <id>", kind="error")
+                return
+            cached = self._task_by_id(words[2])
+            if cached is None:
+                self._chat().write(f"no task {words[2]} in the last tasks.list", kind="error")
+                return
+            edited = await self.push_screen_wait(TaskPrompt(cached))
+            if edited is None:
+                self._chat().write("task edit cancelled")
+                return
+            await self._request("tasks.set", {"task": edited})
+            return
         # `05-bridge.md` §7: `fs.put` takes its bytes over the wire, so the one
         # command that carries a file asks for it here; nothing else loads one.
         upload_bytes: bytes | None = None

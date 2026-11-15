@@ -523,6 +523,8 @@ def _tasks(rest: list[str], state: CommandState) -> list[Frame]:
         _exact(rest[1:], 1, "/tasks set <id>")
         return [_command("tasks.set", {"task": _find_task(state, rest[1])})]
     if sub == "add":
+        # The modal is the UI's (`05` §7); by the time `parse` sees `add` the chat
+        # path did not intercept it, so there is no task body to send.
         raise CommandError("a task body must be supplied (add opens a modal)")
     raise CommandError(f"unknown subcommand: /tasks {sub}")
 

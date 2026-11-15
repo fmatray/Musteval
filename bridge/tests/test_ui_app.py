@@ -1256,3 +1256,184 @@ async def test_a_run_is_confirmed_with_the_id_the_status_screen_names():
         assert "run_id" not in text
 
     await _run(reply, body)
+
+
+async def test_tasks_add_opens_a_blank_modal_and_sends_what_it_returns():
+    """`05` §7: `/tasks add` takes no id — the body is the whole task, so the modal
+    is the only way to supply it. Sending nothing, or the cached row, would be a
+    different command. The frame must carry exactly the dict the modal dismissed."""
+    from bridge.ui.task_prompt import TaskPrompt
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            if frame.get("name") == "tasks.set":
+                sent.append(frame.get("args") or {})
+            return [_result(frame, frame.get("name", ""), {"echo": True})]
+        return []
+
+    body_task = {"id": "t-new", "description": "water the plants",
+                 "enabled": True, "prompt": "p"}
+
+    async def body(app, pilot):
+        app.submit("/tasks add")
+        await _await_screen(pilot, app, TaskPrompt)
+        assert app.screen.query_one("#task-input").value == "{}", "a blank task, not a row"
+        app.screen.query_one("#task-input").value = json.dumps(body_task)
+        app.screen.action_submit()
+        await pilot.pause(0.3)
+
+    await _run(reply, body)
+    assert sent == [{"task": body_task}], sent
+
+
+async def test_tasks_add_refuses_a_surplus_word_without_opening_a_modal():
+    """`05` §7: `/tasks add` takes no id. A modal pre-filled from a stray word would
+    leave the other fields to guesswork, so the word is refused instead."""
+    from bridge.ui.task_prompt import TaskPrompt
+
+    async def body(app, pilot):
+        app.submit("/tasks add morning")
+        await _await_chat(pilot, app, "usage: /tasks add")
+        assert isinstance(app.screen, TaskPrompt) is False
+        assert "usage: /tasks add" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_tasks_set_opens_the_modal_seeded_from_the_cached_row():
+    """`05` §7: `/tasks set <id>` edits the cached task. Sending it back untouched
+    would be a round trip that changes nothing, so the modal must open with it."""
+    from bridge.ui.task_prompt import TaskPrompt
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            name = frame.get("name", "")
+            if name == "tasks.set":
+                sent.append(frame.get("args") or {})
+            if name == "tasks.list":
+                return [_result(frame, name, {"tasks": [{"id": "t1",
+                                                         "description": "water",
+                                                         "enabled": True,
+                                                         "prompt": "p"}]})]
+            return [_result(frame, name, {"echo": True})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/tasks")
+        await _await_chat(pilot, app, "task(s)")
+        app.submit("/tasks set t1")
+        await _await_screen(pilot, app, TaskPrompt)
+        assert '"description": "water"' in app.screen.query_one("#task-input").value
+        app.screen.query_one("#task-input").value = json.dumps(
+            {"id": "t1", "description": "water", "enabled": False, "prompt": "p"}
+        )
+        app.screen.action_submit()
+        await pilot.pause(0.3)
+
+    await _run(reply, body)
+    assert sent == [{"task": {"id": "t1", "description": "water",
+                              "enabled": False, "prompt": "p"}}], sent
+
+
+async def test_tasks_set_names_an_id_it_never_received():
+    """`05` §7: the cached entry is the starting point. With no `tasks.list` behind
+    it there is nothing to seed, so the command says which id is unknown rather
+    than opening a modal on `{}`."""
+
+    async def body(app, pilot):
+        app.submit("/tasks set nope")
+        await _await_chat(pilot, app, "no task nope")
+        assert "no task nope in the last tasks.list" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_tasks_add_says_so_when_the_modal_is_cancelled():
+    """`05` §5.3: Esc cancels without sending. A cancelled edit must not leave the
+    reader wondering whether an empty task went to the device."""
+    from bridge.ui.task_prompt import TaskPrompt
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            if frame.get("name") == "tasks.set":
+                sent.append(frame.get("args") or {})
+            return [_result(frame, frame.get("name", ""), {"echo": True})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/tasks add")
+        await _await_screen(pilot, app, TaskPrompt)
+        app.screen.query_one("#task-input").value = ""
+        app.screen.action_submit()
+        await _await_chat(pilot, app, "task edit cancelled")
+        assert "task edit cancelled" in _text(app)
+
+    await _run(reply, body)
+    assert sent == [], sent
+
+
+async def test_tasks_set_says_so_when_the_modal_is_cancelled():
+    """Same rule for `set`: the cached row is only a starting point, and Esc means
+    nothing was changed."""
+    from bridge.ui.task_prompt import TaskPrompt
+
+    sent: list[dict] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            name = frame.get("name", "")
+            if name == "tasks.list":
+                return [_result(frame, name, {"tasks": [{"id": "t1",
+                                                         "description": "water",
+                                                         "enabled": True}]})]
+            if name == "tasks.set":
+                sent.append(frame.get("args") or {})
+            return [_result(frame, name, {"echo": True})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/tasks")
+        await _await_chat(pilot, app, "task(s)")
+        app.submit("/tasks set t1")
+        await _await_screen(pilot, app, TaskPrompt)
+        app.screen.query_one("#task-input").value = ""
+        app.screen.action_submit()
+        await _await_chat(pilot, app, "task edit cancelled")
+        assert "task edit cancelled" in _text(app)
+
+    await _run(reply, body)
+    assert sent == [], sent
+
+
+async def test_tasks_set_refuses_a_surplus_word_without_opening_a_modal():
+    """`05` §7: `/tasks set <id>` takes one id. A third word would be silently
+    dropped, so it is refused before any modal opens."""
+
+    async def body(app, pilot):
+        app.submit("/tasks set t1 junk")
+        await _await_chat(pilot, app, "usage: /tasks set <id>")
+        assert "usage: /tasks set <id>" in _text(app)
+
+    await _run(_device(), body)
