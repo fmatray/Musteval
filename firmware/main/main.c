@@ -1537,6 +1537,15 @@ static void answer_command(const json_node_t *frame)
     }
 
     if (built == ESP_OK) {
+        /* `04` §3.20 requires `name` and `ok` on every `command.result`. Every refusal
+         * returns early through `emit_failure`, which sets them, so a branch that got
+         * here succeeded — but several build only `result` and left the envelope to
+         * the caller, and the bridge reads a missing `ok` as a refusal: it printed
+         * `None: None None` for a locate that had worked. Set it once, here, so the
+         * next branch cannot forget. `json_add_*` refuses an existing key, so a
+         * branch that already set either keeps its own value. */
+        json_add_string(root, "name", name);
+        json_add_bool(root, "ok", true);
         json_add_int(root, "duration_ms", cmd_duration_ms());
         esp_err_t e = link_emit_body("command.result", frame_id(), 0, reply_to, body);
         if (e == ESP_ERR_INVALID_SIZE) {
