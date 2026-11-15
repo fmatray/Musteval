@@ -19,6 +19,7 @@ from bridge.link import FakeTransport
 from bridge.protocol import Frame, encode, reset_ids
 from bridge.ui import BridgeApp
 from bridge.ui.app import _provider_label, _http_fetch
+from bridge.ui.render import template_names, template_text
 
 ACK = {
     "device": "test-agent",
@@ -1047,3 +1048,92 @@ async def test_an_assistant_fence_is_drawn_as_a_tree_in_the_pane():
         assert "-->" not in text
 
     await _run(reply, body)
+
+
+async def test_templates_lists_the_prompt_names_one_per_line():
+    """`05` §7 says `/templates` "lists prompt templates"; a raw JSON block is the
+    debug dump the reader cannot scan, so the names are printed one per line and
+    the envelope's punctuation is gone."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            return [_result(frame, "templates.list",
+                            {"templates": ["brief.md", "daily.md"]})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/templates")
+        await _await_chat(pilot, app, "daily.md")
+        text = _text(app)
+        assert "brief.md" in text
+        assert "daily.md" in text
+        # The result object must not reach the log as JSON.
+        assert '{"templates"' not in text
+
+    await _run(reply, body)
+
+
+async def test_templates_says_so_rather_than_printing_an_empty_list():
+    """An empty `/prompts/` is a normal state, not an error: the line has to name
+    it, because a blank reply is indistinguishable from a hang (`05` §4.1)."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            return [_result(frame, "templates.list", {"templates": []})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/templates")
+        await _await_chat(pilot, app, "no templates")
+        assert "no templates" in _text(app)
+
+    await _run(reply, body)
+
+
+async def test_template_prints_the_text_and_not_the_envelope():
+    """`05` §7 says `/template <n>` "dumps template text". The body is what the
+    reader asked for, so it is shown whole under a header naming the file and its
+    size — not as `{"name":…,"bytes":…,"text":…}`."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
+                                 reply_to=frame["id"]))]
+        if frame.get("type") == "command":
+            return [_result(frame, "template.get",
+                            {"name": "brief.md", "bytes": 21,
+                             "text": "Summarise /data today."})]
+        return []
+
+    async def body(app, pilot):
+        app.submit("/template brief.md")
+        await _await_chat(pilot, app, "Summarise /data today.")
+        text = _text(app)
+        assert "brief.md (21 bytes)" in text
+        assert '{"name"' not in text
+
+    await _run(reply, body)
+
+
+def test_a_template_name_is_escaped_before_it_reaches_the_log():
+    """A template name is a basename the user imported through `/fs put`, so it is
+    device- and user-supplied like any other string: an escape sequence in one must
+    not reach the `Static` as markup, and a missing list must say so."""
+
+    assert template_names({"templates": ["a\x1b[31mb.md"]}) == ["a[31mb.md"]
+    assert template_names({"templates": []}) == ["no templates"]
+    assert template_names({}) == ["no templates"]
+    assert template_text({"name": "x\x1b[0m.md", "bytes": 3, "text": "hi"}) == (
+        "x[0m.md (3 bytes)\nhi"
+    )
+
+

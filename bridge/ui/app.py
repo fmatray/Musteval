@@ -75,6 +75,8 @@ from .render import (
     render_tool_call,
     render_tool_result,
     sanitize,
+    template_names,
+    template_text,
     todo_lines,
     wifi_scan_lines,
     wifi_state_line,
@@ -1702,6 +1704,13 @@ class BridgeApp(App):
                 for line in todo_lines(result):
                     self._chat().write(line)
             self._todo_quiet = False
+            return
+        if name == "templates.list" and isinstance(result, dict):
+            for line in template_names(result):
+                self._chat().write(line)
+            return
+        if name == "template.get" and isinstance(result, dict):
+            self._chat().write(template_text(result))
             return
         if name == "geo.locate" and isinstance(result, dict):
             # `05` §10: a fix updates the Status screen GEO row and reports in chat.

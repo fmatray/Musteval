@@ -69,6 +69,29 @@ def wifi_state_line(result: dict[str, Any]) -> str:
     return f"wifi {state} ({sanitize(str(ssid))}) rssi {result.get('rssi')} dBm ip {result.get('ip')}"
 
 
+def template_names(result: dict[str, Any]) -> list[str]:
+    """`04-protocol.md` §4.11's answer, one name per line.
+
+    The list is `/prompts/*.md` basenames, so a name is user-written (a file the
+    user imported through `/fs put`) and goes through `sanitize` like any other.
+    """
+    names = result.get("templates")
+    if not names:
+        return ["no templates"]
+    return [sanitize(str(name)) for name in names]
+
+
+def template_text(result: dict[str, Any]) -> str:
+    """`04-protocol.md` §4.12's answer: the body, headed by the file it came from.
+
+    The body is a prompt a model will read, so it is shown verbatim rather than
+    clamped: `TOOLS_TEXT_MAX` is the tool surface's limit, not this one.
+    """
+    name = sanitize(str(result.get("name") or ""))
+    text = str(result.get("text") or "")
+    return f"{name} ({result.get('bytes')} bytes)\n{text}"
+
+
 def geo_line(result: dict[str, Any]) -> str:
     """`04-protocol.md` §4.13's answer as one line.
 
