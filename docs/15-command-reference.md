@@ -21,7 +21,7 @@ Column meanings:
 
 | Form | Arguments | Sends | Note |
 |---|---|---|---|
-| `/cancel` | none | `cancel` | `reason: "user"`; stops the run in flight |
+| `/cancel` | none | `cancel` | `reason: "user"`; stops the run in flight. Answers in chat either way, the device text printed verbatim: `run cancelled` or `nothing to cancel` |
 | `/clear` | none | `history.clear` | Forgets the conversation on the device and in the pane |
 | `/config` | none | (Local) | Opens the Settings screen; the screen sends `config.get` and `config.set` |
 | `/config edit` | none | (Local) | Same screen as the bare `/config` |
@@ -83,8 +83,8 @@ Column meanings:
 | `/todo view` | none | `todo.apply` | Renders phases and tasks; a target is refused |
 | `/tool disable` | `disable <name>` | `config.set tools.disabled` | Removes a name from the model's tool list |
 | `/tool enable` | `enable <name>` | `config.set tools.disabled` | Puts a disabled name back |
-| `/tool list` | `list` | `tools.list` | The tool table: name, enabled or disabled, description. Same output as `/tools` |
-| `/tools` | none | `tools.list` | The tool table: name, enabled or disabled, description. Same output as `/tool list` |
+| `/tool list` | `list` | `tools.list` | The tool table: name, enabled or disabled, description, under a header row. Same output as `/tools` |
+| `/tools` | none | `tools.list` | The tool table: name, enabled or disabled, description, under a header row. Same output as `/tool list` |
 | `/usage` | none | (Local) | Token totals for this link session |
 | `/wifi connect` | `connect` | `wifi.connect` | Joins the best configured network |
 | `/wifi disconnect` | `disconnect` | `wifi.disconnect` | Leaves the network and stays down |

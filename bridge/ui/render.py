@@ -169,9 +169,10 @@ def tool_table(result: dict[str, Any]) -> list[str]:
     )
     if not rows:
         return ["no tools"]
-    names = max(len(name) for name, _, _ in rows)
-    states = max(len(state) for _, state, _ in rows)
-    return [
+    names = max([len(name) for name, _, _ in rows] + [len("name")])
+    states = max([len(state) for _, state, _ in rows] + [len("state")])
+    header = f"  {'name'.ljust(names)}  {'state'.ljust(states)}  description"
+    return [header] + [
         f"  {name.ljust(names)}  {state.ljust(states)}  {desc}"
         for name, state, desc in rows
     ]

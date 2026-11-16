@@ -1662,7 +1662,15 @@ class BridgeApp(App):
             self._chat().write(f"answer truncated: {detail}", kind="warn")
 
     def _on_agent_error(self, frame: Frame) -> None:
-        self._chat().write(f"{frame.body.get('code')}: {frame.body.get('message')}", kind="error")
+        code = frame.body.get("code")
+        message = frame.body.get("message")
+        if code == "E_CANCELLED":
+            # `04` §3.4: cancellation is not a failure, so it is not coloured as one —
+            # `E_CANCELLED` is the run reporting that the reader's Esc landed. The
+            # `message` already is the sentence (`run cancelled`), so no prefix.
+            self._chat().write(message or "run cancelled")
+            return
+        self._chat().write(f"{code}: {message}", kind="error")
 
     def _on_task_fired(self, frame: Frame) -> None:
         self._chat().write(
@@ -1681,6 +1689,16 @@ class BridgeApp(App):
         kind = frame.body.get("kind")
         if kind == "link.rejected":
             self._chat().write("link rejected: bad token", kind="error")
+            return
+        if kind == "cancel.noop":
+            # `04` §3.4: `/cancel` with nothing in flight is otherwise answered only by
+            # silence — the live-run case emits `agent.error`/`E_CANCELLED`, which
+            # `_on_agent_error` prints. The device's `reason` is the verdict itself
+            # (`nothing to cancel`, `no run with that id in flight`), so the frame is
+            # printed as it arrives rather than dressed in a second prefix.
+            data = frame.body.get("data")
+            reason = data.get("reason") if isinstance(data, dict) else None
+            self._chat().write(reason or "nothing to cancel")
             return
         self._logs().write(f"event:{kind} {clip(str(frame.body.get('data')), 200)}")
 
@@ -1764,8 +1782,8 @@ class BridgeApp(App):
             return
         if name == "reload" and isinstance(result, dict):
             # `05` §7: a reload's warnings are the part a reader acts on, and the
-            # JSON block buried them. Rendered from the frame so the typed verb and
-            # `--send /sys reload` produce the same sentence.
+            # JSON block buried them. `/sys reload` and `/sys reboot` share this
+            # renderer, so the two verbs cannot drift apart.
             for line in reload_lines(result):
                 self._chat().write(line)
             return
@@ -1774,8 +1792,10 @@ class BridgeApp(App):
             return
         if name == "tools.list" and isinstance(result, dict):
             # `04` §4.29: the one table both `/tools` and `/tool list` print. It lives
-            # here rather than in `_tool` so the `--send /tools` path, which reaches
-            # the wire through `parse`, renders the same rows as the `list` verb.
+            # here rather than in `_tool` because the bare `/tools` and the `list` verb
+            # are two typed paths to one frame, and a second renderer would let the
+            # two surfaces disagree. `--send` is not a third: `_headless` prints the
+            # reply body raw and never builds a `BridgeApp`.
             for line in tool_table(result):
                 self._chat().write(line)
             return

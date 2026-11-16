@@ -428,6 +428,7 @@ def test_tool_table_is_one_row_per_tool_in_name_order_with_three_columns():
         }
     )
     assert lines == [
+        "  name        state     description",
         "  geo.locate  disabled  Return the position.",
         "  time.now    enabled   Return the current time.",
     ]
@@ -435,10 +436,18 @@ def test_tool_table_is_one_row_per_tool_in_name_order_with_three_columns():
 
 def test_tool_table_sanitises_a_server_written_description():
     """An MCP server writes its own description, so the table carries device text."""
-    (line,) = tool_table(
+    header, line = tool_table(
         {"tools": [{"name": "mcp.x", "description": "a\x1bb", "offered": True}]}
     )
-    assert "\x1b" not in line
+    assert "\x1b" not in line and "\x1b" not in header
+
+
+def test_tool_table_headers_its_columns():
+    """`05` §7.4: three unlabelled columns read as prose. The labels are also the
+    width floor, so a catalogue of short names still lines up under them."""
+
+    lines = tool_table({"tools": [{"name": "a", "description": "d", "offered": True}]})
+    assert lines == ["  name  state    description", "  a     enabled  d"]
 
 
 def test_tool_table_says_so_when_the_catalogue_is_empty():

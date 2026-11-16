@@ -646,7 +646,7 @@ the screen re-applies its initial value on every mount, so a modal dismissed and
 reopened loses what the reader had chosen.
 
 **`InfoModal`** is the read-only one: a title and a list of `(heading, text)` sections
-in a `VerticalScroll`. `/sys status` and `/sys diag` are its only callers, and they
+in a `VerticalScroll`. `/sys status` and `/sys diag` are its two-verb callers, and they
 pass the same two sections in opposite order — `status` leads with the general half,
 `diag` with the counters — so a reader comparing heap against its quota does not close
 one box to open another. The body is a `Static` built with `Text.from_markup`, the
@@ -790,7 +790,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |
 | `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
 | `/model [name]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `name` | Sets the model of `llm.providers[0]`. With no argument it opens a picker of the provider's published models, pre-filled with the stored one and accepting a typed name instead; with one it writes that name directly. The write is the whole `llm.providers` array, so the rest of the entry moves untouched (§7.3) |
-| `/cancel` | `cancel` | none | Cancels current run |
+| `/cancel` | `cancel` | none | Cancels the run in flight, or says there is nothing to cancel. Both outcomes answer in chat, printed once with no prefix: a live run ends with the `E_CANCELLED` `message` (`run cancelled`), an idle one with the `cancel.noop` `reason` (`nothing to cancel`) |
 | `/clear` | `command {name:"history.clear"}` | none | Forgets the conversation on both sides: the device's PSRAM history and this pane's scrollback. Refused with `E_BUSY` while a run is in flight, and then nothing is cleared on either side |
 | `/logs` | (Local) | none | Switches to the Logs screen |
 | `/help` | (Local) | none | Switches to the Help screen |
@@ -1194,8 +1194,9 @@ model's request unchanged, which is the failure mode worth naming.
   last `hello_ack`, `/tool list` printed the offered set annotated from the array —
   which meant the same question answered two ways. `tools.list` (`04` §4.29) now
   carries the three columns and the device's own descriptions, and `render.tool_table`
-  sorts and pads them. The table is the whole answer; there is no heading line, because
-  the first row names the columns by being one.
+  sorts and pads them. The table opens with a `name / state / description` header row
+  whose column widths are floored at the labels, so a build whose longest tool name is
+  shorter than `description` still lines up under it.
 - **`list` carries the tools the model cannot call.** Those rows are the reason the
   command exists: a reader looking at this list is usually looking for the name to turn
   back on. It also carries the i2c family with no bus pins, for the same reason.

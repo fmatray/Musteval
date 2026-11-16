@@ -1621,3 +1621,37 @@ async def test_tasks_set_refuses_a_surplus_word_without_opening_a_modal():
         assert "usage: /tasks set <id>" in _text(app)
 
     await _run(_device(), body)
+
+
+async def test_cancel_answers_in_chat_whether_or_not_a_run_was_in_flight():
+    """`04` §3.4: `/cancel` has no acknowledgement of its own. A live run ends in
+    `agent.error`/`E_CANCELLED`, and nothing in flight emits `cancel.noop` — so the
+    two frames are the whole answer, and a bridge that only routes `event` to the log
+    pane leaves either press looking like a dropped keystroke. Observed: `/cancel`
+    on an idle board printed nothing."""
+
+    def reply(line: bytes) -> list[bytes]:
+        return _device()(line)
+
+    async def body(app, pilot):
+        transport = app.session._transport  # type: ignore[attr-defined]
+        transport.feed(
+            encode(Frame(type="event", id="d-30", ts=0,
+                         body={"kind": "cancel.noop",
+                               "data": {"reason": "nothing to cancel"}})),
+        )
+        await _await_chat(pilot, app, "nothing to cancel")
+        assert "nothing to cancel" in _text(app)
+
+        transport.feed(
+            encode(Frame(type="agent.error", id="d-31", ts=0,
+                         body={"code": "E_CANCELLED", "message": "run cancelled",
+                               "retryable": False})),
+        )
+        await _await_chat(pilot, app, "run cancelled")
+        # Printed once: the frame's own text is the whole sentence, so a reply that
+        # prefixes it again reads `run cancelled: run cancelled`.
+        assert "run cancelled: run cancelled" not in _text(app)
+        assert "run cancelled" in _text(app)
+
+    await _run(reply, body)
