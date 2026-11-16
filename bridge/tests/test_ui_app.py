@@ -113,8 +113,11 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
         name = frame.get("name", "")
         if drop and (kind in drop or name in drop):
             return []
-        if overrides and name in overrides:
-            value = overrides[name]
+        if overrides and (name in overrides or kind in overrides):
+            # A shorthand frame (`secret.set`) carries no `name`, so an override may
+            # target its `type`; a command frame is targeted by its name.
+            key = name if name in overrides else kind
+            value = overrides[key]
             if isinstance(value, Exception):
                 raise value
             return [_result(frame, name, value, ok=False)]
@@ -124,6 +127,12 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
         if kind == "ping":
             return [encode(Frame(type="pong", id="d-2", ts=0, body={},
                                  reply_to=frame["id"]))]
+        if kind == "secret.set":
+            # `04` §4.10: a shorthand frame carries `key` and `value` at the root, and
+            # the reply echoes only the length — the value never comes back.
+            return [_result(frame, "secret.set",
+                            {"key": frame["key"], "stored": True,
+                             "length": len(frame["value"])})]
         if kind == "prompt":
             return [
                 encode(Frame(type="agent.start", id="d-3", ts=0,
@@ -156,6 +165,16 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
                                                "message": "broker unreachable"}]})]
             if name == "reboot":
                 return [_result(frame, name, {"grace_ms": 250})]
+            if name in ("wifi.status", "wifi.scan"):
+                # `04` §3.9 and §4.24: the two halves `/wifi list` joins, so a row
+                # claiming `joined` or `in range` is a fact about an answer rather
+                # than about a cached frame.
+                if name == "wifi.scan":
+                    return [_result(frame, name, {"networks": [
+                        {"ssid": "home", "rssi": -47, "auth": "wpa2"},
+                        {"ssid": "Cafe-FREE", "rssi": -71, "auth": "open"},
+                    ], "truncated": False})]
+                return [_result(frame, name, dict(STATUS["wifi"]))]
             if name == "config.get":
                 return [_result(frame, name, {"config": CONFIG})]
             if name == "config.set":
@@ -1654,3 +1673,952 @@ async def test_cancel_answers_in_chat_whether_or_not_a_run_was_in_flight():
         assert "run cancelled" in _text(app)
 
     await _run(reply, body)
+
+
+# -- the wifi and provider editors --------------------------------------
+
+
+async def test_wifi_list_draws_every_known_network_and_what_the_scan_heard():
+    """`05` §7.6: the document says which networks exist, the scan says which are
+    audible, and a configured network the scan missed is still drawn."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {
+            "wifi": {"networks": [
+                {"ssid": "home", "password_ref": "nvs:k"},
+                {"ssid": "gone", "password_ref": "nvs:g"},
+            ]}
+        }
+        await app._wifi_list()
+        await _await_chat(pilot, app, "gone")
+        text = _text(app)
+        # `home` is the associated network in the status fixture.
+        assert "home" in text and "joined" in text
+        # `gone` is configured and was not heard: the row exists and says so.
+        assert "gone" in text and "not in range" in text
+
+    await _run(_device(), body)
+
+
+async def test_wifi_list_with_no_document_answer_says_nothing_was_configured():
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {}
+        await app._wifi_list()
+        await _await_chat(pilot, app, "no networks configured")
+
+    await _run(_device(), body)
+
+
+async def test_forgetting_the_last_network_is_refused_before_any_frame():
+    """`03-config.md` makes `wifi.networks` 1..8, so the empty list is a document the
+    device rejects. The refusal names the bound instead of sending a doomed write."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "only", "password_ref": "nvs:k"}
+        ]}}
+
+        async def picker(_screen):
+            return "forget only"
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        assert "the last network cannot be removed" in _text(app)
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "wifi.networks"
+        ]
+
+    await _run(_device(), body)
+
+
+async def test_adding_a_network_with_a_dead_radio_says_the_scan_failed():
+    """An off radio is not an empty scan. `wifi.scan` refuses with `E_WIFI`, and the
+    two answers a reader can act on — "turn the radio on" and "there is nothing near
+    you" — are different, so the refusal must not be reported as the second."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"}
+        ]}}
+
+        async def picker(_screen):
+            return "add a network"
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        assert "the scan did not answer" in _text(app)
+        assert "heard nothing new" not in _text(app)
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "wifi.networks"
+        ]
+
+    await _run(_device(drop={"wifi.scan"}), body)
+
+
+async def test_wifi_list_with_a_dead_radio_lists_the_rows_as_unknown():
+    """The document is still worth showing when the radio is off: which networks are
+    configured and their priority do not come from the scan. What the scan would have
+    answered is drawn `unknown`, never `not in range`."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "priority": 0, "password_ref": "nvs:k"},
+            {"ssid": "Cafe", "priority": 5, "password_ref": "nvs:k2"},
+        ]}}
+        await app._wifi_list()
+        text = _text(app)
+        assert "home" in text and "Cafe" in text
+        assert "unknown" in text
+        assert "not in range" not in text
+
+    await _run(_device(drop={"wifi.scan"}), body)
+
+
+async def test_adding_a_network_writes_its_secret_before_the_array_that_names_it():
+    """`03-config.md` rule 9: an `nvs:` ref that resolves to nothing is a document the
+    device refuses, so the secret has to land first. The key is derived from the SSID
+    because a shared `wifi_psk` would make removing one row blank another's password."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"}
+        ]}}
+
+        async def picker(_screen):
+            return "add a network"
+
+        async def form(_screen):
+            return {"ssid": "Cafe-FREE", "password": "hunter2"}
+
+        # The modal under test is the second question, so the script answers the
+        # gesture picker first and the form second.
+        answers = [picker, form]
+
+        async def drive(screen):
+            return await answers.pop(0)(screen)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        secret = [f for f in written if f.get("type") == "secret.set"]
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "wifi.networks"]
+        assert secret and arrays, written
+        # A shorthand frame puts `key` at the root; there is no `body`.
+        assert secret[0]["key"] == "wifi_cafe_free"
+        assert written.index(secret[0]) < written.index(arrays[0])
+        assert arrays[0]["args"]["value"][-1] == {
+            "ssid": "Cafe-FREE", "priority": 1, "password_ref": "nvs:wifi_cafe_free"
+        }
+
+    await _run(_device(), body)
+
+
+async def test_the_provider_editor_offers_every_entry_and_says_so_with_none():
+    """`05` §7.7: the picker names what each gesture does before it is chosen."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+
+        seen: list[object] = []
+
+        async def picker(screen):
+            seen.append(screen)
+            return None
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        await app._providers()
+        assert "providers cancelled" in _text(app)
+        rows = [label for label, _hint in seen[0].rows]
+        assert "add a provider" in rows
+        assert "log in to openai" in rows and "disconnect openai" in rows
+        # The header carries the model, url and key ref: the facts a reader needs
+        # before choosing a row, and none of them is the row's answer.
+        assert any("nvs:llm_api_key" in line for line in seen[0].header)
+
+    await _run(_device(), body)
+
+
+async def test_removing_the_last_provider_is_refused_before_any_array_write():
+    """`03-config.md` makes `llm.providers` 1..4, so removing the only entry would be
+    a write the device rejects. The refusal names the bound and sends nothing."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+
+        async def picker(_screen):
+            return "disconnect openai"
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        assert "the last provider cannot be removed" in _text(app)
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "llm.providers"
+        ]
+
+    await _run(_device(), body)
+
+
+async def test_disconnecting_a_provider_removes_the_row_then_erases_its_key():
+    """`04` §4.31 refuses a key a live `*_ref` names, so the array has to land first.
+    The order is the whole correctness of this gesture."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+            {"id": "groq", "base_url": "https://api.groq.com/openai/v1",
+             "model": "llama", "api_key_ref": "nvs:key_groq"},
+        ]}}
+
+        async def picker(_screen):
+            return "disconnect groq"
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "llm.providers"]
+        deletes = [f for f in written if f.get("name") == "secret.delete"]
+        assert arrays and deletes, written
+        # The remaining entry is the one whose key is still referenced.
+        assert [e["id"] for e in arrays[0]["args"]["value"]] == ["openai"]
+        assert written.index(arrays[0]) < written.index(deletes[0])
+        assert deletes[0]["args"]["key"] == "key_groq"
+        assert "nvs:key_groq erased" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_the_passphrase_gesture_reuses_the_ref_the_array_already_names():
+    """`05` §7.6: a network `/onboard` seeded names `wifi_psk`, and deriving a fresh
+    key from the ssid would write a secret nothing references — the array would keep
+    pointing at the old one, so the new passphrase would never be used."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:wifi_psk"}
+        ]}}
+
+        answers = ["passphrase for home", {"ssid": "home", "password": "newpass"}]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        secrets_ = [f for f in written if f.get("type") == "secret.set"]
+        assert secrets_ and secrets_[0]["key"] == "wifi_psk"
+        assert secrets_[0]["value"] == "newpass"
+        # The array is untouched: only the credential moved.
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "wifi.networks"
+        ]
+        assert "stored as nvs:wifi_psk" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_blank_passphrase_writes_nothing():
+    """An empty field is a cancel, not a request to blank the credential: a blank
+    `secret.set` would leave the array naming an empty secret."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"}
+        ]}}
+
+        answers = ["passphrase for home", {"ssid": "home", "password": ""}]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "nothing entered, nothing written" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_forgetting_a_network_writes_the_shorter_array_and_keeps_the_secret():
+    """`05` §7.6: the secret is deliberately kept — another network may name it, and
+    `04` §4.31 refuses a key a live `*_ref` still names."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"},
+            {"ssid": "Cafe", "password_ref": "nvs:k2"},
+        ]}}
+
+        answers = ["forget Cafe", True]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "wifi.networks"]
+        assert [e["ssid"] for e in arrays[0]["args"]["value"]] == ["home"]
+        assert not [f for f in written if f.get("name") == "secret.delete"]
+        assert "its secret is kept" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_cancelling_the_forget_confirmation_sends_nothing():
+    """A `ConfirmPrompt` answered no is a cancel, and the array is the whole
+    document: a write here would drop a network the reader kept."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"},
+            {"ssid": "Cafe", "password_ref": "nvs:k2"},
+        ]}}
+
+        answers = ["forget Cafe", False]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "wifi.networks"
+        ]
+        assert "wifi forget cancelled" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_the_editors_cancel_before_the_document_is_read():
+    """`/wifi edit` and `/providers` answer a cancel in chat — a picker that closes
+    silently is indistinguishable from a hang (`05` §4.1)."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [{"ssid": "home"}]},
+                       "llm": {"providers": [{"id": "openai"}]}}
+
+        async def picker(_screen):
+            return None
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        await app._wifi_edit()
+        await app._providers()
+        assert "wifi edit cancelled" in _text(app)
+        assert "providers cancelled" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_logging_in_replaces_the_key_the_entry_already_names():
+    """`05` §7.7: the log-in gesture reuses the entry's own ref, because a fresh
+    `key_<id>` would leave the array pointing at the old key."""
+    from bridge.ui.modals import SecretPrompt as _Secret
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+
+        async def drive(screen):
+            # The picker answers the gesture; the masked prompt answers the key.
+            return "sk-new" if isinstance(screen, _Secret) else "log in to openai"
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        secrets_ = [f for f in written if f.get("type") == "secret.set"]
+        assert secrets_ and secrets_[0]["key"] == "llm_api_key"
+        assert secrets_[0]["value"] == "sk-new"
+        assert "key replaced (nvs:llm_api_key)" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_cancelling_a_log_in_writes_nothing():
+    """A blank masked prompt is a cancel: writing it would blank the credential a
+    provider entry names."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+
+        answers = ["log in to openai", ""]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "provider login: cancelled, nothing written" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_cancelling_a_disconnect_keeps_the_row_and_the_key():
+    """The array and the key are both the reader's data: a `no` answers in chat and
+    sends nothing."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+            {"id": "groq", "base_url": "https://api.groq.com/openai/v1",
+             "model": "llama", "api_key_ref": "nvs:key_groq"},
+        ]}}
+
+        answers = ["disconnect groq", False]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "llm.providers"
+        ]
+        assert not [f for f in written if f.get("name") == "secret.delete"]
+        assert "provider disconnect cancelled" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_the_add_provider_gesture_lands_one_entry_and_one_key():
+    """`05` §7.7: `add` runs the same `ProviderStep` + `ModelStep` chain `/onboard`
+    uses, so the model written is one the key actually unlocked. The write appends to
+    `llm.providers` rather than replacing `providers[0]`, and the key lands first."""
+
+    async def body(app, pilot):
+        from bridge.ui import app as app_mod
+        from bridge.ui.modals import ModelStep, ProviderStep
+        from bridge.ui.onboard import Answers
+
+        answers = Answers(
+            ssid="", password="",
+            base_url="https://api.groq.com/openai/v1", api_key="sk-groq",
+            model="", provider="groq",
+        )
+        picked = type("Picked", (), {"model": "llama", "extra_body": {}})()
+
+        async def fetch(_answers):
+            return ["llama"]
+
+        app._fetch_models = fetch  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+
+        async def drive(screen):
+            # The two steps `/onboard` uses, answered without their widgets: what is
+            # under test is the write, and the steps have their own tests.
+            if isinstance(screen, ProviderStep):
+                return answers
+            if isinstance(screen, ModelStep):
+                return picked
+            return "add a provider"
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        secret = [f for f in written if f.get("type") == "secret.set"]
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "llm.providers"]
+        assert secret and arrays, written
+        assert secret[0]["key"] == "key_groq"
+        assert written.index(secret[0]) < written.index(arrays[0])
+        assert [e["id"] for e in arrays[0]["args"]["value"]] == ["openai", "groq"]
+        assert arrays[0]["args"]["value"][-1]["api_key_ref"] == "nvs:key_groq"
+        assert "2 providers configured" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_refused_secret_on_add_and_passphrase_is_reported_not_swallowed():
+    """`05` §7.6: a refused `secret.set` is the end of the gesture — the array is not
+    written, because an `nvs:` ref that resolves to nothing is a document the device
+    rejects (`03-config.md` rule 9). Both gestures name the refusal."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [{"ssid": "home",
+                                              "password_ref": "nvs:k"}]}}
+
+        for gesture, answer in (
+            ("add a network", {"ssid": "Cafe", "password": "pw"}),
+            ("passphrase for home", {"ssid": "home", "password": "pw"}),
+        ):
+            replies = [gesture, answer]
+
+            async def drive(_screen, _r=replies):
+                return _r.pop(0)
+
+            app.push_screen_wait = drive  # type: ignore[method-assign]
+            before = len(app.session._transport.written)
+            await app._wifi_edit()
+            written = [
+                json.loads(line) for line in app.session._transport.written[before:]
+            ]
+            assert not [
+                f for f in written
+                if (f.get("args") or {}).get("path") == "wifi.networks"
+            ], gesture
+
+        text = _text(app)
+        assert "wifi add: secret refused" in text
+        assert "wifi passphrase: refused" in text
+
+    await _run(_device(overrides={"secret.set": "nvs is full"}), body)
+
+
+async def test_a_refused_array_write_is_reported_for_add_and_forget():
+    """A refused `config.set` leaves the array as it was; the gesture names the
+    refusal rather than claiming the change landed."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"},
+            {"ssid": "Cafe", "password_ref": "nvs:k2"},
+        ]}}
+
+        for gesture, answer in (
+            ("add a network", {"ssid": "New", "password": ""}),
+            ("forget Cafe", True),
+        ):
+            replies = [gesture, answer]
+
+            async def drive(_screen, _r=replies):
+                return _r.pop(0)
+
+            app.push_screen_wait = drive  # type: ignore[method-assign]
+            await app._wifi_edit()
+
+        text = _text(app)
+        assert "wifi add: refused" in text
+        assert "wifi forget: refused" in text
+
+    await _run(_device(overrides={"config.set": "document rejected"}), body)
+
+
+def _provider_answers(**kw):
+    """An `Answers` for the provider step, with the members these tests vary."""
+    from bridge.ui.onboard import Answers
+
+    base = dict(ssid="", password="", base_url="", api_key="", model="",
+                provider="openai")
+    base.update(kw)
+    return Answers(**base)
+
+
+async def test_adding_a_provider_that_already_exists_is_refused_at_the_step():
+    """`llm.providers[]` is a list of unique ids, so a second `openai` is a document
+    the device refuses. The refusal names the fix (`log in`) and writes nothing."""
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ProviderStep
+
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                return _provider_answers(base_url="https://api.openai.com/v1",
+                                         api_key="sk")
+            return "add a provider"
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "already exists (use log in)" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_adding_a_provider_without_a_url_or_a_key_is_refused():
+    """A provider entry needs all three of `id`, `base_url` and `model`, and the key
+    is what proves them — so a blank field answers in chat before a model fetch."""
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ProviderStep
+
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                # An id outside the chain, so the refusal under test is the missing
+                # field rather than the duplicate.
+                return _provider_answers(provider="custom")
+            return "add a provider"
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "a base url and an api key are both required" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_an_empty_model_list_writes_nothing_and_names_the_provider():
+    """The list is the proof the key works: no list means the key was not accepted,
+    so nothing is written and the reader is told which provider failed."""
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ProviderStep
+
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                return _provider_answers(provider="groq",
+                                         base_url="https://api.groq.com/v1",
+                                         api_key="sk")
+            return "add a provider"
+
+        async def no_models(_a):
+            return []
+
+        app._fetch_models = no_models  # type: ignore[method-assign]
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "groq published no model list" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_refused_key_and_a_refused_array_are_each_reported():
+    """Login writes one secret; disconnect writes the array then erases the key. A
+    refusal at either step stops the gesture and says which one failed."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+            {"id": "groq", "base_url": "https://api.groq.com/v1",
+             "model": "llama", "api_key_ref": "nvs:key_groq"},
+        ]}}
+        for gesture, answer in (("log in to openai", "sk"), ("disconnect groq", True)):
+            replies = [gesture, answer]
+
+            async def drive(_screen, _r=replies):
+                return _r.pop(0)
+
+            app.push_screen_wait = drive  # type: ignore[method-assign]
+            await app._providers()
+        text = _text(app)
+        assert "provider login: refused" in text
+        assert "provider disconnect: refused" in text
+
+    await _run(
+        _device(overrides={"secret.set": "nvs is full",
+                           "config.set": "document rejected"}),
+        body,
+    )
+
+
+async def test_a_disconnect_whose_key_erase_is_refused_keeps_the_row_change():
+    """`04` §4.31 refuses a key a live `*_ref` still names. The array is the fact the
+    reader asked to change, so a refused erase is a warning, not a failure."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+            {"id": "groq", "base_url": "https://api.groq.com/v1",
+             "model": "llama", "api_key_ref": "nvs:key_groq"},
+        ]}}
+        replies = ["disconnect groq", True]
+
+        async def drive(_screen):
+            return replies.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        # The array landed; only the erase was refused.
+        assert [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "llm.providers"
+        ]
+        # `_send_body` reports the code, not the message: the code is what a reader
+        # can look up, and the message belongs to the device's own vocabulary.
+        assert "removed; its key was kept (E_CONFIG)" in _text(app)
+
+    await _run(
+        _device(overrides={"secret.delete": {
+            "code": "E_CONFIG", "message": "still named by llm.providers"
+        }}),
+        body,
+    )
+
+
+async def test_each_editor_fetches_the_document_when_it_has_none():
+    """`05` §7.6: a reader can reach either command before any reply cached the
+    document, so the handler asks for it rather than drawing an empty list."""
+    from bridge.ui.modals import _PickBox
+
+    async def body(app, pilot):
+        assert app._config_fetched is False
+        seen: list[object] = []
+
+        async def picker(screen):
+            seen.append(screen)
+            return None
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        await app._wifi_edit()
+        await app._providers()
+        assert app._config_fetched is True
+        # Both read the fetched document, so each picker names the configured entry.
+        labels = [[label for label, _hint in box.rows] for box in seen]
+        assert any("forget home" in row for row in labels[0])
+        assert any("disconnect openai" in row for row in labels[1])
+        assert isinstance(seen[0], _PickBox)
+
+    await _run(_device(), body)
+
+
+async def test_cancelling_the_add_form_and_the_passphrase_form_writes_nothing():
+    """Esc on a form is a cancel: the array and the secret are both untouched."""
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "home", "password_ref": "nvs:k"},
+            {"ssid": "Cafe", "password_ref": "nvs:k2"},
+        ]}}
+
+        for gesture in ("add a network", "passphrase for home"):
+            replies = [gesture, None]
+
+            async def drive(_screen, _r=replies):
+                return _r.pop(0)
+
+            app.push_screen_wait = drive  # type: ignore[method-assign]
+            before = len(app.session._transport.written)
+            await app._wifi_edit()
+            written = [
+                json.loads(line) for line in app.session._transport.written[before:]
+            ]
+            assert not [f for f in written if f.get("type") == "secret.set"], gesture
+            assert not [
+                f for f in written
+                if (f.get("args") or {}).get("path") == "wifi.networks"
+            ], gesture
+
+        text = _text(app)
+        assert "wifi add cancelled" in text
+        assert "wifi passphrase: cancelled" in text
+
+    await _run(_device(), body)
+
+
+async def test_cancelling_the_model_step_writes_nothing():
+    """The model step is the last question; a cancel there is a cancel of the whole
+    gesture, because the entry cannot be written without a model."""
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ModelStep, ProviderStep
+
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                return _provider_answers(provider="groq",
+                                         base_url="https://api.groq.com/v1",
+                                         api_key="sk")
+            if isinstance(screen, ModelStep):
+                return None
+            return "add a provider"
+
+        async def models(_a):
+            return ["llama"]
+
+        app._fetch_models = models  # type: ignore[method-assign]
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "provider add cancelled" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_custom_provider_file_whose_defect_is_a_note_prints_it_before_asking():
+    """`05` §7.7: the catalog reports a malformed custom entry as a note rather than
+    failing, and the add gesture is the one place a reader can act on it. Printing it
+    before the form means the missing provider is explained by the time it is missed."""
+    from bridge import providers as providers_mod
+
+    real = providers_mod.catalog
+
+    def catalog_with_a_note(path=None):
+        entries, _notes = real(path)
+        return entries, ["providers.json: entry 2 has no base_url (skipped)"]
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ProviderStep
+
+        providers_mod.catalog = catalog_with_a_note  # type: ignore[assignment]
+
+        async def picker(screen):
+            # The note is printed on the way into the form, so the add arm has to run
+            # and the form itself is answered `None`.
+            return None if isinstance(screen, ProviderStep) else "add a provider"
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        # The picker is answered `None`, so the add arm never runs; the note is
+        # printed only on the way in, which is the ordering under test.
+        await app._providers()
+        text = _text(app)
+        assert "entry 2 has no base_url" in text
+
+    try:
+        await _run(_device(), body)
+    finally:
+        providers_mod.catalog = real  # type: ignore[assignment]
+
+
+async def test_an_add_whose_form_step_is_cancelled_says_so():
+    """The provider step is the first of three questions, and closing it is a cancel
+    of the whole gesture — the key is not fetched and nothing is written."""
+    from bridge.ui.modals import ProviderStep
+
+    async def body(app, pilot):
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                return None
+            return "add a provider"
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert "provider add cancelled" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_an_add_whose_array_write_is_refused_says_so_and_keeps_the_key():
+    """The key landed and the array did not, so the key is now named by nothing.
+    Nothing is erased — a refused write leaves the document as it was, and the
+    gesture names the refusal rather than claiming success."""
+    from bridge.ui.modals import ModelStep, ProviderStep
+
+    async def body(app, pilot):
+        picked = type("Picked", (), {"model": "llama", "extra_body": {}})()
+
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                return _provider_answers(provider="groq",
+                                         base_url="https://api.groq.com/v1",
+                                         api_key="sk")
+            if isinstance(screen, ModelStep):
+                return picked
+            return "add a provider"
+
+        async def models(_a):
+            return ["llama"]
+
+        app._fetch_models = models  # type: ignore[method-assign]
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        app._config_fetched = True
+        app._config = {"llm": {"providers": [
+            {"id": "openai", "base_url": "https://api.openai.com/v1",
+             "model": "gpt", "api_key_ref": "nvs:llm_api_key"},
+        ]}}
+        await app._providers()
+        assert "provider add: refused (document rejected)" in _text(app)
+
+    await _run(_device(overrides={"config.set": "document rejected"}), body)

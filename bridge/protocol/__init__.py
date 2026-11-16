@@ -89,6 +89,8 @@ COMMAND_NAMES = frozenset(
         "config.get",
         "config.set",
         "secret.set",
+        # `04-protocol.md` §4.31: erase one key; refuses a key a live `*_ref` names.
+        "secret.delete",
         "templates.list",
         "template.get",
         "geo.locate",

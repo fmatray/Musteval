@@ -229,7 +229,7 @@ seconds rather than minutes. Cancellation is not a failure and is never retried.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the thirty-two names in §4. |
+| `name` | string | yes | One of the thirty-four names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -614,7 +614,7 @@ whose trace is dropped is still a correct run.
 
 ## 4. Command catalog
 
-All thirty-two names, their arguments and their `result` shapes. Unknown names are
+All thirty-four names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -631,6 +631,7 @@ reads are never refused.
 | `config.get` | `{path?}` | `{config}` or `{path, value}` | `E_CONFIG` (bad path) | yes |
 | `config.set` | `{path, value}` | `{path, applied, requires_reboot}` | `E_CONFIG`, `E_STORAGE` | yes |
 | `secret.set` | `{key, value}` | `{key, stored, length}` | `E_CONFIG`, `E_STORAGE` | yes |
+| `secret.delete` | `{key}` | `{key, deleted, unset}` | `E_CONFIG` (a key a config `_ref` still names), `E_STORAGE` | yes |
 | `templates.list` | `{}` | `{"templates":["brief.md","daily.md"]}` | `E_STORAGE` | yes |
 | `template.get` | `{name}` | `{name, bytes, text}` | `E_STORAGE` (missing), `E_PROTOCOL` (bad name) | yes |
 | `geo.locate` | `{}` | `{lat, lon, accuracy_m, provider, age_s}` | `E_GEO`, `E_CONFIG` (geo disabled) | yes |
@@ -831,6 +832,8 @@ device.
 ```json
 {"v":1,"type":"command.result","id":"d-23","ts":1730571801,"reply_to":"b-15","name":"secret.set","ok":true,"result":{"key":"llm_key","stored":true,"length":24},"duration_ms":11}
 ```
+
+To erase a key rather than overwrite it, see §4.31.
 
 ### 4.11 `templates.list`
 
@@ -1494,6 +1497,41 @@ two once before the loop starts, so the frame answers on a device that has run n
 yet — a boot-time `/context` reports the persona and the tools, not two zeros. A
 `context.budget` after `/clear` reports the shrunken history; one after `/tool disable`
 reports the new array only once the next run has rebuilt it.
+
+### 4.31 `secret.delete`
+
+Erases one key from NVS namespace `secrets`. The deliberate counterpart to
+`secret.set`: erasure is never a side effect of writing, so a mistyped blank value
+cannot remove a working credential (`06-security.md` OQ-5), and a reader who wants a
+key gone says so.
+
+```json
+{"v":1,"type":"command","id":"b-16","ts":1730571810,"name":"secret.delete","args":{"key":"llm_key"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-24","ts":1730571811,"reply_to":"b-16","name":"secret.delete","ok":true,"result":{"key":"llm_key","deleted":true,"unset":true},"duration_ms":14}
+```
+
+| Field | Means |
+|---|---|
+| `key` | The key that was asked for, echoed |
+| `deleted` | The key existed and is now gone. `false` means it was already unset, which is not an error: the caller's intent holds |
+| `unset` | No value is readable under that key now. `true` on both paths above, so a caller need not branch on `deleted` to know the outcome |
+
+**A key a live config reference still names is refused with `E_CONFIG`.** Every
+`*_ref` in the loaded document is a promise that its secret resolves, and rule 3
+makes an unresolved reference a refusal at `config.set` and a degraded boot at
+`cfg_load`. Deleting one behind the document's back turns a working device into one
+that cannot accept its own config, so the frame names the reference instead: remove
+the provider or network first, then delete the key. The rule is a walk of the loaded
+document, not a second key table, so a new `*_ref` anywhere is covered without an
+edit here.
+
+**Not a `type`.** `secret.set` is both a command name and a shorthand frame type
+(§2.1); erasure has no shorthand, so `secret.delete` is a command name only and the
+frame type list is unchanged. A frame of `type: "secret.delete"` is `E_PROTOCOL`, the
+same as any other name that is not a type.
 
 ## 5. Error codes
 

@@ -654,7 +654,15 @@ reopened loses what the reader had chosen.
 in a `VerticalScroll`. `/sys status` and `/sys diag` are its two-verb callers, and they
 pass the same two sections in opposite order — `status` leads with the general half,
 `diag` with the counters — so a reader comparing heap against its quota does not close
-one box to open another. The body is a `Static` built with `Text.from_markup`, the
+one box to open another. `/sys diag`'s half is itself headed (`render.diag_sections`):
+`Memory`, `Boot`, `Tools` and `LLM budget` are four sections rather than one flat list
+of `key: value`, because the modal already renders headings and eight unlabelled lines
+give a reader no seam to scan by. The split is the modal's own structure, not a new
+one: the box takes a section list, so the diagnostics arrive as sections. The facts are
+unchanged — one line per fact, the same eight — and the grouping is the whole of the
+edit; `render_status` still owns the general half's markup and escaping.
+
+The body is a `Static` built with `Text.from_markup`, the
 same way `StatusScreen._paint` builds the grid: `render_status` returns markup and
 `escape`s every device-supplied value before splicing it, so the verdict colours are
 rendered and an SSID or broker error containing `[` stays text. (A `markup=False`
@@ -664,6 +672,16 @@ because the diagnostics half is longer than a 24-row terminal.
 `/context` is its third caller, with one untitled section: the block table from
 `render.context_lines` (`§7.5`). One box, because a budget is a glance rather than a
 place to work, which is the same rule that put `/sys` there.
+
+**`_PickBox`** is the choice list the two editors open on: a keyboard-scrolled list of
+`(label, what the row does)` rows, answering the chosen label. A `Select` was not usable
+here because it carries its own Enter handling and cannot show a per-row hint, and both
+editors have to say what each row will do before it is chosen. It takes an optional
+`header`, which `/providers` fills with `render.provider_lines`: a provider's model, URL
+and key reference have to be visible before a row is chosen, and none of them is the
+row's answer, so none of them may ride a label.
+
+`WifiForm` and the wizard's steps it resembles are detailed in `§7.6` and `§7.1`.
 
 ## 6. Keybindings
 
@@ -786,6 +804,9 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/wifi connect` | `command {name:"wifi.connect"}` | none | Joins the best configured network, as the boot sequence does; the join runs on its own task, so the prompt stays responsive while it waits |
 | `/wifi disconnect` | `command {name:"wifi.disconnect"}` | none | Leaves the network and stays down: the connection does not come back on its own (`04-protocol.md` §4.26) |
 | `/wifi reconnect` | `command {name:"wifi.reconnect"}` | none | Leaves and rejoins, so a link that is up but on the wrong AP is moved to the best one |
+| `/wifi list` | `command {name:"wifi.status"}`, `command {name:"wifi.scan"}` | none | One row per configured network: priority, whether it is the joined one, and its RSSI when audible (§7.6) |
+| `/wifi edit` | `command {name:"config.set"}`, `command {name:"secret.set"}` | none | Opens the network form: add from the scan, change a passphrase, forget a network. Writes the whole `wifi.networks` array (§7.6) |
+| `/providers` | `command {name:"config.get"}`, `command {name:"config.set"}`, `command {name:"secret.set"}`, `command {name:"secret.delete"}` | none | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (§7.7) |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
 | `/tool` | `command {name:"config.get"}`, `command {name:"config.set"}` | `tools.disabled` | Lists every offered tool with the disabled ones marked, or turns one off for the model. Verbs: `list` (the bare default), `enable <name>`, `disable <name>`; each refuses the state it would not change |
@@ -1251,7 +1272,102 @@ so the box reads top-down as the prompt does.
   the reply; a local count of the conversation would miss the prompt, the skill index
   and the tool array, which are the blocks a reader is usually surprised by.
 
+### 7.6 `/wifi list` and `/wifi edit`
+
+The five `wifi.*` verbs in §7 steer the station; these two look at what it is
+configured to join and change that list. `list` is a read, `edit` is a form.
+
+**`/wifi list`** sends `wifi.status` and `wifi.scan` and prints one row per configured
+network: `ssid`, `priority`, whether it is the one joined, and its RSSI when the radio
+can hear it. The two frames are both needed and neither is a substitute: the document
+says which networks exist and in what order they will be tried, and the scan says which
+of them are audible right now. A row the scan did not return is drawn as `not in range`
+rather than omitted, because "configured but silent" is the answer to the question the
+reader asked. `wifi.status` is busy-safe (§7's table), so this works mid-run.
+
+A **refused** scan — the radio is off, or a run holds it — is not an empty one, and the
+rows say so: every network the station is not associated with is drawn `unknown`
+rather than `not in range`. An absent scan cannot report that a network is silent, and
+`not in range` is the kind of claim a reader acts on by moving an AP that was working.
+Only the network actually joined keeps a real state, because `wifi.status` reported it.
+
+**`/wifi edit`** opens one modal with three gestures, each writing the whole array:
+
+| Gesture | Writes |
+|---|---|
+| add | `wifi.networks[]` plus its passphrase secret, then the array naming it |
+| password | the passphrase secret alone, for the network whose ref it already holds |
+| forget | `wifi.networks[]` with that entry removed |
+
+The modal offers the scan-backed SSID picker and a masked passphrase field, the same
+pairing §7.1's `NetworkStep` uses, minus the timezone and the "First run" chrome,
+which are not part of this gesture. It is its own screen because those two are the
+whole of what it asks. The order inside each gesture follows `onboard.writes_network`:
+the secret first, then the array that names it, because `03-config.md` rule 9 refuses a
+reference whose key is missing.
+
+- **The last network cannot be forgotten.** `wifi.networks[]` is 1..8, so removing the
+  only entry is a document the device refuses; the gesture answers in chat and writes
+  nothing rather than sending a `config.set` that comes back `E_CONFIG`.
+- **Each network needs its own secret key.** `wifi_psk` is the name `/onboard` writes
+  and the name the seed document uses, so an added network takes a key derived from its
+  SSID (`wifi_<slug>`, truncated to the 15-character key bound) and a row that already
+  has one keeps it. Two networks sharing `wifi_psk` would make "change this password"
+  change both, which is not what the gesture says.
+- **The password gesture writes a secret, never reads one.** There is no frame that
+  returns a stored secret, and there must not be: the field starts empty and an empty
+  field is a cancel, not a write.
+- **`forget` does not delete the secret.** The key may still be named by another
+  network, and `secret.delete` refuses a key a live `*_ref` names (`04` §4.31). The
+  array is written first; the orphaned key is harmless, and `06-security.md` keeps
+  erasure a deliberate separate act.
+
+### 7.7 `/providers`
+
+One modal: a header listing every entry of `llm.providers[]` with its `id`, `model`,
+`base_url` and the `nvs:` key its `api_key_ref` names, then one row per gesture. Every
+gesture writes the whole array — `04` §4.9 creates a missing object parent but never an
+array or an index, so a per-field path is not available.
+
+| Gesture | Writes |
+|---|---|
+| add | `secret.set` for the key, then `llm.providers[]` with the new entry appended |
+| log in | `secret.set` for an existing entry's key, replacing the stored value |
+| disconnect | `llm.providers[]` without that entry, then `secret.delete` for the key it named |
+
+**Add and log in are the same write and different questions.** Both send one
+`secret.set`; the second rotates a key that stopped working without making the reader
+retype a model and a URL they already have. `log in` writes the key the entry's own
+`api_key_ref` names — a fresh `key_<slug>` would leave the array pointing at the old
+secret, and the seed document's `llm_api_key` is exactly that case. Both ask for the key
+masked, so it never appears on screen, in the chat pane, or in a log (`§8.1`).
+
+`add` runs §7.1's `ProviderStep` and `ModelStep` — the same two steps `/onboard` runs,
+in the same order — so the catalog, the base URL fill-in and the model list are one
+implementation. The model offered is one the key fetched, which is the same proof
+`/onboard` relies on. A provider whose id is already in the chain is refused at the
+picker rather than appended twice. The key it stores is derived from the id
+(`key_<slug>`, 15 characters at most), not the shared `llm_api_key`, so disconnecting one
+provider cannot blank another's credential.
+
+- **The last provider cannot be removed.** `llm.providers[]` is 1..4, so removing the
+  only entry is refused in chat before any frame is sent — the same rule as the network
+  list, and the same reason: a document the device will not load is not a deletion.
+- **The secret outlives the row it served.** Removal writes the array first and then
+  asks `secret.delete`, which refuses while any `*_ref` still names the key — so a key
+  still named by an `mcp.servers[].auth_header_ref` is kept and the refusal is reported
+  in chat. A refused delete after a successful array write is a warning, not a failure:
+  the array is the fact the reader asked to change.
+- **Add fetches the model list before it writes anything**, through the same
+  `_fetch_models` call `/onboard` uses, because the list is the proof the key works. A
+  provider that publishes none is named as such in chat and no secret is stored, so a
+  mistyped key does not become a stored key that fails on the next prompt.
+- **Nothing here reports a provider as down.** That verdict belongs to `status`
+  (`render.llm_verdict`), and a modal that repeated it would be a second opinion about
+  a fact one owner already decides.
+
 ## 8. Secrets & Redaction
+
 
 The Bridge follows strict security rules to prevent secret leakage on the host:
 1. **Masked Input**: `/secret set <key>` opens a modal holding a single `password=True` field, so every character renders as `*`. The value is read only through `Screen.dismiss` on Enter; Esc or an empty value dismisses with `None`, and the command is never sent. The parser receives the value afterwards, so no secret is ever a constructor argument, an argument to a logged call, or a rendered line.

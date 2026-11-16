@@ -18,12 +18,14 @@ from bridge.ui.modals import HelpModal, ValuePrompt
 from bridge.ui.testing import chat_input
 from bridge.ui.render import (
     clip,
-    render_diag,
+    diag_sections,
     render_prompt_bar,
     render_status,
     render_tool_call,
     render_tool_result,
+    provider_lines,
     sanitize,
+    wifi_known_lines,
 )
 
 ACK = {
@@ -169,8 +171,86 @@ def test_status_reports_no_brokers_and_no_fix():
     assert "none" in lines and "no fix" in lines
 
 
-def test_diag_exposes_the_diagnostic_counters():
-    text = "\n".join(render_diag(STATUS))
+def test_wifi_list_joins_the_document_with_the_scan():
+    status = {"ssid": "HomeLab", "rssi": -51, "state": "connected"}
+    scan = {"networks": [{"ssid": "HomeLab", "rssi": -44}, {"ssid": "Cafe", "rssi": -71}]}
+    networks = [
+        {"ssid": "HomeLab", "priority": 10, "password_ref": "nvs:wifi_home"},
+        {"ssid": "Cafe", "priority": 0, "password_ref": "nvs:wifi_cafe"},
+        {"ssid": "Cabin", "priority": 5, "password_ref": "nvs:wifi_cabin"},
+    ]
+    lines = wifi_known_lines(status, scan, networks)
+    # Joined wins over the scan: the station is associated with HomeLab, so that is
+    # the state a reader is asking about even though the scan also heard it.
+    assert "HomeLab" in lines[0] and "joined" in lines[0]
+    # A configured network the scan heard is in range with its scanned rssi.
+    assert "Cafe" in lines[1] and "in range" in lines[1] and "-71 dBm" in lines[1]
+    # A configured network the scan did not return is drawn, not dropped: "known but
+    # silent" is exactly the fact `/wifi list` exists to report.
+    assert "Cabin" in lines[2] and "not in range" in lines[2]
+
+
+def test_wifi_list_uses_the_association_rssi_when_the_scan_omits_it():
+    # A scan taken while associated frequently does not return the joined AP, so the
+    # status frame is the only signal for it.
+    lines = wifi_known_lines(
+        {"ssid": "HomeLab", "rssi": -63},
+        {"networks": []},
+        [{"ssid": "HomeLab", "priority": 0, "password_ref": "nvs:wifi_home"}],
+    )
+    assert "joined" in lines[0] and "-63 dBm" in lines[0]
+
+
+def test_wifi_list_calls_an_absent_scan_unknown_not_out_of_range():
+    # A refused scan (the radio is off, or a run holds it) is not a scan that returned
+    # nothing: the second says the network is not audible, the first says nobody
+    # looked. Painting `not in range` from an absent scan is a claim the device never
+    # made, and it is the one a reader would act on by moving a working AP.
+    lines = wifi_known_lines(
+        {"state": "off", "ssid": None, "rssi": None},
+        None,
+        [{"ssid": "HomeLab", "priority": 0}, {"ssid": "Cafe", "priority": 5}],
+    )
+    assert all("not in range" not in line for line in lines)
+    assert all("unknown" in line for line in lines)
+
+
+def test_wifi_list_says_so_with_no_networks():
+    assert wifi_known_lines({}, {}, []) == ["no networks configured"]
+
+
+def test_provider_rows_name_the_key_and_never_a_model_of_it():
+    lines = provider_lines(
+        [
+            {
+                "id": "ollama",
+                "base_url": "https://ollama.com/v1",
+                "model": "gemma4:31b",
+                "api_key_ref": "nvs:key_ollama",
+            },
+            {
+                "id": "groq",
+                "base_url": "https://api.groq.com/openai/v1",
+                "model": "llama-3.3-70b",
+                "api_key_ref": "nvs:key_groq",
+            },
+        ]
+    )
+    assert "ollama" in lines[0] and "gemma4:31b" in lines[0]
+    assert "key: nvs:key_ollama" in lines[1]
+    # The chain order is the fallback order, so the numbering is the fact a reader
+    # acts on: 1 is tried first.
+    assert lines[2].startswith("  2.") and "groq" in lines[2]
+    assert provider_lines([]) == ["no providers configured"]
+
+
+def test_diag_exposes_the_diagnostic_counters_under_heads():
+    sections = diag_sections(STATUS)
+    heads = [heading for heading, _lines in sections]
+    # The box draws a heading per group, so an empty or missing group is a blank
+    # seam a reader cannot scan by.
+    assert heads == ["Memory", "Boot", "Tools", "LLM budget"]
+    text = "\n".join(line for _heading, lines in sections for line in lines)
     assert "heap_free: 111" in text and "llm calls day: 2/200" in text
 
 
@@ -1210,3 +1290,17 @@ async def test_fs_put_of_an_unreadable_path_names_it_and_sends_nothing(tmp_path)
         assert not [f for f in _written(transport) if f.get("name") == "fs.put"]
         assert len(transport.written) == before
         await session.close()
+
+
+def test_the_list_helpers_tolerate_a_non_dict_row():
+    """`cfg_validate.c` makes both arrays object arrays, so a scalar can only arrive
+    from a document that is already invalid. Drawing a line that names the broken row
+    is worse than skipping it: the reader cannot act on `['str']`."""
+    lines = wifi_known_lines({}, {}, ["junk", {"ssid": "Cafe", "priority": 1}])
+    assert len(lines) == 1 and "Cafe" in lines[0]
+    assert provider_lines(["junk", {"id": "groq"}])[0].strip() == "1. groq"
+    # The scan is a list of objects too, so the same tolerance applies there: a
+    # scalar in it is not a network and must not become an rssi.
+    lines = wifi_known_lines({}, {"networks": ["junk", {"ssid": "Cafe", "rssi": -70}]},
+                             [{"ssid": "Cafe", "priority": 1}])
+    assert "in range" in lines[0] and "-70 dBm" in lines[0]

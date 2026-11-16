@@ -437,10 +437,14 @@ The token crosses the USB link in cleartext: it stops a process that opens the p
 naively, not a host attacker who already has the user's privileges.
 
 **OQ-5 — Should empty `secret.set` values be rejected or accepted as deletion?**
-Rejected with `E_CONFIG`; it never deletes. Erasure stays `idf.py erase-flash`
-plus re-provisioning (section 8), so a mistyped or truncated value cannot silently
-remove a working credential and a missing credential surfaces as `E_CONFIG` at
-resolution time rather than as a blank success.
+Rejected with `E_CONFIG`; it never deletes. Erasure is a separate, explicit command —
+`secret.delete` (`04-protocol.md` §4.31) — which exists so that a mistyped or
+truncated value can never silently remove a working credential: writing and erasing
+stay two gestures, and a missing credential surfaces as `E_CONFIG` at resolution time
+rather than as a blank success. `secret.delete` refuses a key that a live config
+`*_ref` still names, so erasure cannot leave a document that its own validator will
+not accept. Whole-device erasure stays `idf.py erase-flash` plus re-provisioning
+(section 8).
 
 **OQ-6 — Is `fs.read` allowed on `/config.json`?** Denied with `E_TOOL`. The file
 holds `nvs:` references only, so this is not a secret leak (T3 still stands); it is
@@ -474,7 +478,7 @@ Each item is exercised by a roadmap milestone; failures are release blockers.
 | S6 | `gpio.write`, `i2c.write` and `fs.write` refused with `tools.allow_dangerous: false`; `fs.write` outside `/workspace/` refused when enabled, including `..` traversal that resolves outside it | M4 |
 | S6b | `fs.write` that would exceed the `/workspace/` quota returns `E_STORAGE` without modifying the target file | M4 |
 | S6c | Deleting `wsfs` and rebooting reformats only `wsfs`; `/fs/config.json` survives, proving the mounts are independent filesystems | M0 |
-| S6d | A source audit of every `open(..., O_WRONLY/O_RDWR/O_CREAT)` site finds exactly three `userfs`-reachable callers, all sanctioned: `config.set` writing `/fs/config.json`, `fs.put` writing a path-allowlisted file under `/fs`, and `store_write_image_chunk()` writing `/fs/tasks.json`. Of the three only `task.set` is model-reachable. Every other write target is `/workspace/*`, and `fs.write` or `fs.delete` against `/fs/config.json` returns `E_TOOL`. NVS writes are not filesystem writes and are enumerated separately: the `memory` namespace is written only by `memory.set` / `memory.delete`, `secrets` only by `secret.set`, and `runtime` by the boot guard (`boot_failures`), task bookkeeping (`last_fired`, `fired_count`), the clock sync timestamp, and the LLM budget counters. None of these is reachable as a path by any tool | M4 |
+| S6d | A source audit of every `open(..., O_WRONLY/O_RDWR/O_CREAT)` site finds exactly three `userfs`-reachable callers, all sanctioned: `config.set` writing `/fs/config.json`, `fs.put` writing a path-allowlisted file under `/fs`, and `store_write_image_chunk()` writing `/fs/tasks.json`. Of the three only `task.set` is model-reachable. Every other write target is `/workspace/*`, and `fs.write` or `fs.delete` against `/fs/config.json` returns `E_TOOL`. NVS writes are not filesystem writes and are enumerated separately: the `memory` namespace is written only by `memory.set` / `memory.delete`, `secrets` only by `secret.set` / `secret.delete`, and `runtime` by the boot guard (`boot_failures`), task bookkeeping (`last_fired`, `fired_count`), the clock sync timestamp, and the LLM budget counters. None of these is reachable as a path by any tool | M4 |
 | S6e | `task.set` cannot remove an entry: a task object carrying any key outside the `03-config.md` task schema is refused with `E_TOOL` and `tasks.json` is unchanged; `enabled: false` leaves the entry present in `tasks.list` | M6 |
 | S7 | Declarative tool to a host absent from `tools.http_allow_hosts` is refused with `E_TOOL` | M4 |
 | S8 | Disabled or unreachable MCP server yields `E_MCP` and the agent run still completes | M5 |

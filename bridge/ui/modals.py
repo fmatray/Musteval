@@ -1422,3 +1422,164 @@ TodoEditor .prompt-box {
         # Nothing transient to report: the legend lives in `#todo-hint`, so this
         # line clears rather than restating it.
         self._say("")
+
+
+# --- `/wifi edit` and `/providers` ------------------------------------------
+# Both editors are the same gesture: pick a row, then either fill a small form or
+# answer one question about it. `05` §7.6 and §7.7 own the contracts; the modals own
+# only the picking, and the app owns the frames.
+
+
+class _PickBox(PromptBox[str | None]):
+    """A keyboard-scrollable list of actions, answering the chosen label.
+
+    Deliberately not a `Select`: a `Select` opens on its own Enter handling and cannot
+    carry a per-row hint, and both editors need to say what each row will do before it
+    is chosen.
+    """
+
+    BINDINGS = [
+        Binding("up", "move(-1)", "Up", show=False),
+        Binding("down", "move(1)", "Down", show=False),
+        Binding("enter", "choose", "Choose"),
+    ]
+    CSS = (
+        _CSS
+        + """
+.pick-box {
+    width: 76;
+    max-width: 100%;
+    height: auto;
+    max-height: 90%;
+    border: thick $accent;
+    padding: 1 2;
+}
+.pick-row {
+    color: $text;
+}
+.pick-row-active {
+    color: $accent;
+    text-style: bold;
+}
+.pick-hint {
+    color: $text-muted;
+}
+"""
+    )
+
+    TITLE = ""
+
+    def __init__(
+        self, rows: list[tuple[str, str]], header: list[str] | None = None
+    ) -> None:
+        super().__init__()
+        #: `(label, what the row does)`. The label is the answer; the hint is never
+        #: parsed, because a hint that is also a value is one rename away from being a
+        #: value the app misreads.
+        self.rows = rows
+        #: What the list is a list *of*, drawn above it. `05` §7.7 needs a provider's
+        #: model, url and key ref visible before one is chosen, and those are not the
+        #: answer, so they cannot ride a row label.
+        self.header = header or []
+        self.index = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="pick-box"):
+            yield Static(self.TITLE, classes="prompt-title", markup=False)
+            for line in self.header:
+                yield Static(line, classes="pick-hint", markup=False)
+            for i, (label, hint) in enumerate(self.rows):
+                yield Static(
+                    f"{label}  —  {hint}",
+                    classes="pick-row-active" if i == 0 else "pick-row",
+                    markup=False,
+                    id=f"pick-{i}",
+                )
+            yield Static(
+                "Up/Down: move | Enter: choose | Esc: cancel", classes="pick-hint"
+            )
+
+    def action_move(self, delta: int) -> None:
+        if not self.rows:
+            return
+        self.index = max(0, min(len(self.rows) - 1, self.index + delta))
+        for i in range(len(self.rows)):
+            self.query_one(f"#pick-{i}", Static).set_classes(
+                "pick-row-active" if i == self.index else "pick-row"
+            )
+
+    def action_choose(self) -> None:
+        if self.rows:
+            self.dismiss(self.rows[self.index][0])
+
+
+class WifiForm(PromptBox[dict[str, Any] | None]):
+    """`05` §7.6: one network's fields. The app decides what the answer means.
+
+    The SSID is a `Select` over the scan so an added network is one the radio can hear,
+    with a free-text field beside it for a hidden one — the same pairing
+    `NetworkStep` uses, minus the timezone, which is not part of this gesture.
+    """
+
+    BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
+    CSS = _CSS
+    AUTO_FOCUS = "#wifi-ssid"
+
+    def __init__(
+        self,
+        title: str,
+        ssid: str = "",
+        scan: list[dict[str, Any]] | None = None,
+        *,
+        ask_password: bool = True,
+    ) -> None:
+        super().__init__()
+        self.title = title
+        self.ssid = ssid
+        self.scan = scan or []
+        self.ask_password = ask_password
+
+    def compose(self) -> ComposeResult:
+        heard = [str(n.get("ssid") or "") for n in self.scan if n.get("ssid")]
+        if self.ssid and self.ssid not in heard:
+            heard.insert(0, self.ssid)
+        with Vertical(classes="prompt-box"):
+            yield Static(self.title, classes="prompt-title", markup=False)
+            if len(heard) > 1:
+                yield Static("in range", classes="prompt-hint", markup=False)
+                yield Select(
+                    [(s, s) for s in heard],
+                    value=self.ssid or heard[0],
+                    allow_blank=False,
+                    id="wifi-pick",
+                )
+            yield Static("ssid", classes="prompt-hint", markup=False)
+            yield Input(value=self.ssid, placeholder="ssid", id="wifi-ssid")
+            if self.ask_password:
+                yield Static(
+                    "passphrase (stored as an nvs secret)", classes="prompt-hint",
+                    markup=False,
+                )
+                yield Input(password=True, id="wifi-password")
+            yield Static(
+                "Enter: apply | Esc: cancel | a blank passphrase changes nothing",
+                classes="prompt-hint",
+            )
+
+    def action_submit(self) -> None:
+        picked = ""
+        selects = self.query("#wifi-pick")
+        if selects:
+            value = selects.first().value
+            picked = "" if value is Select.BLANK else str(value)
+        typed = self.query_one("#wifi-ssid", Input).value.strip()
+        ssid = typed or picked
+        if not ssid:
+            # A blank SSID names no network, and writing one would replace a working
+            # list with an entry the station cannot join.
+            self.query_one("#wifi-ssid", Input).focus()
+            return
+        password = ""
+        if self.ask_password:
+            password = self.query_one("#wifi-password", Input).value
+        self.dismiss({"ssid": ssid, "password": password})

@@ -47,6 +47,28 @@ def _slug(text: str) -> str:
     return (re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-") or "custom")[:16]
 
 
+def _key(text: str, prefix: str) -> str:
+    """An NVS key for `text`, inside `04` §4.10's `[A-Za-z0-9_]{1,15}` grammar.
+
+    One key per provider and per network, because a shared key makes removing one
+    entry blank a neighbour's credential. `/onboard` keeps its fixed keys for the
+    first entry of each, so a device provisioned by the wizard is unchanged.
+    """
+    body = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_") or "custom"
+    room = 15 - len(prefix)
+    return prefix + body[:room]
+
+
+def wifi_secret_key(ssid: str) -> str:
+    """The `password_ref` key an added network gets: `wifi_<slug>`, 15 chars at most."""
+    return _key(ssid, "wifi_")
+
+
+def provider_secret_key(pid: str) -> str:
+    """The `api_key_ref` key an added provider gets: `key_<slug>`."""
+    return _key(pid, "key_")
+
+
 def provider_id(base_url: str, provider: providers.Provider | None = None) -> str:
     """The `llm.providers[].id` for a pasted URL, or the catalog entry's own id.
 

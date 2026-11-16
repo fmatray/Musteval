@@ -693,3 +693,123 @@ async def test_a_find_then_a_second_enter_replaces_every_occurrence():
         # And the bar closed, so the next Enter saves rather than replacing again.
         assert not bar.has_class("active")
 
+
+
+# -- the two editors `/wifi edit` and `/providers` open -------------------
+
+
+async def test_the_pick_box_answers_the_row_under_the_highlight():
+    """`05` §7.6: the label is the answer and the hint is never parsed, so moving the
+    highlight is the whole gesture: Down then Enter must answer the second row."""
+    from bridge.ui.modals import _PickBox
+
+    box = _PickBox([("add a network", "pick an ssid"), ("forget home", "drop it")],
+                   header=["home  priority 0"])
+    async with _host(box).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        assert pilot.app.screen is box
+        box.action_move(1)
+        await pilot.pause(0.02)
+        # The header is drawn above the rows, not among them.
+        assert [str(s.content) for s in box.query(".pick-hint")][:1] == [
+            "home  priority 0"
+        ]
+        assert box.query_one("#pick-1").has_class("pick-row-active")
+        assert not box.query_one("#pick-0").has_class("pick-row-active")
+        box.action_choose()
+        await pilot.pause(0.05)
+        assert pilot.app.dismissed["value"] == "forget home"
+
+
+async def test_the_pick_box_clamps_at_both_ends():
+    """A highlight that wrapped would answer a row the reader did not travel to."""
+    from bridge.ui.modals import _PickBox
+
+    box = _PickBox([("one", "a"), ("two", "b")])
+    async with _host(box).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        box.action_move(-1)
+        await pilot.pause(0.02)
+        assert box.index == 0 and box.query_one("#pick-0").has_class("pick-row-active")
+        box.action_move(5)
+        await pilot.pause(0.02)
+        assert box.index == 1 and box.query_one("#pick-1").has_class("pick-row-active")
+
+
+async def test_a_pick_box_with_no_rows_refuses_rather_than_answering_none():
+    """`/wifi edit` always has the `add` row, so an empty list is a caller bug: it
+    must not dismiss None, which the handler would read as a cancel."""
+    from bridge.ui.modals import _PickBox
+
+    box = _PickBox([])
+    async with _host(box).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        box.action_choose()
+        box.action_move(1)
+        await pilot.pause(0.05)
+        assert pilot.app.screen is box
+        assert "value" not in pilot.app.dismissed
+
+
+async def test_the_wifi_form_offers_the_scan_and_answers_the_typed_ssid():
+    """`05` §7.6: the `Select` is the scan, the text field is a hidden network, and
+    the typed one wins — a reader who typed an ssid did not mean the highlighted one.
+    """
+    from bridge.ui.modals import WifiForm
+
+    form = WifiForm("Add a network", scan=[{"ssid": "Cafe"}, {"ssid": "home"}])
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        screen = pilot.app.screen
+        # The picker exists because the scan heard more than one.
+        assert screen.query_one("#wifi-pick") is not None
+        screen.query_one("#wifi-ssid").focus()
+        screen.query_one("#wifi-ssid").value = "hidden-net"
+        screen.query_one("#wifi-password").value = "hunter2"
+        screen.action_submit()
+        await pilot.pause(0.05)
+        assert pilot.app.dismissed["value"] == {
+            "ssid": "hidden-net", "password": "hunter2"
+        }
+
+
+async def test_a_wifi_form_with_one_heard_network_draws_no_picker():
+    """A one-row `Select` is a choice that is not one; the text field already says
+    which network it would be."""
+    from bridge.ui.modals import WifiForm
+
+    form = WifiForm("Add a network", scan=[{"ssid": "Cafe"}])
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        assert not pilot.app.screen.query("#wifi-pick")
+
+
+async def test_a_wifi_form_refuses_a_blank_ssid_and_keeps_the_prompt_open():
+    """An ssid-less entry would replace a working list with a network the station
+    cannot join, so Enter on a blank field must not answer."""
+    from bridge.ui.modals import WifiForm
+
+    form = WifiForm("Add a network", scan=[{"ssid": "Cafe"}])
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        screen = pilot.app.screen
+        screen.query_one("#wifi-ssid").value = "   "
+        screen.action_submit()
+        await pilot.pause(0.05)
+        assert pilot.app.screen is form
+        assert "value" not in pilot.app.dismissed
+
+
+async def test_a_rekey_form_seeds_the_ssid_and_can_skip_the_password():
+    """`/wifi edit`'s passphrase gesture knows the network; asking for it again would
+    let a typo re-key the wrong one."""
+    from bridge.ui.modals import WifiForm
+
+    form = WifiForm("New passphrase for home", ssid="home", ask_password=False)
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        screen = pilot.app.screen
+        assert screen.query_one("#wifi-ssid").value == "home"
+        screen.action_submit()
+        await pilot.pause(0.05)
+        assert pilot.app.dismissed["value"] == {"ssid": "home", "password": ""}

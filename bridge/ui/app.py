@@ -41,6 +41,8 @@ from .modals import (
     FilePrompt,
     FilterPrompt,
     ModelPicker,
+    WifiForm,
+    _PickBox,
     ModelStep,
     NetworkStep,
     ProviderStep,
@@ -59,6 +61,7 @@ from ..protocol import (
 from .config import ROWS, coerce, flatten, lookup, render_value
 from .splash import SPLASH_SECONDS, pick_tip, render_splash
 from . import onboard
+from .onboard import provider_secret_key, wifi_secret_key
 from .render import (
     LINK_WORDS,
     binding_pairs,
@@ -70,7 +73,7 @@ from .render import (
     ping_line,
     reboot_line,
     reload_lines,
-    render_diag,
+    diag_sections,
     render_json_block,
     hint_bar,
     render_prompt_bar,
@@ -82,7 +85,9 @@ from .render import (
     sanitize,
     template_names,
     template_text,
+    provider_lines,
     todo_lines,
+    wifi_known_lines,
     wifi_scan_lines,
     wifi_state_line,
 )
@@ -2074,6 +2079,18 @@ class BridgeApp(App):
                 return
             self._sys_info(diag_first=words[1] == "diag")
             return
+        if head == "wifi" and words[1:2] == ["list"]:
+            # `05` §7.6: configured networks joined with a live scan.
+            await self._wifi_list()
+            return
+        if head == "wifi" and words[1:2] == ["edit"]:
+            # `05` §7.6: add, re-key or forget, all over `wifi.networks`.
+            await self._wifi_edit()
+            return
+        if head == "providers":
+            # `05` §7.7: add, log in or disconnect, over `llm.providers`.
+            await self._providers()
+            return
         if head == "secret" and self._pending_secret is None:
             # `05-bridge.md` §8.1: masked modal, Esc cancels without sending.
             parts = text[1:].split()
@@ -2488,15 +2505,21 @@ class BridgeApp(App):
             if isinstance(self.screen, Working):
                 self.pop_screen()
 
-    async def _apply(self, plan: "list[tuple[str, dict[str, object]]]") -> bool:
-        """Send a step's frames in order, stopping at the first refusal."""
+    async def _apply(
+        self, plan: "list[tuple[str, dict[str, object]]]", what: str = "onboard"
+    ) -> bool:
+        """Send a step's frames in order, stopping at the first refusal.
+
+        `what` names the command that asked, because two do — `/onboard` and
+        `/providers` — and a reader who typed one must not be told the other refused.
+        """
         for kind, body in plan:
             async with self._working(
                 "writing the config", f"{kind}: {next(iter(body.values()))!r}"
             ):
                 ok, why = await self._send_body(kind, body)
             if not ok:
-                self._chat().write(f"onboard: refused ({why})", kind="warn")
+                self._chat().write(f"{what}: refused ({why})", kind="warn")
                 return False
         return True
 
@@ -2689,17 +2712,344 @@ class BridgeApp(App):
             f"tool {verb} {name}: disabled = {', '.join(wanted) if wanted else 'none'}"
         )
 
+    async def _wifi_list(self) -> None:
+        """`05` §7.6: every configured network, and whether the radio can hear it.
+
+        Two frames, both reads. The document says which networks exist and in what
+        order they are tried; the scan says which are audible now. Neither is a
+        substitute, and a configured network the scan did not return is drawn rather
+        than dropped.
+        """
+        if not self._config_fetched:
+            await self._fetch_config()
+        stored = self._existing("wifi.networks")
+        networks = [n for n in stored if isinstance(n, dict)] if isinstance(stored, list) else []
+        if not networks:
+            self._chat().write("wifi list: no networks configured")
+            return
+        # Asked for, not read off `_last_status`: the cached frame is whatever arrived
+        # last, and a row claiming `joined` from a status the reader moved past is the
+        # same defect `_sys_info` avoids by refreshing before it opens.
+        status = await self._request("wifi.status")
+        if status is None:
+            # `_request` already reported why; a second line would only paraphrase it.
+            return
+        scan = await self._request("wifi.scan")
+        # A refused scan is passed on as `None`, not as an empty one: the rows then say
+        # `unknown` instead of `not in range`, which would be a claim about the radio
+        # the device never made. `_request` has already named the refusal.
+        lines = wifi_known_lines(status, scan, networks)
+        for line in lines:
+            self._chat().write(line)
+
+    async def _wifi_edit(self) -> None:
+        """`05` §7.6: add a network, change a passphrase, or forget one.
+
+        Every gesture writes the whole `wifi.networks` array, because `config.set`
+        replaces a value and `04` §4.9 will not create an array index. A passphrase is
+        written before the array that names it, so the reference is never briefly
+        unresolved (`03-config.md` rule 9).
+        """
+        if not self._config_fetched:
+            await self._fetch_config()
+        stored = self._existing("wifi.networks")
+        networks = [n for n in stored if isinstance(n, dict)] if isinstance(stored, list) else []
+
+        rows: list[tuple[str, str]] = [("add a network", "pick an ssid from the scan")]
+        for entry in networks:
+            ssid = str(entry.get("ssid") or "")
+            rows.append((f"passphrase for {ssid}", "replace the stored nvs secret"))
+            rows.append((f"forget {ssid}", "remove it from the list"))
+        choice = await self.push_screen_wait(_PickBox(rows))
+        if choice is None:
+            self._chat().write("wifi edit cancelled")
+            return
+
+        if choice == "add a network":
+            scan = await self._request("wifi.scan")
+            if scan is None:
+                # Not the same as a scan that heard nothing: the radio is off, so
+                # there is no list to add from and saying "nothing new" would blame
+                # the access points for a station that cannot hear any.
+                self._chat().write(
+                    "wifi add: the scan did not answer, so there is no list to pick "
+                    "from"
+                )
+                return
+            heard = [n for n in scan.get("networks") or [] if isinstance(n, dict)]
+            known = {str(n.get("ssid") or "") for n in networks}
+            heard = [n for n in heard if str(n.get("ssid") or "") not in known]
+            if not heard:
+                self._chat().write(
+                    "wifi add: the scan heard nothing new (a joined network cannot be "
+                    "added twice)"
+                )
+                return
+            answer = await self.push_screen_wait(
+                WifiForm("Add a network", scan=heard)
+            )
+            if answer is None:
+                self._chat().write("wifi add cancelled")
+                return
+            ssid = str(answer["ssid"])
+            password = str(answer.get("password") or "")
+            entry = {"ssid": ssid, "priority": len(networks)}
+            if password:
+                key = wifi_secret_key(ssid)
+                ok, refused = await self._send_body(
+                    "secret", {"key": key, "value": password}
+                )
+                if not ok:
+                    self._chat().write(f"wifi add: secret refused ({refused})", kind="error")
+                    return
+                entry["password_ref"] = f"nvs:{key}"
+            async with self._working(f"add {ssid}", "config.set wifi.networks"):
+                ok, refused = await self._send_body(
+                    "config", {"wifi.networks": networks + [entry]}
+                )
+            if not ok:
+                self._chat().write(f"wifi add: refused ({refused})", kind="error")
+                return
+            await self._fetch_config()
+            self._chat().write(
+                f"wifi add {ssid}: {len(networks) + 1} networks configured"
+            )
+            return
+
+        if choice.startswith("passphrase for "):
+            ssid = choice[len("passphrase for "):]
+            answer = await self.push_screen_wait(
+                WifiForm(f"New passphrase for {ssid}", ssid=ssid)
+            )
+            if answer is None:
+                self._chat().write("wifi passphrase: cancelled")
+                return
+            password = str(answer.get("password") or "")
+            if not password:
+                # An empty field is a cancel, not a request to blank the credential.
+                self._chat().write("wifi passphrase: nothing entered, nothing written")
+                return
+            # The row was built from `networks` and `_PickBox` answers only a label it
+            # was handed, so the entry exists; `next(..., None)` would be a guard no
+            # gesture can enter. The ref is used when there is one, because a network
+            # `/onboard` seeded names `wifi_psk` and deriving a new key would leave the
+            # array pointing at a secret the passphrase never reaches.
+            entry = next(n for n in networks if str(n.get("ssid") or "") == ssid)
+            ref = str(entry.get("password_ref") or "")
+            key = ref[4:] if ref.startswith("nvs:") else wifi_secret_key(ssid)
+            async with self._working(f"passphrase for {ssid}", "secret.set"):
+                ok, refused = await self._send_body(
+                    "secret", {"key": key, "value": password}
+                )
+            if not ok:
+                self._chat().write(f"wifi passphrase: refused ({refused})", kind="error")
+                return
+            self._chat().write(f"wifi passphrase for {ssid}: stored as nvs:{key}")
+            return
+
+        ssid = choice[len("forget "):]
+        if len(networks) <= 1:
+            # `wifi.networks` is 1..8: the empty list is a document the device
+            # refuses, so this answers here rather than sending a doomed write.
+            self._chat().write(
+                "wifi forget: the last network cannot be removed "
+                "(wifi.networks holds at least one)"
+            )
+            return
+        kept = [n for n in networks if str(n.get("ssid") or "") != ssid]
+        if not await self.push_screen_wait(ConfirmPrompt(f"Forget {ssid}?")):
+            self._chat().write("wifi forget cancelled")
+            return
+        async with self._working(f"forget {ssid}", "config.set wifi.networks"):
+            ok, refused = await self._send_body("config", {"wifi.networks": kept})
+        if not ok:
+            self._chat().write(f"wifi forget: refused ({refused})", kind="error")
+            return
+        await self._fetch_config()
+        # The secret is deliberately not erased: another network may name it, and
+        # `secret.delete` refuses a key a live `*_ref` still names (`04` §4.31).
+        self._chat().write(
+            f"wifi forget {ssid}: {len(kept)} networks configured (its secret is kept)"
+        )
+
+    async def _providers(self) -> None:
+        """`05` §7.7: add, log in to, or remove an `llm.providers` entry.
+
+        Every gesture writes the whole array, because `config.set` replaces a value and
+        `04` §4.9 will not create an array index. `add` runs `ProviderStep` and
+        `ModelStep`, the same two steps `/onboard` uses, so the model offered is one
+        the key actually unlocked.
+        """
+        if not self._config_fetched:
+            await self._fetch_config()
+        stored = self._existing("llm.providers")
+        entries = [p for p in stored if isinstance(p, dict)] if isinstance(stored, list) else []
+
+        rows: list[tuple[str, str]] = [
+            ("add a provider", "catalog, url, key, then a model from its list")
+        ]
+        for entry in entries:
+            pid = str(entry.get("id") or "")
+            rows.append((f"log in to {pid}", "replace its stored api key"))
+            rows.append((f"disconnect {pid}", "remove it and erase its key"))
+        choice = await self.push_screen_wait(
+            _PickBox(rows, header=provider_lines(entries))
+        )
+        if choice is None:
+            self._chat().write("providers cancelled")
+            return
+
+        if choice == "add a provider":
+            catalog_entries, notes = providers_mod.catalog()
+            for note in notes:
+                self._chat().write(note)
+            answers = await self.push_screen_wait(
+                ProviderStep(dict(self._config), catalog_entries)
+            )
+            if answers is None:
+                self._chat().write("provider add cancelled")
+                return
+            if (answers.provider or "custom") in {
+                str(e.get("id") or "") for e in entries
+            }:
+                self._chat().write(
+                    f"provider add: {answers.provider} already exists (use log in)",
+                    kind="error",
+                )
+                return
+            if not answers.base_url or not answers.api_key:
+                self._chat().write(
+                    "provider add: a base url and an api key are both required"
+                )
+                return
+            models = await self._fetch_models(answers)
+            if not models:
+                self._chat().write(
+                    f"provider add: {answers.provider or 'that provider'} published no "
+                    "model list with that key, so nothing was written"
+                )
+                return
+            picked = await self.push_screen_wait(
+                ModelStep(
+                    models,
+                    answers.provider,
+                    "",
+                    "none",
+                    catalog_entries,
+                    {},
+                )
+            )
+            if picked is None:
+                self._chat().write("provider add cancelled")
+                return
+            answers.model = picked.model
+            answers.extra_body = dict(picked.extra_body)
+            # One key per provider, so removing one row cannot blank another's
+            # (`05` §7.7). The id is the unique member the schema already enforces.
+            secret_key = provider_secret_key(answers.provider or "custom")
+            plan = [
+                ("secret", {"key": secret_key, "value": answers.api_key}),
+                (
+                    "config",
+                    {
+                        "llm.providers": entries
+                        + [
+                            {
+                                "id": answers.provider or "custom",
+                                "base_url": answers.base_url,
+                                "model": answers.model,
+                                "api_key_ref": f"nvs:{secret_key}",
+                            }
+                        ]
+                    },
+                ),
+            ]
+            for line in onboard.narration(answers, dict(self._config), "provider"):
+                self._chat().write(f"provider add: {line}")
+            if not await self._apply(plan, "provider add"):
+                return
+            await self._fetch_config()
+            self._chat().write(
+                f"provider add {answers.provider or 'custom'}: "
+                f"{len(entries) + 1} providers configured"
+            )
+            return
+
+        pid = (
+            choice.split(" to ", 1)[1]
+            if choice.startswith("log in")
+            else choice.split(" ", 1)[1]
+        )
+        # `_PickBox` answers a label it was handed, and every label here was built from
+        # `entries`, so the row exists: a miss would need the modal to invent a string.
+        entry = next(e for e in entries if str(e.get("id") or "") == pid)
+        ref = str(entry.get("api_key_ref") or "")
+        secret_key = ref[4:] if ref.startswith("nvs:") else provider_secret_key(pid)
+
+        if choice.startswith("log in"):
+            key = await self.push_screen_wait(SecretPrompt(secret_key))
+            if not key:
+                self._chat().write("provider login: cancelled, nothing written")
+                return
+            async with self._working(f"log in to {pid}", f"secret.set {secret_key}"):
+                ok, refused = await self._send_body(
+                    "secret", {"key": secret_key, "value": key}
+                )
+            if not ok:
+                self._chat().write(f"provider login: refused ({refused})", kind="error")
+                return
+            self._chat().write(f"provider login {pid}: key replaced (nvs:{secret_key})")
+            return
+
+        if len(entries) <= 1:
+            # `llm.providers` is 1..4: an empty array is a document the device
+            # refuses, so this answers here rather than sending a doomed write.
+            self._chat().write(
+                "provider disconnect: the last provider cannot be removed "
+                "(llm.providers holds at least one)"
+            )
+            return
+        if not await self.push_screen_wait(
+            ConfirmPrompt(f"Disconnect {pid} and erase nvs:{secret_key}?")
+        ):
+            self._chat().write("provider disconnect cancelled")
+            return
+        kept = [e for e in entries if str(e.get("id") or "") != pid]
+        async with self._working(f"disconnect {pid}", "config.set llm.providers"):
+            ok, refused = await self._send_body("config", {"llm.providers": kept})
+        if not ok:
+            self._chat().write(f"provider disconnect: refused ({refused})", kind="error")
+            return
+        # The array first, then the key: `secret.delete` refuses a key a live `*_ref`
+        # still names (`04` §4.31), and another entry may name this one.
+        async with self._working(f"erase {secret_key}", f"secret.delete {secret_key}"):
+            ok, refused = await self._send_body(
+                "delete", {"name": "secret.delete", "args": {"key": secret_key}}
+            )
+        await self._fetch_config()
+        if not ok:
+            self._chat().write(
+                f"provider disconnect {pid}: removed; its key was kept ({refused})"
+            )
+            return
+        self._chat().write(
+            f"provider disconnect {pid}: {len(kept)} providers configured, "
+            f"nvs:{secret_key} erased"
+        )
+
     def _sys_info(self, *, diag_first: bool) -> None:
         """`05` §5.10: the status halves in one scrollable box, the asked-for one first.
 
         Both come from one `status` frame, which is why this is a modal and not two
         screens: the general half is `render_status` and the counters are
-        `render_diag`, and the reader usually wants the second while looking at the
+        `diag_sections`, and the reader usually wants the second while looking at the
         first.
         """
         general = ("", render_status(self._last_status))
-        diagnostics = ("Diagnostics", render_diag(self._last_status))
-        sections = [diagnostics, general] if diag_first else [general, diagnostics]
+        # `05` §5.10: the counters arrive as four headed sections, because the box
+        # already draws headings and eight unlabelled lines give a reader no seam.
+        diag = diag_sections(self._last_status)
+        sections = diag + [general] if diag_first else [general] + diag
         self.push_screen(InfoModal("sys", sections))
 
     async def _model_levels(

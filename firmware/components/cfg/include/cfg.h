@@ -50,6 +50,12 @@ bool cfg_loaded(void);
  * pointer across a `cfg_load`. */
 json_node_t *cfg_get(const char *path);
 
+/* Borrowed pointer to the loaded document, NULL when none is loaded. Never kept
+ * across a `cfg_load`, for the same reason `cfg_get`'s pointers are not. The
+ * `secret.delete` refusal walks this rather than a clone: the question is what the
+ * live document names, and a copy would answer about a document that is not loaded. */
+json_doc_t *cfg_document(void);
+
 /* Deep copy of the whole loaded document into `out`, which the caller owns. The
  * copy is what `config.set` mutates, so a failed write never touches the live
  * config. NULL when nothing is loaded. */
@@ -86,11 +92,25 @@ esp_err_t cfg_validate(json_doc_t *doc, char *why, size_t why_cap);
  * ref that is not `nvs:` plus 1..15 `[A-Za-z0-9_]`. */
 esp_err_t cfg_validate_refs(json_doc_t *doc, char *why, size_t why_cap);
 
+/* Erase one key from the `secrets` namespace and refresh the redaction snapshot.
+ * `*deleted` is false when the key was already unset — an idempotent call, not a
+ * failure (`04-protocol.md` §4.31). ESP_ERR_INVALID_ARG for a key outside `04` §4.10's
+ * grammar, the same test `cfg_store_secret` applies. */
+esp_err_t cfg_clear_secret(const char *key, bool *deleted);
+
 /* Resolve `nvs:<key>` to plaintext (`02-firmware.md` §`cfg`). Returns
  * ESP_ERR_INVALID_ARG for a ref that is not `nvs:` plus 1..15 `[A-Za-z0-9_]`, and
  * ESP_ERR_NOT_FOUND when the key is unset: the empty-string substitution rule 3
  * forbids is deliberately not available here. */
 esp_err_t cfg_resolve_secret(const char *ref, char *buf, size_t cap, size_t *len);
+
+/* True when any `*_ref` member of `doc` resolves to `nvs:<key>`, with `where` naming
+ * that member. `secret.delete`'s refusal (`04-protocol.md` §4.31): rule 9 makes an
+ * unresolved reference a document `cfg_load` will not accept, so a key still named by
+ * the loaded document cannot be erased. Walks the same `_ref` suffix test
+ * `cfg_validate_refs` applies rather than a second key table. Pure. */
+bool cfg_ref_names_key(json_doc_t *doc, const char *key, char *where,
+                       size_t cap);
 
 /* True when `ref` has the `^nvs:[A-Za-z0-9_]{1,15}$` shape. Pure. */
 bool cfg_ref_is_valid(const char *ref);

@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "nvs.h"
 
 static const char *TAG = "cfg";
 
@@ -86,21 +87,28 @@ esp_err_t cfg_load(void)
  * (`08-code-architecture.md` §3). */
 #define CFG_SECRETS_NAMESPACE "secrets"
 
+/* `04` §4.10's key grammar, shared by the writer and the eraser so the two cannot
+ * disagree about which keys exist. Checked here rather than by building a `nvs:`
+ * prefix: a 20-byte buffer truncates a 16-character key to 15, which passes the
+ * grammar and then fails inside NVS as `E_STORAGE` instead of the `E_CONFIG` `04`
+ * §4.10 names. */
+static bool secret_key_ok(const char *key)
+{
+    if (key == NULL || *key == '\0') return false;
+    for (const char *c = key; *c != '\0'; c++) {
+        bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                  (*c >= '0' && *c <= '9') || *c == '_';
+        if (!ok) return false;
+    }
+    return strlen(key) <= 15;
+}
+
 esp_err_t cfg_store_secret(const char *key, const char *value, size_t *stored)
 {
     /* `04` §4.10 bounds the key by the ref grammar and the value by NVS. An empty
      * value is ESP_ERR_INVALID_ARG: a secret is never cleared by writing "" , which
      * would silently turn a working provider into an unauthenticated one. */
-    /* The key is checked, not a `nvs:` prefix built around it: a 20-byte buffer
-     * truncates a 16-character key to 15, which passes the grammar and then fails
-     * inside NVS as E_STORAGE instead of the E_CONFIG `04` §4.10 names. */
-    if (key == NULL || *key == '\0') return ESP_ERR_INVALID_ARG;
-    for (const char *c = key; *c != '\0'; c++) {
-        bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
-                  (*c >= '0' && *c <= '9') || *c == '_';
-        if (!ok) return ESP_ERR_INVALID_ARG;
-    }
-    if (strlen(key) > 15) return ESP_ERR_INVALID_ARG;
+    if (!secret_key_ok(key)) return ESP_ERR_INVALID_ARG;
     if (value == NULL || *value == '\0' || strlen(value) > CFG_SECRET_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -116,12 +124,34 @@ esp_err_t cfg_store_secret(const char *key, const char *value, size_t *stored)
     return err;
 }
 
+esp_err_t cfg_clear_secret(const char *key, bool *deleted)
+{
+    if (!secret_key_ok(key)) return ESP_ERR_INVALID_ARG;
+    if (deleted != NULL) *deleted = false;
+
+    esp_err_t err = store_nvs_erase(CFG_SECRETS_NAMESPACE, key);
+    /* The NVS code, not `ESP_ERR_NOT_FOUND`: `nvs_erase_key` reports absence as
+     * `ESP_ERR_NVS_NOT_FOUND` (0x1102), and `store.h` says so. */
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        /* Already unset. The caller's intent holds, so this is a success with
+         * `deleted: false` (`04-protocol.md` §4.31), not a fault. */
+        return ESP_OK;
+    }
+    if (err != ESP_OK) return err;
+    if (deleted != NULL) *deleted = true;
+    /* The value is gone, so it must stop being scrubbed from log lines; a snapshot
+     * left holding it would redact text that can no longer appear. */
+    cfg_secrets_reload();
+    ESP_LOGI(TAG, "secret %s erased", key);
+    return ESP_OK;
+}
+
 esp_err_t cfg_resolve_secret(const char *ref, char *buf, size_t cap, size_t *len)
 {
     if (!cfg_ref_is_valid(ref)) return ESP_ERR_INVALID_ARG;
     const char *key = ref + 4;
     esp_err_t err = store_nvs_get_str(CFG_SECRETS_NAMESPACE, key, buf, cap, len);
-    if (err == ESP_ERR_NOT_FOUND) {
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
         /* Rule 3: an unresolved ref is an error, never an empty string. */
         ESP_LOGE(TAG, "secret %s is not set", key);
         return ESP_ERR_NOT_FOUND;

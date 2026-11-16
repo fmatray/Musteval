@@ -44,6 +44,7 @@ Column meanings:
 | `/ping llm` | `llm` | `net.ping` | The device ICMPs its active provider host |
 | `/ping ntp` | `ntp` | `net.ping` | The device ICMPs its first NTP server |
 | `/ping router` | `router` | `net.ping` | The device ICMPs its default gateway |
+| `/providers` | none | `config.get`, `config.set`, `secret.set`, `secret.delete` | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (`05-bridge.md` §7.7) |
 | `/quit` | none | (Local) | Exits the bridge |
 | `/retry` | none | `prompt` | Resends the last prompt verbatim; refused when there is none |
 | `/run <id>` | task `id` | `tasks.run` | Runs a task now and names the `run_id` |
@@ -53,8 +54,9 @@ Column meanings:
 | `/sandbox mkdir <path>` | `path` | `sandbox.mkdir` | Creates one directory |
 | `/sandbox move <from> <to>` | `from`, `to` | `sandbox.move` | Renames or relocates |
 | `/sandbox read <path>` | `path` | `sandbox.read` | Prints one file; a file is written from the Files screen, never from chat |
+| `/secret delete <key>` | `key` | `secret.delete` | Erases one key; refused while a config `_ref` still names it |
 | `/secret set <key>` | `key` | `secret.set` | Value is prompted, masked, and never echoed |
-| `/sys diag` | `diag` | `status` | Opens the info modal on the diagnostic half of a fresh `status` |
+| `/sys diag` | `diag` | `status` | Opens the info modal on the diagnostic half of a fresh `status`, headed `Memory`, `Boot`, `Tools`, `LLM budget` |
 | `/sys reboot` | `reboot` | `reboot` | Restarts the device; reports the grace period in chat |
 | `/sys reload` | `reload` | `reload` | Re-reads the flash configs; reports each reloaded scope and each warning in chat |
 | `/sys reset-counter` | `reset-counter` | `sys.reset_counter` | Clears the boot-failure counter |
@@ -88,6 +90,8 @@ Column meanings:
 | `/usage` | none | (Local) | Token totals for this link session |
 | `/wifi connect` | `connect` | `wifi.connect` | Joins the best configured network |
 | `/wifi disconnect` | `disconnect` | `wifi.disconnect` | Leaves the network and stays down |
+| `/wifi edit` | none | `secret.set`, `config.set` | Opens the network form: add from the scan, change a passphrase, forget a network |
+| `/wifi list` | none | `wifi.status`, `wifi.scan` | One row per configured network with its priority, whether it is joined, and its RSSI when audible; `unknown` when the scan was refused |
 | `/wifi reconnect` | `reconnect` | `wifi.reconnect` | Leaves and rejoins, moving to the best AP |
 | `/wifi scan` | `scan` | `wifi.scan` | Lists audible access points, strongest first |
 | `/wifi status` | `status` | `wifi.status` | Station state, SSID, RSSI and IP; busy-safe |

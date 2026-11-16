@@ -865,3 +865,70 @@ TEST_CASE("an mqtt server is refused outside its documented bounds", "[cfg]")
                                     why, sizeof why));
     TEST_ASSERT_NOT_NULL(strstr(why, "duplicate id"));
 }
+
+/* --- `secret.delete`'s refusal (`04` §4.31) -------------------------------
+ * The rule: a key a live `*_ref` names cannot be erased, and the refusal names the
+ * member that holds it, so a reader knows which provider or network to remove first.
+ */
+static bool names(const char *src, const char *key, char *where, size_t cap)
+{
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(src, strlen(src), &doc));
+    bool found = cfg_ref_names_key(doc, key, where, cap);
+    json_free(doc);
+    return found;
+}
+
+TEST_CASE("a key a provider's ref names is found, and the ref is named", "[cfg]")
+{
+    char where[32] = "";
+    TEST_ASSERT_TRUE(names(k_minimal, "llm_key", where, sizeof where));
+    TEST_ASSERT_EQUAL_STRING("api_key_ref", where);
+}
+
+TEST_CASE("a key a network's ref names is found", "[cfg]")
+{
+    /* The walk covers both refs a minimal document carries, not just the one a
+     * provider happens to use first. */
+    char where[32] = "";
+    TEST_ASSERT_TRUE(names(k_minimal, "wifi_psk", where, sizeof where));
+    TEST_ASSERT_EQUAL_STRING("password_ref", where);
+}
+
+TEST_CASE("a key nothing names is free to erase", "[cfg]")
+{
+    /* The positive half: a walk that answered true for everything would make the
+     * refusal useless, and this is the case a caller actually wants. */
+    char where[32] = "";
+    TEST_ASSERT_FALSE(names(k_minimal, "orphaned", where, sizeof where));
+    TEST_ASSERT_EQUAL_STRING("", where);
+}
+
+TEST_CASE("a key equal to the ref without its prefix does not match", "[cfg]")
+{
+    /* `nvs:llm_key` names `llm_key`, not `nvs:llm_key`: a caller passing the whole
+     * ref must not be told the bare key is in use. */
+    char where[32] = "";
+    TEST_ASSERT_FALSE(names(k_minimal, "nvs:llm_key", where, sizeof where));
+}
+
+TEST_CASE("a ref nested in an array is walked", "[cfg]")
+{
+    /* `llm.providers` and `wifi.networks` are arrays of objects, so a walk that
+     * stopped at the object member would never reach the ref inside. */
+    char where[32] = "";
+    const char *src =
+        "{\"llm\":{\"providers\":[{\"id\":\"a\",\"api_key_ref\":\"nvs:first\"},"
+        "{\"id\":\"b\",\"api_key_ref\":\"nvs:second\"}]}}";
+    TEST_ASSERT_TRUE(names(src, "second", where, sizeof where));
+    TEST_ASSERT_EQUAL_STRING("api_key_ref", where);
+}
+
+TEST_CASE("no loaded document names no key", "[cfg]")
+{
+    /* A device that never loaded a config has nothing to protect, and the handler
+     * must not dereference NULL to learn that. */
+    char where[32] = "";
+    TEST_ASSERT_FALSE(cfg_ref_names_key(NULL, "k", where, sizeof where));
+    TEST_ASSERT_EQUAL_STRING("", where);
+}

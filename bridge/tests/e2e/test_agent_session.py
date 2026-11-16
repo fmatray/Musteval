@@ -174,6 +174,34 @@ async def test_secret_is_never_echoed_back(agent):
         await session.close()
 
 
+async def test_secret_delete_distinguishes_erasing_from_already_unset(agent):
+    """`04` §4.31: `deleted` separates "it was there" from "it was already gone",
+    and the second is a success, not a refusal — the caller's intent holds."""
+    session = await _session(agent.port, ack_timeout=2)
+    try:
+        await session.connect()
+        await session.request(
+            Frame(type="secret.set", id=new_id("b"), ts=0,
+                  body={"key": "gone_soon", "value": "hunter2"})
+        )
+        stored = await session.request(
+            Frame(type="command", id=new_id("b"), ts=0,
+                  body={"name": "secret.delete", "args": {"key": "gone_soon"}})
+        )
+        assert stored.body["ok"] is True
+        assert stored.body["result"] == {
+            "key": "gone_soon", "deleted": True, "unset": True
+        }
+        again = await session.request(
+            Frame(type="command", id=new_id("b"), ts=0,
+                  body={"name": "secret.delete", "args": {"key": "gone_soon"}})
+        )
+        assert again.body["ok"] is True
+        assert again.body["result"]["deleted"] is False
+    finally:
+        await session.close()
+
+
 async def test_the_sandbox_lists_and_reads_over_the_wire(agent):
     """`04` §4.17/§4.18 against the real tool: a listing then a file body."""
     session = await _session(agent.port, ack_timeout=2)

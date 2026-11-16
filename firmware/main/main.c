@@ -958,6 +958,43 @@ static esp_err_t handle_secret_set(const char *key, const char *value,
     return ESP_OK;
 }
 
+/* `secret.delete` (`04` §4.31). Refuses a key the live document still names, because
+ * rule 9 makes an unresolved `*_ref` a document `cfg_load` will not accept: erasing
+ * one behind the document's back would leave a device that refuses its own config. */
+static esp_err_t handle_secret_delete(const char *key, json_node_t *root,
+                                      json_node_t *result, const char **code,
+                                      const char **message)
+{
+    if (key == NULL) return ESP_ERR_INVALID_ARG;
+
+    /* A member name, not a path: the longest in the schema is 20 characters
+     * (`llm.max_history_messages`), so 32 holds any of them with room for the
+     * `_ref` that makes a member a reference in the first place. */
+    char where[32] = "";
+    if (cfg_ref_names_key(cfg_document(), key, where, sizeof where)) {
+        static char why[96];
+        snprintf(why, sizeof why, "still named by %s", where);
+        *code = "E_CONFIG";
+        *message = why;
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool deleted = false;
+    esp_err_t err = cfg_clear_secret(key, &deleted);
+    if (err != ESP_OK) {
+        *code = (err == ESP_ERR_INVALID_ARG) ? "E_CONFIG" : "E_STORAGE";
+        *message = (err == ESP_ERR_INVALID_ARG) ? "not a key name"
+                                                : "secret not erased";
+        return err;
+    }
+    json_add_string(root, "name", "secret.delete");
+    json_add_bool(root, "ok", true);
+    json_add_string(result, "key", key);
+    json_add_bool(result, "deleted", deleted);
+    json_add_bool(result, "unset", true);
+    return ESP_OK;
+}
+
 static void answer_command(const json_node_t *frame)
 {
     const json_node_t *args = json_get(frame, "args");
@@ -1349,6 +1386,14 @@ static void answer_command(const json_node_t *frame)
         built = handle_secret_set(json_string(json_get(args, "key")),
                                   json_string(json_get(args, "value")),
                                   root, result, &err_code, &err_message);
+        if (built != ESP_OK) {
+            emit_failure(name, reply_to, err_code, err_message);
+            json_free(body); return;
+        }
+    } else if (name && strcmp(name, "secret.delete") == 0) {
+        json_node_t *result = json_add_object(root, "result");
+        built = handle_secret_delete(json_string(json_get(args, "key")), root,
+                                     result, &err_code, &err_message);
         if (built != ESP_OK) {
             emit_failure(name, reply_to, err_code, err_message);
             json_free(body); return;

@@ -202,6 +202,8 @@ def test_options_filters_a_partial_subcommand():
         "/wifi connect",
         "/wifi disconnect",
         "/wifi reconnect",
+        "/wifi list",
+        "/wifi edit",
     ]
 
     assert [candidate.text for candidate in options("/config s")] == ["/config set"]

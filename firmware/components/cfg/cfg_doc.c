@@ -3,6 +3,7 @@
  * is split from `store.c`: these functions are pure, so the host suite can prove
  * them, while `cfg.c` reads `/config.json` and opens NVS and cannot. */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -25,6 +26,10 @@ void cfg_unload(void)
 }
 
 bool cfg_loaded(void) { return s_doc != NULL; }
+
+/* Borrowed, never owned: the same rule as `cfg_get`, and for the same reason — a
+ * caller that kept this across a `cfg_load` would hold a freed document. */
+json_doc_t *cfg_document(void) { return s_doc; }
 
 json_node_t *cfg_get(const char *path)
 {
@@ -158,4 +163,58 @@ bool cfg_secrets_add(const char *value)
 bool cfg_redact_line(char *line, size_t cap)
 {
     return cfg_redact(line, cap, s_secret_ptrs, s_secret_count);
+}
+
+/* --- Does the document still name this key? -------------------------------
+ * `secret.delete`'s refusal (`04-protocol.md` §4.31). Rule 9 (`03-config.md`) makes
+ * an unresolved `*_ref` a document `cfg_load` will not accept, so erasing a key a
+ * live reference names would leave the device unable to load its own config.
+ *
+ * The rule is the same `_ref` suffix test `cfg_validate.c` applies, walked here
+ * rather than restated as a key table: a new reference anywhere in the schema is
+ * covered without an edit to this file. Pure, so the host suite proves it.
+ */
+static bool names_key(const json_node_t *node, const char *key, char *where,
+                      size_t cap)
+{
+    if (node == NULL) return false;
+    if (json_is_array(node)) {
+        size_t items = json_array_len(node);
+        for (size_t i = 0; i < items; i++) {
+            if (names_key(json_array_at(node, i), key, where, cap)) return true;
+        }
+        return false;
+    }
+    if (!json_is_object(node)) return false;
+
+    size_t members = json_object_len(node);
+    for (size_t i = 0; i < members; i++) {
+        const char *name = json_object_key(node, i);
+        const json_node_t *value = json_object_value(node, i);
+        if (value == NULL) continue;
+        size_t n = strlen(name);
+        if (n > 4 && strcmp(name + n - 4, "_ref") == 0 &&
+            json_is_string(value)) {
+            const char *ref = json_string(value);
+            /* A malformed ref cannot name a key, and refusing to delete over one
+             * would blame the caller for a defect `cfg_validate` already reports. */
+            if (ref != NULL && cfg_ref_is_valid(ref) &&
+                strcmp(ref + 4, key) == 0) {
+                if (cap > 0) snprintf(where, cap, "%s", name);
+                return true;
+            }
+            continue;
+        }
+        if (names_key(value, key, where, cap)) return true;
+    }
+    return false;
+}
+
+bool cfg_ref_names_key(json_doc_t *doc, const char *key, char *where,
+                       size_t cap)
+{
+    if (doc == NULL || key == NULL || *key == '\0') return false;
+    if (where == NULL) cap = 0;
+    if (cap > 0) where[0] = '\0';
+    return names_key(json_root(doc), key, where, cap);
 }

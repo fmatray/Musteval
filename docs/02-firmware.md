@@ -67,6 +67,20 @@ functions return `esp_err_t`.
   (`08-code-architecture.md` §3); `link` asks here rather than resolving a secret
   itself. The storage half is `cfg_doc.c`, pure and host-tested; only the NVS
   enumeration is in `cfg.c`.
+- `cfg_clear_secret(key, &deleted)`: erase one key from the `secrets` namespace and
+  refresh the redaction snapshot, so a value that is gone stops being scrubbed from
+  log lines. `deleted` is false when the key was already unset — an idempotent call,
+  not a failure (`04-protocol.md` §4.31). Absence arrives as
+  `ESP_ERR_NVS_NOT_FOUND`, not `ESP_ERR_NOT_FOUND`: `nvs_erase_key` reports its own
+  code, and a handler that tests the generic one answers `E_STORAGE` to a second
+  delete of the same key. `store.h` states which of the two each entry point uses.
+- `cfg_ref_names_key(doc, key, where, cap)`: the walk behind `secret.delete`'s
+  refusal. True when any `*_ref` member of `doc` is `nvs:<key>`, with `where` naming
+  the member that holds it. It reads the same `*_ref` suffix rule `cfg_validate_refs`
+  applies, rather than a second key table, so a new reference anywhere in the schema is
+  covered without an edit here. Pure and host-tested (`cfg_doc.c`), because the rule it
+  protects — a document never names a secret that is not set — is `03-config.md` rule 9
+  and is worth proving without a board.
 
 ### `store` — Storage
 Two LittleFS partitions, two VFS mounts (`docs/01-hardware.md` §4). The agent's

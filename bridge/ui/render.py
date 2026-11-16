@@ -259,6 +259,81 @@ def wifi_scan_lines(result: dict[str, Any]) -> list[str]:
 
 
 
+def wifi_known_lines(
+    status: dict[str, Any], scan: dict[str, Any] | None, networks: list[Any]
+) -> list[str]:
+    """`/wifi list`: every configured network, and whether the radio can hear it.
+
+    Two frames and neither is a substitute: `config.get` says which networks exist and
+    in what order they will be tried, and the scan says which are audible now. A
+    configured network the scan did not return is drawn `not in range` rather than
+    dropped — "configured but silent" is the answer to the question asked
+    (`05-bridge.md` §7.6).
+
+    `scan` is `None` when the scan was refused (the radio is off, or a run holds it),
+    which is not the same as a scan that returned nothing: an absent scan cannot say a
+    network is out of range, so every state is `unknown` instead of a guess. An empty
+    dict would turn "I could not look" into "I looked and it was not there".
+    """
+    joined = sanitize(str((status or {}).get("ssid") or ""))
+    heard: dict[str, Any] = {}
+    for n in (scan or {}).get("networks") or []:
+        if isinstance(n, dict):
+            heard[sanitize(str(n.get("ssid") or ""))] = n.get("rssi")
+    # `status` is the only frame that reports the signal of the network actually
+    # associated, and a scan taken from that association often omits it.
+    if joined and (status or {}).get("rssi") is not None:
+        heard[joined] = (status or {}).get("rssi")
+
+    rows: list[tuple[str, str, str, str]] = []
+    for entry in networks or []:
+        if not isinstance(entry, dict):
+            continue
+        ssid = sanitize(str(entry.get("ssid") or ""))
+        priority = str(entry.get("priority", 0))
+        if ssid == joined:
+            state = "joined"
+        elif scan is None:
+            state = "unknown"
+        elif ssid in heard:
+            state = "in range"
+        else:
+            state = "not in range"
+        rssi = heard.get(ssid)
+        signal = f"{rssi} dBm" if rssi is not None else "-"
+        rows.append((ssid, priority, state, signal))
+    if not rows:
+        return ["no networks configured"]
+    names = max(len(r[0]) for r in rows)
+    prios = max(len(r[1]) for r in rows)
+    return [
+        f"  {ssid.ljust(names)}  {prio.rjust(prios)}  {state:<12} {signal}"
+        for ssid, prio, state, signal in rows
+    ]
+
+
+def provider_lines(providers: list[Any]) -> list[str]:
+    """`/providers`: one row per entry of `llm.providers`, in chain order.
+
+    The key is named, never valued: `api_key_ref` is an `nvs:` reference and the
+    device has no frame that would return anything else (`05-bridge.md` §7.7).
+    """
+    rows = [p for p in providers or [] if isinstance(p, dict)]
+    if not rows:
+        return ["no providers configured"]
+    ids = max(len(str(p.get("id") or "")) for p in rows)
+    models = max(len(str(p.get("model") or "")) for p in rows)
+    lines = []
+    for index, entry in enumerate(rows):
+        pid = sanitize(str(entry.get("id") or ""))
+        model = sanitize(str(entry.get("model") or ""))
+        ref = sanitize(str(entry.get("api_key_ref") or ""))
+        base = sanitize(str(entry.get("base_url") or ""))
+        lines.append(f"  {index + 1}. {pid.ljust(ids)}  {model.ljust(models)}  {base}")
+        lines.append(f"     key: {ref}")
+    return lines
+
+
 #: `05` §7: the five states a `/todo` line distinguishes, and the mark each gets.
 _TODO_MARKS = {
     "pending": "[ ]",
@@ -626,24 +701,43 @@ def hint_bar(pairs: list[tuple[str, str]]) -> Text:
     return out
 
 
-def render_diag(status: dict[str, Any]) -> list[str]:
-    """`/sys diag`: the counters half of `status`, per `05-bridge.md` §5.10.
+def diag_sections(status: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    """`/sys diag`: the counters half of `status`, headed per `05-bridge.md` §5.10.
 
-    The same lines `/sys status` shows second in its box; the split is what lets a
-    reader ask for the counters without the WiFi paragraph above them.
+    Four heads rather than one list of eight lines: the box already renders section
+    headings, and a flat run of `key: value` gives a reader no seam to scan by. The
+    facts and their order are unchanged — one line each — so nothing about what the
+    device reports moves here.
     """
     mem = status.get("mem") or {}
     sysinfo = status.get("sys") or {}
     llm = status.get("llm") or {}
     return [
-        f"heap_free: {mem.get('heap_free')}",
-        f"psram_free: {mem.get('psram_free')}",
-        f"safe_mode: {sysinfo.get('safe_mode')}",
-        f"boot_failures: {sysinfo.get('boot_failures')}",
-        f"tool_calls: {sysinfo.get('tool_calls')}",
-        f"tool_failures: {sysinfo.get('tool_failures')}",
-        f"llm calls hour: {llm.get('calls_hour')}/{llm.get('limit_hour')}",
-        f"llm calls day: {llm.get('calls_day')}/{llm.get('limit_day')}",
+        (
+            "Memory",
+            [f"heap_free: {mem.get('heap_free')}", f"psram_free: {mem.get('psram_free')}"],
+        ),
+        (
+            "Boot",
+            [
+                f"safe_mode: {sysinfo.get('safe_mode')}",
+                f"boot_failures: {sysinfo.get('boot_failures')}",
+            ],
+        ),
+        (
+            "Tools",
+            [
+                f"tool_calls: {sysinfo.get('tool_calls')}",
+                f"tool_failures: {sysinfo.get('tool_failures')}",
+            ],
+        ),
+        (
+            "LLM budget",
+            [
+                f"llm calls hour: {llm.get('calls_hour')}/{llm.get('limit_hour')}",
+                f"llm calls day: {llm.get('calls_day')}/{llm.get('limit_day')}",
+            ],
+        ),
     ]
 
 

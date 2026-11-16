@@ -39,6 +39,19 @@ LOCAL_COMMANDS = frozenset(
     }
 )
 
+#: `05-bridge.md` §7 and §7.6: the verbs `/wifi` accepts, in the order the refusal
+#: names them. `list` and `edit` are intercepted by the screen and only reach this
+#: arm on the `--send` path, but they are still verbs of the command.
+WIFI_VERBS = (
+    "scan",
+    "status",
+    "connect",
+    "disconnect",
+    "reconnect",
+    "list",
+    "edit",
+)
+
 #: `tools/todo.md` §Operations, in the order that fence lists them. `/todo` accepts
 #: exactly these and nothing else: a verb the tool has no op for has no meaning.
 TODO_OPS = (
@@ -157,12 +170,25 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         _exact(rest, 0, "/geo")
         return [_command("geo.locate")]
     if head == "wifi":
-        # `05-bridge.md` §7: `scan` asks the radio, the other four ask the station.
+        # `05-bridge.md` §7: `scan` asks the radio, the four steer verbs ask the
+        # station, and `list`/`edit` are UI commands (§7.6) that the screen
+        # intercepts. This arm keeps `parse` honest for the `--send` path.
         if rest == ["scan"]:
             return [_command("wifi.scan")]
         if rest in (["status"], ["connect"], ["disconnect"], ["reconnect"]):
             return [_command(f"wifi.{rest[0]}")]
-        raise CommandError("usage: /wifi scan|status|connect|disconnect|reconnect")
+        if rest == ["list"]:
+            return [_command("wifi.status")]
+        if rest == ["edit"]:
+            return [_command("config.get")]
+        # The usage text is derived, not spelled again: a verb added above without a
+        # word here would make the refusal name a set the parser does not accept.
+        raise CommandError("usage: /wifi " + "|".join(WIFI_VERBS))
+    if head == "providers":
+        # `05` §7.7: the editor is a modal, but the read it opens with is one
+        # `config.get`, so the `--send` path still produces a frame.
+        _exact(rest, 0, "/providers")
+        return [_command("config.get")]
     if head == "ping":
         # `05-bridge.md` §7: `device` is the link-latency ping the bridge already
         # measured; the other three make the device run an ICMP round itself.
@@ -188,8 +214,13 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
             Frame(type="prompt", id=new_id("b"), ts=0, body={"text": state.last_prompt})
         ]
     if head == "secret":
+        if rest[:1] == ["delete"]:
+            # `04` §4.31: erasure is its own verb, never a blank write. No value is
+            # read, so this form needs nothing from the prompt.
+            _exact(rest[1:], 1, "/secret delete <key>")
+            return [_command("secret.delete", {"key": rest[1]})]
         if not rest or rest[0] != "set":
-            raise CommandError("usage: /secret set <key>")
+            raise CommandError("usage: /secret set <key> | /secret delete <key>")
         _exact(rest[1:], 1, "/secret set <key>")
         value = state.secret_value
         if not value:

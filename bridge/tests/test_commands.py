@@ -10,6 +10,7 @@ from bridge.commands import (
     FS_PUT_CHUNK_BYTES,
     LOCAL_COMMANDS,
     TODO_OPS,
+    WIFI_VERBS,
     CommandError,
     CommandState,
     parse,
@@ -511,11 +512,13 @@ def _refused(text, state=None) -> str:
         ("/fs put /workspace/a junk", "usage: /fs put <path>"),
         # The wifi verbs refuse by membership rather than `_exact`, so a surplus
         # word has to reach the same branch as an unknown verb.
-        ("/wifi scan extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
-        ("/wifi status extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
-        ("/wifi connect extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
-        ("/wifi disconnect extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
-        ("/wifi reconnect extra", "usage: /wifi scan|status|connect|disconnect|reconnect"),
+        ("/wifi scan extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
+        ("/wifi status extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
+        ("/wifi connect extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
+        ("/wifi disconnect extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
+        ("/wifi reconnect extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
+        ("/wifi list extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
+        ("/wifi edit extra", "usage: /wifi " + "|".join(WIFI_VERBS)),
         ("/mqtt extra", "usage: /mqtt [publish <srv> <topic> <payload>]"),
     ],
 )
@@ -616,3 +619,28 @@ def test_fs_put_refuses_a_path_outside_the_allowlist_before_sending(path):
     assert str(exc.value) == (
         "path is outside /config.json, /tasks.json, /skills/, /prompts/, /tools/"
     )
+
+
+def test_the_ui_only_commands_still_parse_to_one_frame():
+    """`05` §7.6 and §7.7: `/wifi list`, `/wifi edit` and `/providers` are answered by
+    the screen, but `--send` goes through `parse`, so each must name a frame the
+    device understands rather than raising. `/wifi list` reads the station, and
+    `/wifi edit` and `/providers` open with the document."""
+    assert parse("/wifi list")[0].body["name"] == "wifi.status"
+    assert parse("/wifi edit")[0].body["name"] == "config.get"
+    assert parse("/providers")[0].body["name"] == "config.get"
+
+
+def test_secret_delete_is_its_own_frame_and_reads_no_value():
+    """`04` §4.31: erasure is a command, never a blank `secret.set`, so it needs no
+    value from the prompt — a state with none still parses."""
+    (frame,) = parse("/secret delete wifi_psk", CommandState())
+    assert frame.body["name"] == "secret.delete"
+    assert frame.body["args"] == {"key": "wifi_psk"}
+
+
+def test_tools_bare_still_asks_for_the_catalogue():
+    """`05` §7.4: the UI intercepts `/tools`, but the `--send` path must still produce
+    the list frame rather than fall through."""
+    (frame,) = parse("/tools")
+    assert frame.body["name"] == "tools.list"

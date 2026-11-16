@@ -150,6 +150,9 @@ class TestAgent:
         #: message, so the count in the reply is a fact about the double's state
         #: rather than a constant a broken client could also produce.
         self._history: list[dict[str, Any]] = []
+        #: The NVS `secrets` keys this double was told to store. `secret.delete`
+        #: reports what is left, so a bridge assertion is about a state, not an echo.
+        self._secrets: set[str] = set()
         self._script_index = 0
         self._buf = bytearray()
         self._closed = False
@@ -418,6 +421,7 @@ class TestAgent:
             return
 
         if frame.type == "secret.set":
+            self._secrets.add(str(frame.body["key"]))
             self.reply(
                 "command.result",
                 {
@@ -548,6 +552,14 @@ class TestAgent:
             result = {"path": args.get("path"), "created": True}
         elif name == "sandbox.move":
             result = {"from": args.get("from"), "to": args.get("to"), "moved": True}
+        elif name == "secret.delete":
+            # `04` §4.31: `deleted` distinguishes "it was there" from "it was
+            # already unset", which is the one fact the caller cannot get from an
+            # echo of `args`. `unset` is a bool on both paths, not a listing.
+            key = str(args.get("key", ""))
+            was_stored = key in self._secrets
+            self._secrets.discard(key)
+            result = {"key": key, "deleted": was_stored, "unset": True}
         elif name == "sys.reset_counter":
             # `04` §4.23: `previous` is what the reader can verify against `status`.
             result = {"reset": "boot_failures", "previous": 0, "safe_mode": False}

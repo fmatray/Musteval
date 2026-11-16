@@ -84,15 +84,20 @@ async def test_sys_status_and_sys_diag_open_one_modal_on_different_halves():
         app.submit("/sys diag")
         await _until(pilot, lambda: isinstance(app.screen, InfoModal))
         assert isinstance(app.screen, InfoModal)
-        # The asked-for half leads: `diag` puts the counters first.
-        assert app.screen.sections[0][0] == "Diagnostics"
+        # The asked-for half leads, and it is four headed sections rather than one
+        # flat list: the box already draws headings, so a reader gets the seam
+        # `render.diag_sections` provides.
+        heads = [heading for heading, _lines in app.screen.sections]
+        assert heads == ["Memory", "Boot", "Tools", "LLM budget", ""]
         app.screen.dismiss(None)
         await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
 
         app.submit("/sys status")
         await _until(pilot, lambda: isinstance(app.screen, InfoModal))
-        assert app.screen.sections[0][0] == ""
-        assert app.screen.sections[1][0] == "Diagnostics"
+        # `status` leads with the general half, and the same four sections follow it
+        # in the same order, so the two verbs differ only in which comes first.
+        heads = [heading for heading, _lines in app.screen.sections]
+        assert heads == ["", "Memory", "Boot", "Tools", "LLM budget"]
         app.screen.dismiss(None)
         await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
         assert app.query_one("#chat").display is True
@@ -586,3 +591,51 @@ async def test_context_opens_one_modal_listing_every_block():
         await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
 
     await _run(_device(), body)
+
+
+async def test_wifi_list_and_edit_and_providers_reach_their_editors():
+    """`05` §7.6 and §7.7: the three commands are UI-only — the screen answers, so the
+    dispatch arms are the only path a reader has to them. Each opens its picker and
+    reports the cancel in chat, which is what proves the arm ran rather than falling
+    through to the wire."""
+    from bridge.ui.modals import _PickBox
+
+    async def body(app, pilot):
+        seen: list[object] = []
+
+        async def picker(screen):
+            seen.append(screen)
+            return None
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        # `/wifi list` answers in chat: it reads two frames and writes rows, so it
+        # has no picker to answer.
+        app.submit("/wifi list")
+        await _await_chat(pilot, app, "home")
+        assert "joined" in _text(app)
+        for command in ("/wifi edit", "/providers"):
+            seen.clear()
+            app.submit(command)
+            await _until(pilot, lambda: bool(seen))
+            assert isinstance(seen[0], _PickBox), command
+
+        text = _text(app)
+        assert "wifi edit cancelled" in text
+        assert "providers cancelled" in text
+
+    await _run(_device(), body)
+
+
+async def test_a_refused_wifi_status_ends_the_list_without_a_second_excuse():
+    """`_request` already names a refusal, so `/wifi list` must return rather than
+    paraphrase it. The document is still fetched, because the refusal says nothing
+    about which networks are configured."""
+
+    async def body(app, pilot):
+        app.submit("/wifi list")
+        await _await_chat(pilot, app, "wifi.status")
+        text = _text(app)
+        # The document answered, so rows would have been drawn had the status landed.
+        assert "home" not in text
+
+    await _run(_device(drop={"wifi.status"}), body)

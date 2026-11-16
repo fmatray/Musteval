@@ -535,6 +535,26 @@ def test_secret_set_echoes_only_the_length(harness):
     assert result == {"key": "llm.api_key", "stored": True, "length": 9}
 
 
+def test_secret_delete_separates_a_key_it_had_from_one_it_did_not(harness):
+    """`04` §4.31: `deleted` is the one fact an echo of `args` cannot supply, and
+    `false` means "already unset", which is not a failure."""
+    harness.feed_frame(_frame("secret.set", {"key": "drop", "value": "two"}))
+    harness.one()
+
+    harness.feed_frame(_frame("command", {"name": "secret.delete",
+                                          "args": {"key": "drop"}}))
+    assert harness.one()["result"] == {"key": "drop", "deleted": True, "unset": True}
+
+    # A second erase of the same key, and one that was never stored, both report
+    # the same outcome: the caller's intent holds either way.
+    for _ in range(2):
+        harness.feed_frame(_frame("command", {"name": "secret.delete",
+                                              "args": {"key": "drop"}}))
+        assert harness.one()["result"] == {
+            "key": "drop", "deleted": False, "unset": True
+        }
+
+
 def test_cancel_ends_a_live_run(harness):
     # The double answers a prompt in full, so it never has a run open on its
     # own; a live run is the state a real device is in mid-answer.

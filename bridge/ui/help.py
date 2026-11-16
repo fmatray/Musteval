@@ -42,8 +42,8 @@ class CommandHelp:
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Device": (
         "sys", "tasks", "run", "config", "secret",
-        "templates", "template", "mqtt", "geo", "wifi", "todo", "tool", "fs",
-        "sandbox",
+        "templates", "template", "mqtt", "geo", "wifi", "providers", "todo",
+        "tool", "fs", "sandbox",
     ),
     "Chat": ("retry", "ping", "cancel", "clear", "thinking", "model", "export"),
     "Info": ("tools", "mcp", "usage", "context"),
@@ -73,7 +73,10 @@ COMMANDS: tuple[CommandHelp, ...] = (
         False,
     ),
     CommandHelp(
-        "secret", "/secret set <key>", "prompt for a secret value, masked", False
+        "secret",
+        "/secret set <key> | /secret delete <key>",
+        "store a secret, prompted and masked, or erase one",
+        False,
     ),
     CommandHelp("templates", "/templates", "list prompt templates", False),
     CommandHelp("template", "/template <name>", "dump one prompt template", False),
@@ -123,8 +126,18 @@ COMMANDS: tuple[CommandHelp, ...] = (
         "show the tools, or turn one off for the model",
         False,
     ),
-    CommandHelp("wifi", "/wifi scan|status|connect|disconnect|reconnect",
-                "scan the radio, or read and steer the station", False),
+    CommandHelp(
+        "wifi",
+        "/wifi scan|status|connect|disconnect|reconnect | /wifi list | /wifi edit",
+        "scan the radio, steer the station, list or edit the networks",
+        False,
+    ),
+    CommandHelp(
+        "providers",
+        "/providers",
+        "edit the provider chain: add, log in, disconnect",
+        False,
+    ),
     CommandHelp(
         "tools", "/tools", "tool table: name, state, description", False
     ),
@@ -149,9 +162,9 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "sandbox": ("list", "read", "mkdir", "move", "delete"),
     "tool": ("list", "enable", "disable"),
     "sys": ("status", "diag", "reload", "reboot", "reset-counter"),
-    "secret": ("set",),
+    "secret": ("delete", "set"),
     "ping": ("device", "router", "llm", "ntp"),
-    "wifi": ("scan", "status", "connect", "disconnect", "reconnect"),
+    "wifi": ("scan", "status", "connect", "disconnect", "reconnect", "list", "edit"),
     # `edit` is a UI verb, not a device op: it opens a modal, so it is offered in
     # the list without being part of `TODO_OPS`, which is `tools/todo.md`'s op set.
     "todo": (*TODO_OPS, "edit"),
@@ -195,7 +208,10 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "enable": "let the model call a tool again",
         "disable": "keep a tool but hide it from the model",
     },
-    "secret": {"set": "store a secret, prompted and masked"},
+    "secret": {
+        "set": "store a secret, prompted and masked",
+        "delete": "erase one secret; refuses one a config ref still names",
+    },
     "ping": {
         "device": "ping the link itself",
         "router": "ping the gateway",
@@ -208,6 +224,8 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "connect": "join a network",
         "disconnect": "drop the link, and stay down",
         "reconnect": "join the configured network again",
+        "list": "known networks, with state and signal",
+        "edit": "add a network, change a passphrase, or forget one",
     },
     "todo": {
         "view": "show the phases and their tasks",
