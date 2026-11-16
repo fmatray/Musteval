@@ -207,6 +207,19 @@ def test_fake_device_answers_wifi_scan(harness):
     assert result["truncated"] is False
 
 
+def test_fake_device_answers_tools_list_with_descriptions(harness):
+    """`04` §4.29: the double's catalogue must name the same tools its handshake
+    advertises, and every row needs a description the bridge can print. A fall-through
+    to `{"echo": {}}` would give the table an empty body."""
+    harness.feed_frame(_frame("command", {"name": "tools.list", "args": {}}))
+    reply = harness.one()
+    assert reply["ok"] is True
+    rows = reply["result"]["tools"]
+    assert [row["name"] for row in rows] == sorted(CANNED_TOOLS)
+    assert all(row["description"] for row in rows)
+    assert all(row["offered"] is True for row in rows)
+
+
 def test_fake_device_steers_the_station(harness):
     """`10-test-agent.md` §6: each verb leaves a different state, so a bridge test
     distinguishes them instead of reading one echo four times."""

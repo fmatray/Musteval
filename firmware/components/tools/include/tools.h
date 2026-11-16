@@ -312,6 +312,13 @@ esp_err_t tools_json_build(const tools_context_t *ctx, json_node_t *out);
  * same order as `tools_json`. Pure. */
 esp_err_t tools_capability_names(const tools_context_t *ctx, json_node_t *out);
 
+/* The `tools.list` catalogue (`04-protocol.md` §4.29): one row per tool the build
+ * carries, built-in then declarative then MCP, whether or not it is offered —
+ * `{"name","description","offered"}`. It lists what is *not* offered on purpose:
+ * `/tools` and `/tool list` are how a reader discovers a tool to turn back on, so
+ * the disabled ones are the rows that matter most. Pure. */
+esp_err_t tools_catalogue(const tools_context_t *ctx, json_node_t *out);
+
 /* Resolve a §4.25 target, probe it and summarise. One implementation behind both
  * the host command (`04-protocol.md` §4.25) and the model's `net.ping` tool
  * (`tools/net.md`): resolving needs `net`, `clock` and `llm` at once, none of

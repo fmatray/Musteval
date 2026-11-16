@@ -102,6 +102,8 @@ COMMAND_NAMES = frozenset(
         "sandbox.mkdir",
         "sandbox.move",
         "sys.reset_counter",
+        # `04-protocol.md` §4.29: the tool catalogue `/tools` and `/tool list` render.
+        "tools.list",
         # `04-protocol.md` §4.24: the access points the radio can hear.
         "wifi.scan",
         # `04-protocol.md` §4.27: the run's todo tree, read and steered.

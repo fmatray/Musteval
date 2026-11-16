@@ -26,6 +26,9 @@
     "http_allow_hosts": [
       "api.open-meteo.com",
       "api.search.brave.com"
+    ],
+    "disabled": [
+      "geo.locate"
     ]
   }
 }

@@ -596,3 +596,143 @@ TEST_CASE("a result is cut at the cap on a character boundary", "[tools]")
     free(long_text);
     json_free(doc);
 }
+
+/* `04` §4.29: the catalogue lists every tool the build carries, offered or not, so
+ * `/tools` can name a tool the reader turned off. A row's `offered` must agree with
+ * the predicate the model's request uses, which is the whole point of building it
+ * on the device rather than in the bridge. */
+TEST_CASE("the catalogue lists a disabled tool as not offered", "[tools]")
+{
+    json_doc_t *config_doc = json_new_object();
+    json_node_t *disabled = json_new_array(json_root(config_doc), "tools.disabled");
+    TEST_ASSERT_NOT_NULL(disabled);
+    json_array_push_string(disabled, "gpio.write");
+
+    tools_context_t ctx = {0};
+    ctx.policy.disabled = disabled;
+
+    json_doc_t *doc = json_new_object();
+    json_node_t *out = json_new_array(json_root(doc), "tools");
+    TEST_ASSERT_EQUAL(ESP_OK, tools_catalogue(&ctx, out));
+    TEST_ASSERT_EQUAL_size_t(TOOLS_MAX_BUILTINS, json_array_len(out));
+
+    bool saw_read = false, saw_write = false;
+    for (size_t i = 0; i < json_array_len(out); i++) {
+        json_node_t *row = json_array_at(out, i);
+        const char *name = json_string(json_get(row, "name"));
+        TEST_ASSERT_NOT_NULL(name);
+        TEST_ASSERT_NOT_NULL(json_string(json_get(row, "description")));
+        bool offered = true;
+        TEST_ASSERT_TRUE(json_bool(json_get(row, "offered"), &offered));
+        if (strcmp(name, "gpio.read") == 0) {
+            saw_read = true;
+            TEST_ASSERT_TRUE_MESSAGE(offered, "an enabled tool must report offered");
+        } else if (strcmp(name, "gpio.write") == 0) {
+            saw_write = true;
+            TEST_ASSERT_FALSE_MESSAGE(offered, "a disabled tool must report not offered");
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(saw_read, "gpio.read is a row");
+    TEST_ASSERT_TRUE_MESSAGE(saw_write, "a disabled tool is still a row");
+
+    json_free(doc);
+    json_free(config_doc);
+}
+
+/* The catalogue lists the build, not the offer, so the i2c family appears with no
+ * pins configured — that absence is what a reader needs to see before wondering why
+ * the model never calls it. */
+TEST_CASE("the catalogue carries the tools the offered set drops", "[tools]")
+{
+    tools_context_t ctx = {0};
+    ctx.i2c_sda = -1;
+    ctx.i2c_scl = -1;
+
+    json_doc_t *doc = json_new_object();
+    json_node_t *out = json_new_array(json_root(doc), "tools");
+    TEST_ASSERT_EQUAL(ESP_OK, tools_catalogue(&ctx, out));
+
+    bool listed = false, offered = true;
+    for (size_t i = 0; i < json_array_len(out); i++) {
+        json_node_t *row = json_array_at(out, i);
+        if (strcmp(json_string(json_get(row, "name")), "i2c.scan") != 0) continue;
+        listed = true;
+        TEST_ASSERT_TRUE(json_bool(json_get(row, "offered"), &offered));
+    }
+    TEST_ASSERT_TRUE_MESSAGE(listed, "an unpinned i2c tool is listed");
+    TEST_ASSERT_FALSE_MESSAGE(offered, "and marked not offered");
+
+    json_free(doc);
+}
+
+/* The other two sources the build carries: a file under `/tools/` and a server's
+ * own tool. Both reach `tools_offered` like the builtins, so a name in
+ * `tools.disabled` reads as not offered whichever source it came from. */
+TEST_CASE("the catalogue carries declared and remote tools", "[tools]")
+{
+    tools_declared_set_t declared = {0};
+    compile_one(&declared.items[0], "web_search",
+                "{\"description\":\"Search the web.\",\"http\":{\"url\":\"https://api.test/\"}}");
+    compile_one(&declared.items[1], "i2c.probe",
+                "{\"description\":\"Probe the bus.\",\"http\":{\"url\":\"https://api.test/\"}}");
+    declared.count = 2;
+
+    mcp_tool_t remote[1] = {0};
+    snprintf(remote[0].name, sizeof remote[0].name, "%s", "mcp.home.home_status");
+    snprintf(remote[0].description, sizeof remote[0].description, "%s", "Home state.");
+
+    json_doc_t *config_doc = json_new_object();
+    json_node_t *disabled = json_new_array(json_root(config_doc), "tools.disabled");
+    TEST_ASSERT_NOT_NULL(disabled);
+    json_array_push_string(disabled, "i2c.probe");
+    json_array_push_string(disabled, "mcp.home.home_status");
+
+    tools_context_t ctx = {0};
+    ctx.i2c_sda = 1;
+    ctx.i2c_scl = 2;
+    ctx.declared = &declared;
+    ctx.mcp_tools = remote;
+    ctx.mcp_count = 1;
+    ctx.policy.disabled = disabled;
+
+    json_doc_t *doc = json_new_object();
+    json_node_t *out = json_new_array(json_root(doc), "tools");
+    TEST_ASSERT_EQUAL(ESP_OK, tools_catalogue(&ctx, out));
+
+    bool saw_declared = false, saw_remote = false;
+    for (size_t i = 0; i < json_array_len(out); i++) {
+        json_node_t *row = json_array_at(out, i);
+        const char *name = json_string(json_get(row, "name"));
+        bool offered = true;
+        TEST_ASSERT_TRUE(json_bool(json_get(row, "offered"), &offered));
+        if (strcmp(name, "web_search") == 0) {
+            saw_declared = true;
+            TEST_ASSERT_TRUE_MESSAGE(offered, "an enabled declared tool is offered");
+            TEST_ASSERT_EQUAL_STRING("Search the web.",
+                                     json_string(json_get(row, "description")));
+        } else if (strcmp(name, "i2c.probe") == 0) {
+            TEST_ASSERT_FALSE_MESSAGE(offered,
+                                      "a disabled declared tool is listed but not offered");
+        } else if (strcmp(name, "mcp.home.home_status") == 0) {
+            saw_remote = true;
+            TEST_ASSERT_FALSE_MESSAGE(offered,
+                                      "a disabled remote tool is listed but not offered");
+            TEST_ASSERT_EQUAL_STRING("Home state.",
+                                     json_string(json_get(row, "description")));
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(saw_declared, "a declared tool is a row");
+    TEST_ASSERT_TRUE_MESSAGE(saw_remote, "a remote tool is a row");
+
+    json_free(doc);
+    json_free(config_doc);
+}
+
+TEST_CASE("the catalogue refuses a node that is not an array", "[tools]")
+{
+    tools_context_t ctx = {0};
+    json_doc_t *doc = json_new_object();
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, tools_catalogue(&ctx, json_root(doc)));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, tools_catalogue(&ctx, NULL));
+    json_free(doc);
+}

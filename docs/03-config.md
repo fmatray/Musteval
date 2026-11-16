@@ -118,7 +118,7 @@ Single JSON object, UTF-8, no comments, no trailing commas.
 | `agent.system_prompt` | string | no | `"/prompts/system.md"` | path starting `/` |
 | `agent.max_input_bytes` | int | no | `3072` | 256..`serial.max_line_bytes` |
 | `tools.allow_dangerous` | bool | no | `false` | switch read by the write tools; the list is `06-security.md` §6, not restated here |
-| `tools.disabled[]` | string[] | no | `[]` | 0..8 tool names the model is neither shown nor allowed to call; a name outside the registry is accepted and stays inert, so a tool that later returns needs no config edit |
+| `tools.disabled[]` | string[] | no | `[]` | 0..8 tool names the model is neither shown nor allowed to call; a name outside the registry is accepted and stays inert, so a tool that later returns needs no config edit. The **seed** `config.json` ships `["geo.locate"]`, so a fresh device has no locator; an absent key disables nothing, because the array is read straight from the document and has no compiled-in default |
 | `tools.http_allow_hosts[]` | string[] | no | `[]` | 0..8 hostnames; exact match, no wildcards |
 | `tools.memory_max_bytes` | int | no | `2048` | 256..4096; total bytes across the `memory` NVS namespace |
 | `tools.i2c_sda` | int | no | `null` | one of GPIO1, GPIO2, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9; `null` means the I2C tools are absent, and it must differ from `tools.i2c_scl` |
@@ -909,8 +909,12 @@ Every `/tools/<name>.json` becomes a tool whose name is the file stem. Declarati
 tools are HTTP-only in v1; built-ins (`gpio.read`, `gpio.write`, `adc.read`, `i2c.scan`,
 `i2c.read`, `time.now`, `fs.list`, `fs.read`, `fs.write`, `fs.delete`, `http.get`,
 `skill.read`, `task.list`, `task.set`, `todo`, `event.emit`, `geo.locate`,
-`mqtt.list`, `mqtt.publish`) are always present and
-cannot be redefined - a declarative tool using a built-in name fails validation.
+`mqtt.list`, `mqtt.publish`) are always compiled in and cannot be redefined - a
+declarative tool using a built-in name fails validation. Being compiled in is not the
+same as being offered: a built-in named in `tools.disabled` is absent from the model's
+request, from `hello_ack.capabilities.tools` and from dispatch. The seed
+`config.json` disables `geo.locate`, so a fresh device runs without a locator until
+someone enables it.
 
 Per-tool contracts - arguments, results and the JSON Schema sent to the model - live
 in `tools/`, one file per domain (`tools/README.md` is the index). This section

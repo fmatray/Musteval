@@ -244,8 +244,13 @@ Built-in, always present (twenty-six):
 `task.set` `event.emit` `todo` `geo.locate` `mqtt.list` `mqtt.publish`
 `memory.get` `memory.set` `memory.list` `memory.delete` `sys.diagnostics` `net.ping`
 
-`i2c.write` is present only when the bus is configured, like `i2c.scan` and
-`i2c.read` (`tools/i2c.md`).
+These are always *compiled in*; being present is not the same as being offered. A name
+in `tools.disabled` (`03-config.md` §Full schema) leaves the model's request, the
+capability list and dispatch together. The key has no compiled-in default: the seed
+`config.json` ships `["geo.locate"]`, so a fresh device runs without a locator until
+someone turns it on. The
+`i2c` family is a second case: `i2c.write` is present only when the bus is configured,
+like `i2c.scan` and `i2c.read` (`tools/i2c.md`).
 
 Declarative: any `/tools/*.json` becomes a tool of the same name. MCP: namespaced
 `mcp.<server_id>.<tool_name>`. Both are additional to the twenty-six and neither can

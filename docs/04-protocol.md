@@ -165,16 +165,21 @@ the bridge shows a version mismatch banner and refuses to send `prompt`.
 `capabilities.streaming` is always `false` in v1 (overview D8).
 
 `capabilities.tools` is the set the model can call **at this moment**, not a
-compile-time constant. It is built from the 25 frozen built-ins
-(`00-overview.md` §7) plus the declarative tools loaded from `/tools/*.json`, then
-subtracted by the two runtime conditions: `i2c.scan`, `i2c.read` and `i2c.write` are
-dropped when `tools.i2c_sda`/`tools.i2c_scl` are `null`, and `geo.locate` is dropped
-when `geo.enabled` is `false`. `weather_now` and `web_search` therefore **do** appear,
-which is the only way a host can discover them — no other frame carries a file list
-(`05-bridge.md` §7). A gate such as `tools.allow_dangerous: false`
-does not remove a tool from this list; the tool is offered and refuses the call with
-`E_TOOL`, so the model can explain the refusal. The list changes only on `reload`,
-never mid-run, so a run's tool array stays stable across rounds.
+compile-time constant. It is built from the 26 built-ins
+(`00-overview.md` §7) plus the declarative tools loaded from `/tools/*.json` and the
+MCP tools discovered at run start, then subtracted by two runtime conditions: the name
+is in `tools.disabled` (`03-config.md` §Full schema), or it is one of
+`i2c.scan`/`i2c.read`/`i2c.write` and `tools.i2c_sda`/`tools.i2c_scl` are `null`.
+`weather_now` and `web_search` therefore **do** appear, which is the only way a host
+can discover them — no other frame carries a file list (`05-bridge.md` §7).
+A gate such as `tools.allow_dangerous: false` does not remove a tool from this list;
+the tool is offered and refuses the call with `E_TOOL`, so the model can explain the
+refusal. `geo.locate` is a different case: the seed `config.json` names it in
+`tools.disabled`, so a fresh device does not offer it at all, and enabling it with
+`geo.enabled: false` makes it offered but refusing with `E_CONFIG`
+(`06-security.md` §6). The list changes only on `reload`, never mid-run, so a run's
+tool array stays stable across rounds. §4.29 `tools.list` reports the same predicate
+with descriptions, including the names this list omits.
 
 ### 3.3 `prompt` (bridge → device)
 
@@ -224,7 +229,7 @@ seconds rather than minutes. Cancellation is not a failure and is never retried.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the thirty-one names in §4. |
+| `name` | string | yes | One of the thirty-two names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -609,7 +614,7 @@ whose trace is dropped is still a correct run.
 
 ## 4. Command catalog
 
-All thirty-one names, their arguments and their `result` shapes. Unknown names are
+All thirty-two names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -638,6 +643,7 @@ reads are never refused.
 | `sandbox.write` | `{path, data, offset?, final?, encoding?}` | `{path, bytes, created}` | `E_CONFIG` (path outside `/workspace/`), `E_STORAGE` (quota or entry cap), `E_PROTOCOL` (oversize, bad base64, or out-of-sequence chunk) | yes |
 | `sandbox.mkdir` | `{path}` | `{path, created}` | `E_CONFIG` (path outside `/workspace/`, or a parent that is not a directory), `E_STORAGE` (quota or entry cap) | yes |
 | `sandbox.move` | `{from, to}` | `{from, to, moved}` | `E_CONFIG` (either path outside `/workspace/`, or `to` exists), `E_STORAGE` (missing source, or a cross-mount move) | yes |
+| `tools.list` | `{}` | `{tools:[{name,description,offered}]}` | `E_INTERNAL` | yes |
 | `sys.reset_counter` | `{}` | `{reset, previous, safe_mode}` | `E_INTERNAL` | yes |
 | `wifi.scan` | `{}` | `{networks:[{ssid,rssi,auth}], truncated}` | `E_WIFI` (radio unavailable), `E_BUSY` (run in flight) | no |
 | `wifi.status` | `{}` | wifi object (§3.9) | `E_INTERNAL` | yes |
@@ -1396,6 +1402,41 @@ tearing the conversation the run is paying for. This is the `reboot` rule, not t
 
 The clear does not touch the todo tree, the task list, `/prompts`, `/skills` or the
 counters `status` reports. It forgets the conversation and nothing else.
+
+### 4.29 `tools.list`
+
+The tool catalogue: every tool this build carries, with its one-line description and
+whether it is currently offered. `/tools` and `/tool list` both render it
+(`05-bridge.md` §7.4), which is why it exists as a frame rather than as a bridge-side
+table: the descriptions live in the firmware registry (`tools_spec.c`) and the
+declarative and MCP descriptions arrive over the network at run start, so no host
+copy could stay true.
+
+```json
+{"v":1,"type":"command","id":"b-44","ts":1730572626,"name":"tools.list","args":{}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-54","ts":1730572626,"reply_to":"b-44","name":"tools.list","ok":true,"result":{"tools":[{"name":"adc.read","description":"Sample a 12-bit analog voltage on GPIO1, GPIO2 or GPIO4.","offered":true},{"name":"geo.locate","description":"Return the device position from the configured geolocation provider.","offered":false}]},"duration_ms":3}
+```
+
+**`offered` is the same predicate `hello_ack.capabilities.tools` uses** (`tools_offered`),
+so a row marked `false` is one the model's next request will not carry. A row can be
+absent from the offer for two different reasons and this frame does not distinguish
+them: the reader turned it off (`tools.disabled`, `03-config.md` §Full schema) or a
+subsystem it needs is unconfigured — `i2c.scan`, `i2c.read` and `i2c.write` with no
+bus pins, and `geo.locate` with `geo.enabled: false`. Which one it is comes from the
+config the client already holds, not from here.
+
+**Every tool is listed, offered or not.** The rows a reader needs most are the ones
+the model cannot call, because that is the list they are looking at in order to turn
+one back on. A response that carried only the offer would be
+`hello_ack.capabilities.tools` with descriptions attached and no way to discover a
+disabled name at all.
+
+**A run in flight does not hide a tool.** `offered` is computed from the config and
+the loaded sets, not from the run's own snapshot, so a mid-run toggle shows in the
+next `tools.list` while the run continues with the array it started with.
 
 ## 5. Error codes
 

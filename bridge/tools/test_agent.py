@@ -50,6 +50,15 @@ BOOT_ID = "00000001"
 PROTOCOL_VERSION = 1
 CANNED_TOOLS = ["time.now", "sys.diagnostics", "todo"]
 
+#: One line each, in the registry's voice. `tools.list` carries descriptions and this
+#: double has no registry, so these stand in for it. A test asserts the column is
+#: filled by the double's own answer, never that it matches the firmware's prose.
+TOOL_DESCRIPTIONS = {
+    "time.now": "Return the current time in the device's configured zone.",
+    "sys.diagnostics": "Report heap, PSRAM, boot failures and tool counters.",
+    "todo": "Read and steer the run's todo tree.",
+}
+
 #: `10-test-agent.md` §6.2. Two files, one nested directory, fixed bytes.
 WORKSPACE_FILES = {
     "/workspace/notes.md": "# notes\n\nplain text, no markup.\n",
@@ -625,6 +634,20 @@ class TestAgent:
                 reply_to=frame.id,
             )
             return
+        elif name == "tools.list":
+            # `04` §4.29: rows derived from the same `CANNED_TOOLS` the handshake
+            # advertises, so a table test cannot pass against a catalogue the double
+            # does not also call its own offer. `10` §6 forbids echoing `args`.
+            result = {
+                "tools": [
+                    {
+                        "name": tool,
+                        "description": TOOL_DESCRIPTIONS.get(tool, "does a thing"),
+                        "offered": True,
+                    }
+                    for tool in sorted(CANNED_TOOLS)
+                ]
+            }
         elif name == "wifi.scan":
             # `10-test-agent.md` §6: an echo would give the dropdown `args` and no
             # `networks`, which is the failure it shows against a real device.

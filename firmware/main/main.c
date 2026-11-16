@@ -1081,6 +1081,20 @@ static void answer_command(const json_node_t *frame)
             json_free(body); return;
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "tools.list") == 0) {
+        /* `04` §4.29: the catalogue `/tools` and `/tool list` both render, so the
+         * two surfaces cannot show different sets. Built from the same context the
+         * model's request uses, so `offered` here and the advertised array agree. */
+        tools_context_t tctx;
+        tools_context_from_config(&tctx);
+        json_node_t *rows = json_new_array(json_add_object(root, "result"), "tools");
+        if (tools_catalogue(&tctx, rows) != ESP_OK) {
+            emit_failure(name, reply_to, "E_INTERNAL", "catalogue failed");
+            json_free(body); return;
+        }
+        /* The epilogue below owns `name` and `ok` on the envelope, so neither is set
+         * here: a second copy inside `result` would be the same fact said twice. */
+        built = ESP_OK;
     } else if (name && strcmp(name, "sys.reset_counter") == 0) {
         int32_t prev = 0;
         if (store_nvs_get_int("boot_failures", &prev) != ESP_OK) prev = 0;
