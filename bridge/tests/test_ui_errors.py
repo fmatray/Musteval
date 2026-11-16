@@ -599,7 +599,7 @@ async def test_a_refusal_with_no_error_object_is_reported_as_malformed():
 
 
 async def test_a_well_formed_refusal_still_names_its_code_and_message():
-    """`05` §13.2: the line repeats the device's own words verbatim, so this guard
+    """`17` §2: the line repeats the device's own words verbatim, so this guard
     must not paraphrase a refusal that does arrive in full."""
 
     async def body(app, pilot):

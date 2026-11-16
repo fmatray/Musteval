@@ -93,7 +93,7 @@ async def test_retry_resends_the_last_prompt_and_a_fresh_app_has_none():
 
 
 async def test_ctrl_g_with_no_candidate_accepts_the_inline_suggestion():
-    """`05` §13.1: Tab at the end of a line takes the shell-style suggestion, which
+    """`17` §1: Tab at the end of a line takes the shell-style suggestion, which
     is the only completion available when the list is closed."""
 
     async def body(app, pilot):
@@ -111,7 +111,7 @@ async def test_ctrl_g_with_no_candidate_accepts_the_inline_suggestion():
 
 
 async def test_moving_the_cursor_with_no_candidates_leaves_it_where_it_was():
-    """`05` §13.1: arrows on a closed list must not move a cursor that is not shown,
+    """`17` §1: arrows on a closed list must not move a cursor that is not shown,
     or the next Enter would send a row the reader never picked."""
 
     async def body(app, pilot):
@@ -134,7 +134,7 @@ async def test_moving_the_cursor_with_no_candidates_leaves_it_where_it_was():
 
 
 async def test_a_row_too_narrow_for_the_help_column_drops_the_column():
-    """`05` §13.1: the panel is sized to the width it has. Appending the help text
+    """`17` §1: the panel is sized to the width it has. Appending the help text
     into no room would wrap the row, and `+N more` would be clipped away."""
 
     async def body(app, pilot):
@@ -360,7 +360,7 @@ async def test_a_delete_result_that_is_not_an_object_names_the_path_alone():
 
 async def test_a_second_bare_files_command_does_not_refetch():
     """`05` §5.8: a bare `/files` shows the path the reader left it at. Refetching on
-    every visit would also drop a filter the reader had just applied (`§13.5`)."""
+    every visit would also drop a filter the reader had just applied (`17` §5)."""
 
     async def body(app, pilot):
         app.action_show("files")
@@ -514,7 +514,7 @@ async def test_a_reply_that_is_not_a_command_result_is_not_read_for_a_result():
 
 @pytest.mark.asyncio
 async def test_the_global_hint_names_every_key_at_a_narrow_width() -> None:
-    """`05` §13.3: the hint line wraps rather than truncating, so no key is lost.
+    """`17` §3: the hint line wraps rather than truncating, so no key is lost.
 
     Textual's `Footer` used to fill this row and it clipped mid-word: at 100 columns
     the reader saw `^r Reconnec`, and at 50 the `F6`/`F7` aliases were gone. A key a
@@ -534,7 +534,7 @@ async def test_the_global_hint_names_every_key_at_a_narrow_width() -> None:
 
 @pytest.mark.asyncio
 async def test_every_screen_ends_in_a_hint_naming_every_key_it_binds() -> None:
-    """`05` §13.3: every screen ends in a hint line, built from its `BINDINGS`.
+    """`17` §3: every screen ends in a hint line, built from its `BINDINGS`.
 
     Four screens bound keys and ended in content instead: the composer on Chat, the
     grid on Status, the buffer on Logs, the traffic log on MQTT. Every key those
@@ -608,7 +608,7 @@ async def test_a_line_written_before_the_pane_exists_is_kept() -> None:
 
 @pytest.mark.asyncio
 async def test_a_bracket_in_a_device_string_does_not_take_the_screen_down() -> None:
-    """`05` §13.2: the grid is markup, so a value spliced into it must be escaped.
+    """`17` §2: the grid is markup, so a value spliced into it must be escaped.
 
     A `Static` updated with `Text.from_markup` raises `MarkupError` on an unbalanced
     tag, and every value in the status grid and the broker list comes from the

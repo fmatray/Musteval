@@ -56,7 +56,7 @@ ModalScreen, * {
     align: center middle;
 }
 
-/* `05` §13.4: width follows the content, bounded by the terminal, so a one-line
+/* `17` §4: width follows the content, bounded by the terminal, so a one-line
    prompt is not stretched and the editor is not pinned narrower than its text. */
 .prompt-box {
     width: 60;
@@ -151,7 +151,7 @@ class ConfirmPrompt(PromptBox[bool]):
 
 
 class FilterPrompt(PromptBox[str | None]):
-    """One narrowing line: a log filter, or a file search (`05` §5.4, §13.5).
+    """One narrowing line: a log filter, or a file search (`05` §5.4, `17` §5).
 
     The two screens want the same widget with a different seed and title, so the
     seed is either a `LogFilter` (read for `tag`/`min_level`) or a plain string.
@@ -236,7 +236,7 @@ def _thinking_levels(
     levels = list(published) if published else list(entry.thinking_levels)
     # A level the row does not list but can express is still the reader's setting:
     # Ollama names its values per model, so `max` on a `glm` model is real and the
-    # re-run must show it, not silently show `low` (`05` §13.6). `none` is not such a
+    # re-run must show it, not silently show `low` (`17` §6). `none` is not such a
     # setting here — it is what `level_of` reports for an absent member, and it is in
     # the list already wherever the row can express an off switch.
     if stored and stored != "none" and stored not in levels and entry.extra_body(stored):
@@ -247,7 +247,7 @@ def _thinking_levels(
 class _StepBox(PromptBox[Any]):
     """Shared chrome for the three `/onboard` steps.
 
-    `05` §13.6: a step asks only what its own test can check, shows the path it
+    `17` §6: a step asks only what its own test can check, shows the path it
     writes, and says what a refusal means. The test is the device answering, which is
     why the network step comes before the provider step and the provider step before
     the model step — each unlock is the previous step's proof.
@@ -1199,7 +1199,7 @@ TodoEditor .prompt-box {
             yield OptionList(id="todo-tree")
             yield Input(placeholder="type the new text, then Enter", id="todo-value")
             yield Static("", id="todo-status", markup=False)
-            # `.prompt-box` is 60 columns wide (`05` §13.4), so the legend is two
+            # `.prompt-box` is 60 columns wide (`17` §4), so the legend is two
             # lines: one line would be clipped and drop the send key.
             yield Static(
                 "Ctrl+E modify | Ctrl+N after | Ctrl+D drop\n"

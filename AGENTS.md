@@ -152,7 +152,7 @@ changes; read them as the failure modes this codebase actually has.
   screen; the bridge chose to interpret bytes it did not own. Escape what is spliced
   into markup, declare `markup=False` where the widget shows nothing else, and strip
   control characters from any device string bound for a `RichLog`.
-- **The doc's rule applies to the widget that was exempted.** `05` §13.3 has said
+- **The doc's rule applies to the widget that was exempted.** `17` §3 has said
   every screen ends in a hint line built by `hint_bar` since the first screen shipped,
   and it was obeyed by every screen but the two that mattered: the app row was a
   Textual `Footer` that clipped mid-word and advertised an unbound `Ctrl+P`, and four
@@ -202,6 +202,7 @@ A change is not done until the document it contradicts is corrected in the same 
 | Milestones, acceptance criteria | `docs/07-roadmap.md` |
 | Firmware arrangement | `docs/08-code-architecture.md` |
 | Bridge arrangement | `docs/09-bridge-architecture.md` |
+| UX rules (keys, colour, hints, modals, empty states) | `docs/17-ux-rules.md` |
 | Test agent | `docs/10-test-agent.md` |
 | Per-tool contracts | `docs/tools/<domain>.md` |
 

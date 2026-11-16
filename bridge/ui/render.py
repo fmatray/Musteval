@@ -342,7 +342,7 @@ def render_status(status: dict[str, Any]) -> list[str]:
     userfs = storage.get("userfs") or {}
     wsfs = storage.get("wsfs") or {}
 
-    # `05` §13.2: every value here comes from the device, and the grid is built as
+    # `17` §2: every value here comes from the device, and the grid is built as
     # markup, so a provider id or an SSID containing `[`/`]` is escaped before it is
     # spliced in. Unescaped, `[/bold]` in an SSID raised `MarkupError` and took the
     # whole screen down.
@@ -357,7 +357,7 @@ def render_status(status: dict[str, Any]) -> list[str]:
     busy = escape(f"Busy ({agent.get('run_id')})" if agent.get("busy") else "Idle")
 
     def verdict(value: bool | None, good: str = "up", bad: str = "down") -> str:
-        """`05` §13.2: a verdict word, coloured where colour is available."""
+        """`17` §2: a verdict word, coloured where colour is available."""
         if value is None:
             return f"[dim]{bad}[/dim]"
         return f"[green]{good}[/green]" if value else f"[red]{bad}[/red]"
@@ -426,7 +426,7 @@ def format_uptime(seconds: int) -> str:
     return f"{days}d{rest}h"
 
 
-#: `05` §13.2: the bar's semantic slots. Colour never carries a fact alone — the
+#: `17` §2: the bar's semantic slots. Colour never carries a fact alone — the
 #: plain text is identical with or without it — so a monochrome terminal loses
 #: nothing but the emphasis.
 SEGMENT_STYLES = {
@@ -603,7 +603,7 @@ def key_label(key: str) -> str:
 def binding_pairs(
     bindings: list[Any], extra: list[tuple[str, str]] = ()
 ) -> list[tuple[str, str]]:
-    """`05` §13.3: the hint line from a screen's own bindings, plus the keys it
+    """`17` §3: the hint line from a screen's own bindings, plus the keys it
     handles outside `BINDINGS`. One source, so a hint cannot name a dead key."""
     pairs = [(key_label(binding.key), binding.description) for binding in bindings]
     pairs.extend(extra)
@@ -611,7 +611,7 @@ def binding_pairs(
 
 
 def hint_bar(pairs: list[tuple[str, str]]) -> Text:
-    """`05` §13.3: the one hint line every screen ends in.
+    """`17` §3: the one hint line every screen ends in.
 
     Built from the same `(key, label)` pairs the screen's `BINDINGS` declare, so the
     hint cannot name a key the screen no longer binds. The key takes `$accent` and

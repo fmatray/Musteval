@@ -491,7 +491,7 @@ async def test_a_file_above_the_chunk_cap_is_staged_in_several_frames():
 
 
 async def test_ctrl_f_narrows_the_listing_without_a_refetch():
-    """`05` §13.5: a filter is local, shown, and cleared in one key."""
+    """`17` §5: a filter is local, shown, and cleared in one key."""
     app = _app()
     async with app.run_test() as pilot:
         screen = await _open_files(pilot, app)
@@ -514,7 +514,7 @@ async def test_ctrl_f_narrows_the_listing_without_a_refetch():
             if isinstance(app.screen, FilterPrompt):
                 break
             await pilot.pause(0.02)
-        # Seeded with what is applied, so refining beats retyping (§13.5).
+        # Seeded with what is applied, so refining beats retyping (`17` §5).
         assert app.screen.query_one("#filter-input").value == "not"
         app.screen.query_one("#filter-input").value = ""
         await pilot.press("enter")
@@ -523,7 +523,7 @@ async def test_ctrl_f_narrows_the_listing_without_a_refetch():
 
 
 async def test_the_filter_is_dropped_when_the_directory_changes():
-    """`05` §13.5: a filter names rows in one directory, so it dies with it."""
+    """`17` §5: a filter names rows in one directory, so it dies with it."""
     app = _app()
     async with app.run_test() as pilot:
         screen = await _open_files(pilot, app)

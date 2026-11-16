@@ -48,6 +48,7 @@ The full specification is located in the `docs/` directory:
 - [13 Acceptance M4](docs/13-acceptance-M4.md) - Hand-run procedure for the M4 criteria, and why the tool surface needs a live provider.
 - [14 Class Diagrams](docs/14-class-diagrams.md) - Every bridge class and firmware `typedef`, with methods, fields and source links.
 - [15 Command Reference](docs/15-command-reference.md) - Every slash command and form, alphabetically, with its arguments and frame.
+- [17 UX Rules](docs/17-ux-rules.md) - The rules every screen, modal and keybinding is held to: keys, colour, hint lines, modals, filtering, onboarding, empty states.
 - [Tools](docs/tools/README.md) - Per-domain tool contracts: arguments, results, schemas.
 
 ## Quickstart (intended)

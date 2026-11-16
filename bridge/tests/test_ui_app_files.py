@@ -265,7 +265,7 @@ async def test_a_save_that_changes_nothing_writes_nothing():
 
 
 async def test_a_filter_cancel_drops_the_narrowing():
-    """`05` §13.5: Esc in the find prompt drops the filter, so the whole directory
+    """`17` §5: Esc in the find prompt drops the filter, so the whole directory
     is back — a cancel that left the last needle applied would hide entries."""
     app = _app()
     async with app.run_test() as pilot:

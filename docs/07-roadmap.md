@@ -146,7 +146,7 @@ Goal: implement the serialized agent run and the tool execution engine.
    level with no `reload` and no reboot.
  - The model step offers a level that is stored but not listed by the provider's
    catalog row — Ollama names its values per model — so re-running the wizard over a
-   `reasoning_effort: max` entry leaves it at `max` (`05` §13.6).
+   `reasoning_effort: max` entry leaves it at `max` (`17` §6).
 
 Firmware status: `agent`, `tools` and `skills` are implemented and link clean, and
 `docs/13-acceptance-M4.md` records which rows were run on a board. Everything that

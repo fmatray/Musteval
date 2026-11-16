@@ -311,7 +311,7 @@ class ChatScreen(Vertical):
             # its own presentation; wrapping it in a `Text` would crash on it.
             log.write(text)
             return
-        # `06` T16 and `05` §13.2: every one of these strings can carry a device or
+        # `06` T16 and `17` §2: every one of these strings can carry a device or
         # broker payload, and a raw ESC reaches the terminal as a control sequence.
         # `sanitize` is the one place that is stripped, before any path renders it.
         text = sanitize(text)
@@ -352,7 +352,7 @@ class ChatScreen(Vertical):
 
         The text is held here as well: textual 8's `Static` keeps no readable
         renderable, and a test needs the line, not the widget. `styled` carries
-        the same characters with the §13.2 slots applied.
+        the same characters with the `17` §2 slots applied.
         """
         self.bar_line = line
         self.query_one("#prompt-bar", Static).update(styled if styled is not None else line)
@@ -536,7 +536,7 @@ class StatusScreen(VerticalScroll):
 class TasksScreen(Vertical):
     """`05-bridge.md` §5.3. Every mutation re-issues `tasks.list`."""
 
-    # `05` §13.1: `Ctrl` + a letter, never a bare printable one, so a keystroke
+    # `17` §1: `Ctrl` + a letter, never a bare printable one, so a keystroke
     # meant for the table cannot fire an action on the way past.
     BINDINGS = [
         Binding("ctrl+x", "run_selected", "Run", show=False),
@@ -566,7 +566,7 @@ class TasksScreen(Vertical):
         table.clear()
         for task in tasks:
             trigger = (task.get("trigger") or {}).get("type", "-")
-            # `05` §13.2: the word carries the fact; the colour only speeds it up.
+            # `17` §2: the word carries the fact; the colour only speeds it up.
             state = Text("Enabled", style="green") if task.get("enabled") else Text(
                 "Disabled", style="yellow"
             )
@@ -636,7 +636,7 @@ class LogsScreen(Vertical):
         self.follow = True
 
     def compose(self) -> ComposeResult:
-        # `05` §13.2: the header shows the filter the reader typed, so no markup.
+        # `17` §2: the header shows the filter the reader typed, so no markup.
         yield Static("Follow: ON  Filter: -", id="log-header", markup=False)
         yield RichLog(id="log-body", wrap=True, markup=False, highlight=False, max_lines=2000)
         yield Static("", id="log-hint", markup=False)
@@ -768,7 +768,7 @@ class FilesScreen(Vertical):
     ]
 
     def compose(self) -> ComposeResult:
-        # `05` §13.2: a path is device data, so the widget takes no markup at all.
+        # `17` §2: a path is device data, so the widget takes no markup at all.
         yield Static("/workspace/", id="files-path", markup=False)
         yield Static("", id="files-header", markup=False)
         yield DataTable(id="files-table", cursor_type="row", zebra_stripes=True)
@@ -796,7 +796,7 @@ class FilesScreen(Vertical):
         table.clear()
         if path != self.path:
             # A filter names rows in one directory; carrying it into the next would
-            # hide entries the reader never asked about (`05` §13.5).
+            # hide entries the reader never asked about (`17` §5).
             self._needle = ""
         self.path = path
         self.query_one("#files-path", Static).update(path)
@@ -805,7 +805,7 @@ class FilesScreen(Vertical):
         self._render_header()
 
     def _render_header(self) -> None:
-        """`05` §13.5: the applied filter is shown, so a hidden entry is explained."""
+        """`17` §5: the applied filter is shown, so a hidden entry is explained."""
         count = len(self._all_entries)
         # The `..` row is navigation, not an entry, so it is not counted.
         shown = len(self._shown_names())
@@ -843,7 +843,7 @@ class FilesScreen(Vertical):
         return self._needle
 
     def set_needle(self, needle: str) -> None:
-        """Narrow the listing without another `sandbox.list` (`05` §13.5)."""
+        """Narrow the listing without another `sandbox.list` (`17` §5)."""
         self._needle = needle
         self._render_filtered()
         self._render_header()
@@ -902,7 +902,7 @@ class MqttScreen(Vertical):
 
     BINDINGS = [
         Binding("ctrl+r", "refetch", "Refresh", show=False),
-        # Arrows stay: §13.1 bans bare *printable* letters as actions, and an
+        # Arrows stay: `17` §1 bans bare *printable* letters as actions, and an
         # arrow cannot be mistaken for text.
         Binding("up", "move(-1)", "Previous", show=False),
         Binding("down", "move(1)", "Next", show=False),
@@ -917,7 +917,7 @@ class MqttScreen(Vertical):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        # `05` §13.4: state belongs in the constructor; `compose` may run again.
+        # `17` §4: state belongs in the constructor; `compose` may run again.
         self.selected = 0
         self._brokers: list[dict[str, Any]] = []
 
@@ -945,14 +945,14 @@ class MqttScreen(Vertical):
         lines = []
         for index, broker in enumerate(servers):
             cursor = ">" if index == self.selected else " "
-            # `05` §13.2: the word carries the state, the colour speeds it up.
+            # `17` §2: the word carries the state, the colour speeds it up.
             state = (
                 "[green]connected[/green]"
                 if broker.get("connected")
                 else "[red]disconnected[/red]"
             )
             subs = len(broker.get("subscriptions") or [])
-            # `05` §13.2: the id is a device string spliced into markup, so it is
+            # `17` §2: the id is a device string spliced into markup, so it is
             # escaped; unescaped, a `[` in a broker id raised `MarkupError`.
             lines.append(
                 f"[b]{cursor}[/b] {escape(str(broker.get('id')))}  {state}  "
@@ -1027,7 +1027,7 @@ class BridgeApp(App):
        composer off a short terminal. Truncated by `clip` at the call site. */
     #prompt-bar { padding: 0 2; height: 1; color: $text-muted; }
     #mqtt-brokers { padding: 0 2; }
-    /* `05` §13.3: the hint wraps rather than clipping, and `height: auto` is what
+    /* `17` §3: the hint wraps rather than clipping, and `height: auto` is what
        lets it take the second row instead of losing the last key. */
     #task-hint, #status-hint, #log-hint, #mqtt-hint, #chat-hint,
     #settings-hint, #files-hint, #app-hint {
@@ -1113,7 +1113,7 @@ class BridgeApp(App):
             yield MqttScreen(id="mqtt")
             yield FilesScreen(id="files")
             yield SplashScreen(pick_tip(), id="splash")
-        # `05` §13.3: every screen ends in the one hint line, built here from the
+        # `17` §3: every screen ends in the one hint line, built here from the
         # app's own bindings. Textual's `Footer` was in this slot and clipped
         # mid-word — `^r Reconnec` at 100 columns, and F6/F7 lost at 50 — where the
         # rule says a hint wraps rather than truncating.
@@ -1212,7 +1212,7 @@ class BridgeApp(App):
         await self._request("tasks.run", {"id": task_id})
 
     async def run_selected_task(self) -> None:
-        """`05` §13.1: `Ctrl+X` runs the row under the cursor, same path as Enter."""
+        """`17` §1: `Ctrl+X` runs the row under the cursor, same path as Enter."""
         task_id = self._tasks_screen().selected_task_id()
         if task_id is None:
             self._chat().write("no task selected")
@@ -1286,7 +1286,7 @@ class BridgeApp(App):
         await self._request("sandbox.list", {"path": path})
 
     async def search_files(self) -> None:
-        """`05` §13.5: narrow the listing locally, seeded with what is applied."""
+        """`17` §5: narrow the listing locally, seeded with what is applied."""
         screen = self._files()
         typed = await self.push_screen_wait(
             FilterPrompt(screen.needle(), "find in files", "name contains")
@@ -2371,7 +2371,7 @@ class BridgeApp(App):
         first = stored[0] if isinstance(stored, list) and stored else {}
         stored_model = str(first.get("model") or "") if isinstance(first, dict) else ""
         # The level is seeded from the stored entry, not from `none`: re-running the
-        # wizard must not be a silent downgrade for a reader who set one (`05` §13.6).
+        # wizard must not be a silent downgrade for a reader who set one (`17` §6).
         stored_extra = first.get("extra_body") if isinstance(first, dict) else None
         # No catalog note loop here: `_onboard_provider` already wrote them, and this
         # step always follows it, so repeating them would print the same complaint

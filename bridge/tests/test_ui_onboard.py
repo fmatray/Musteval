@@ -952,7 +952,7 @@ def test_a_level_the_provider_does_not_take_is_refused_on_the_host():
 
 
 async def test_the_model_step_is_handed_the_stored_level():
-    """`05` §13.6: re-running the wizard must not be a silent downgrade.
+    """`17` §6: re-running the wizard must not be a silent downgrade.
 
     The assertion is on the step the app *built*, not on the answer a fake screen
     returned: a fake that answers `high` would pass whatever the app seeded.
@@ -1075,7 +1075,7 @@ def test_the_fetch_refuses_a_url_that_is_not_http():
 
 
 async def test_a_stored_level_the_row_does_not_offer_survives_a_re_run():
-    """`05` §13.6: a re-run must not be a silent downgrade.
+    """`17` §6: a re-run must not be a silent downgrade.
 
     Ollama names its levels per model, so `max` is a real stored setting that the
     `ollama-cloud` row does not list. The step used to fall back to its first row

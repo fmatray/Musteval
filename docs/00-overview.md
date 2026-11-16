@@ -299,6 +299,7 @@ is host-originated.
 | Built-in tools (ADC, I2C, HTTP, task.set, event.emit) | §7 here for the frozen set; per-tool contracts in `tools/` |
 | Shipped `weather_now` / `web_search` | `03-config.md` §tools (Shipped tools), `tools/web.md` |
 | TUI bridge | `05-bridge.md`, `09-bridge-architecture.md` |
+| Screen keys, colour, hint lines, empty states | `17-ux-rules.md` |
 | Bridge testing without hardware | `10-test-agent.md` |
 | No multirole / no subagents | §1.2 here, `07-roadmap.md` (explicit non-goal) |
 | Hardware facts, pin safety | `01-hardware.md` |

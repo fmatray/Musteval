@@ -832,7 +832,7 @@ def test_the_link_word_survives_any_width():
 
 
 async def test_an_agent_error_is_written_as_an_error_line():
-    """`05` §13.2: a line the device refused is `$error`, and it repeats the code
+    """`17` §2: a line the device refused is `$error`, and it repeats the code
     and message verbatim. The message is the whole diagnostic — `llm` puts the
     provider's rejection body in it — so a bridge that paraphrased it would have
     nothing left to show but a colour.
@@ -975,7 +975,7 @@ async def test_every_chat_line_is_classified_and_markdown_is_prose_only():
 
 
 async def test_running_the_selected_task_sends_the_command():
-    """`05` §13.1: `Ctrl+X` runs the row under the cursor through the same
+    """`17` §1: `Ctrl+X` runs the row under the cursor through the same
     `tasks.run` path Enter does, so the two cannot drift."""
     from bridge.ui import BridgeApp
 

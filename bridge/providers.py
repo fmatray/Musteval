@@ -100,7 +100,7 @@ class Provider:
         """The level a stored `extra_body` names, or `none`.
 
         The inverse of `extra_body`, used to seed the wizard's picker from what the
-        device already holds (`05` §13.6). A name this row does not offer is still
+        device already holds (`17` §6). A name this row does not offer is still
         reported as itself rather than as `none`: the member is the reader's, and
         answering `none` for a stored `max` would be a silent downgrade the wizard
         then writes back.

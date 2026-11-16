@@ -90,7 +90,7 @@ async def test_clearing_the_input_also_closes_the_candidate_list():
 
 
 async def test_a_task_row_selected_runs_that_rows_id():
-    """`05` §13.1: Enter on a row is a run of that row, and the id comes from the key
+    """`17` §1: Enter on a row is a run of that row, and the id comes from the key
     the table carries — not from the row's index."""
 
     # The row-selection path calls the same action the key is bound to, so the run
@@ -110,7 +110,7 @@ async def test_a_task_row_selected_runs_that_rows_id():
 
 
 async def test_each_task_binding_reaches_its_own_command():
-    """`05` §13.2: run, enable/disable, edit, delete and new are five bindings with
+    """`17` §2: run, enable/disable, edit, delete and new are five bindings with
     five different verbs, so a shared action would send the wrong one."""
     from bridge.ui.task_prompt import TaskPrompt
 
@@ -157,7 +157,7 @@ async def test_each_task_binding_reaches_its_own_command():
 
 
 async def test_editing_the_selected_task_opens_its_prompt():
-    """`05` §13.2: `e` edits the row under the cursor, so the prompt opens on that
+    """`17` §2: `e` edits the row under the cursor, so the prompt opens on that
     task and a cancel writes nothing."""
     from bridge.ui.task_prompt import TaskPrompt
 
@@ -175,7 +175,7 @@ async def test_editing_the_selected_task_opens_its_prompt():
 
 
 async def test_a_task_table_with_no_rows_has_no_selection():
-    """`05` §13.1: an empty table has no row under the cursor, so Enter cannot run a
+    """`17` §1: an empty table has no row under the cursor, so Enter cannot run a
     task that is not there."""
 
     async def body(app, pilot):

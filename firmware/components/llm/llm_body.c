@@ -53,7 +53,7 @@ size_t llm_copy_error_detail(const char *body, size_t body_len, const char *id,
     size_t limit = body_len < LLM_ERROR_CLIP ? body_len : LLM_ERROR_CLIP;
     for (size_t i = 0; i < limit && used + 1 < cap; i++) {
         unsigned char c = (unsigned char)body[i];
-        /* Control bytes become spaces rather than reaching the pane: `05` §13 has the
+        /* Control bytes become spaces rather than reaching the pane: `17` §2 has the
          * bridge strip them on arrival, but the message also lands in the device log
          * and a raw ESC in an error body is a terminal escape sequence, not text. */
         out[used++] = (c < 0x20 || c == 0x7f) ? ' ' : (char)c;

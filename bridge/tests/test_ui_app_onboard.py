@@ -303,7 +303,7 @@ async def test_a_reload_that_does_not_answer_stops_the_wizard():
 
 
 async def test_the_model_step_seeds_its_level_from_the_stored_entry():
-    """`05` §13.6: re-running the wizard must not be a silent downgrade for a reader
+    """`17` §6: re-running the wizard must not be a silent downgrade for a reader
     who set a thinking level, so the seed is the stored `extra_body`."""
     device = _Device()
     app = _app(device)

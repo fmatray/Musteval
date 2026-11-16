@@ -456,7 +456,7 @@ async def test_the_settings_screen_reports_no_row_on_an_empty_table():
 
 
 async def test_running_the_selected_task_sends_its_own_id():
-    """`05` §13.1: `r`/Ctrl+X runs the row under the cursor, and the id is the row's,
+    """`17` §1: `r`/Ctrl+X runs the row under the cursor, and the id is the row's,
     not a name guessed from its text."""
 
     async def body(app, pilot):

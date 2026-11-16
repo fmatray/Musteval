@@ -156,11 +156,11 @@ def test_a_narrow_bar_drops_whole_segments_rather_than_half_a_word():
         assert not line.endswith("…") and not line.endswith(PROMPT_SEPARATOR)
 
 
-# -- `05-bridge.md` §13.2–§13.3: the plain and styled bar are one projection -
+# -- `17` §2–§3: the plain and styled bar are one projection ----
 
 
 def test_the_styled_bar_carries_the_same_characters_as_the_plain_one():
-    """Colour is emphasis only; a monochrome terminal must lose nothing (`§13.2`)."""
+    """Colour is emphasis only; a monochrome terminal must lose nothing (`17` §2)."""
     status = {"wifi": {"state": "connected", "ssid": "home", "rssi": -58}}
     plain = render_prompt_bar("connected", {"device": "m01"}, status, 1234)
     styled = render_prompt_text("connected", {"device": "m01"}, status, 1234)
