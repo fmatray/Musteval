@@ -281,8 +281,10 @@ by; a blank line is not, because the pane has those inside a message too.
 +-----------------------------------------------------------------------+
 ```
 
-### 5.2 Status Screen (`/sys status`, F3)
-Displays real-time device health.
+### 5.2 Status Screen (F3)
+Displays real-time device health. **F3** opens this full grid; `/sys status` and
+`/sys diag` instead open the info modal (§5.10), which shows the same two halves from
+one fresh `status` frame.
 
 - **Source**: `status` message (periodic or commanded).
 - **Layout**: A grid of value-pairs.
@@ -643,6 +645,15 @@ being edited — is set in `__init__`, never in `compose()`. A `compose()` that 
 the screen re-applies its initial value on every mount, so a modal dismissed and
 reopened loses what the reader had chosen.
 
+**`InfoModal`** is the read-only one: a title and a list of `(heading, text)` sections
+in a `VerticalScroll`. `/sys status` and `/sys diag` are its only callers, and they
+pass the same two sections in opposite order — `status` leads with the general half,
+`diag` with the counters — so a reader comparing heap against its quota does not close
+one box to open another. The body is a `Static` with `markup=False`: a device string
+such as a broker error or an SSID is not markup, and Textual would otherwise read a
+`[` in it as a style tag. The box scrolls rather than growing, because the diagnostics
+half is longer than a 24-row terminal.
+
 ## 6. Keybindings
 
 Focus follows the screen: entering a screen puts focus on the widget that consumes
@@ -735,11 +746,11 @@ alphabetical table, for looking a command up by name rather than by kind.
 
 | Command | Protocol Mapping | Args | Note |
 |---|---|---|---|
-| `/sys status` | `command {name:"status"}` | none | Forces status refresh; also switches to the Status screen |
-| `/sys reload` | `command {name:"reload"}` | none | Re-reads flash configs |
-| `/sys reboot` | `command {name:"reboot"}` | none | Restarts device |
+| `/sys status` | `command {name:"status"}` | none | Forces a fresh `status` and opens the info modal on its general half |
+| `/sys reload` | `command {name:"reload"}` | none | Re-reads flash configs, in chat: the reloaded scopes, then one line per warning |
+| `/sys reboot` | `command {name:"reboot"}` | none | Restarts the device, in chat: the grace period in milliseconds |
 | `/sys reset-counter` | `command {name:"sys.reset_counter"}` | none | Clears the boot-failure counter |
-| `/sys diag` | `status` | none | Renders the diagnostic half of `status`: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps. Local rendering only, and it stays in chat rather than opening the screen; the frame it reuses is `status` |
+| `/sys diag` | `command {name:"status"}` | none | The same modal, opened on the counters: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps |
 | `/tasks` | `command {name:"tasks.list"}` | none | Lists tasks in chat; also switches to the Tasks screen |
 | `/run <id>` | `command {name:"tasks.run"}` | `id` | Runs a task now; confirms in chat with the `run_id` that `/cancel` and the status screen name |
 | `/tasks add` | `command {name:"tasks.set"}` | `task` | Opens a blank task modal, then sends it |
@@ -767,7 +778,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
 | `/tool` | `command {name:"config.get"}`, `command {name:"config.set"}` | `tools.disabled` | Lists every offered tool with the disabled ones marked, or turns one off for the model. Verbs: `list` (the bare default), `enable <name>`, `disable <name>`; each refuses the state it would not change |
-| `/tools` | (Local) | none | Lists `capabilities.tools` (every tool currently callable, declarative ones included) and `capabilities.mcp` |
+| `/tools` | `command {name:"tools.list"}` | none | The tool table: name, enabled or disabled, description. Same output as `/tool list` |
 | `/mcp` | (Local) | none | Lists servers from the last `status.mcp[]` |
 | `/usage` | (Local) | none | Token totals from observed `agent.final.usage` |
 | `/context` | (Local) | none | Shows last `input_bytes` and observed `usage` totals |
@@ -1076,15 +1087,15 @@ a resurrection is never silent.
 by re-sending the old body; delete is not, so it is the one place the bridge blocks
 on input.
 
-`/tools` covers what the device advertises in `hello_ack`: every tool currently
-callable, which includes the declarative tools loaded from `/tools/*.json` as well
-as the MCP tool names (`04-protocol.md` §3.2). Declarative tools are therefore
-discoverable in v1: `weather_now` and `web_search` appear in that list when their
-files parsed. What stays unavailable is the *file* view — no frame carries the
-`/tools/` directory listing, so the bridge can name each declarative tool but cannot
-show its schema, description or which file defined it. `/sys reload` reports `tools` in
-`reloaded[]` when the directory parsed, without naming them. Showing schemas needs a
-`tools.list` command, which v1 does not have.
+`/tools` asks the device for `tools.list` (`04-protocol.md` §4.29), which carries
+every tool the build holds — the 26 built-ins, the declarative tools loaded from
+`/tools/*.json`, and the MCP tool names — with its description and whether the model
+may call it now. A name the model cannot call is still a row, because that row is how
+a reader discovers the name to type after `/tool enable`. What stays unavailable is the
+*file* view: no frame carries the `/tools/` directory listing or a declarative tool's
+schema, so the bridge cannot say which file defined a tool or show its parameters.
+`/sys reload` reports `tools` in `reloaded[]` when the directory parsed, without
+naming them.
 
 `/context` shows only frame-borne values: the last `agent.start.input_bytes` and
 the summed `agent.final.usage`. Config limits such as `llm.max_history_messages`
@@ -1172,10 +1183,25 @@ model's request unchanged, which is the failure mode worth naming.
 
 | Form | Sends | Answer |
 |---|---|---|
-| `/tool list` | `config.get` | every offered name, with the disabled ones marked |
+| `/tools`, `/tool list` | `tools.list` | one table, name / state / description, sorted by name |
 | `/tool disable <name>` | `config.get`, then `config.set tools.disabled` | the array written |
 | `/tool enable <name>` | the same, without the name | the array written |
 
+- **`/tools` and `/tool list` are one table**, from one frame. They used to be two
+  surfaces with different content — `/tools` printed a comma-joined name list from the
+  last `hello_ack`, `/tool list` printed the offered set annotated from the array —
+  which meant the same question answered two ways. `tools.list` (`04` §4.29) now
+  carries the three columns and the device's own descriptions, and `render.tool_table`
+  sorts and pads them. The table is the whole answer; there is no heading line, because
+  the first row names the columns by being one.
+- **`list` carries the tools the model cannot call.** Those rows are the reason the
+  command exists: a reader looking at this list is usually looking for the name to turn
+  back on. It also carries the i2c family with no bus pins, for the same reason.
+- **The completion for `enable`/`disable` is the union of two facts**: the names
+  `hello_ack` advertises and the names `tools.disabled` holds. A disabled tool is
+  absent from the advertised list by design, and it is exactly the name `enable` must
+  accept. Completion runs on every keystroke, so both come from state already in hand,
+  never from a round trip.
 - **The write is the whole array**, because `config.set` replaces a value rather than
   appending (`04` §4.9).
 - **The two verbs refuse the state the other one wants.** `disable` refuses a name
@@ -1184,10 +1210,6 @@ model's request unchanged, which is the failure mode worth naming.
   change that did not happen. A name nobody offers is accepted on `disable`: a tool
   that returns later then needs no config edit, and its entry stays inert meanwhile
   (`03-config.md` §Full schema).
-- **`list` shows the last `hello_ack` set annotated with the array it just read.** The
-  device pushes a capability list only on `hello`, so a fresh run of tools after a
-  write is not something this command can observe; it reports what the device will use
-  next rather than pretending to have re-read the run.
 
 ## 8. Secrets & Redaction
 

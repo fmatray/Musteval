@@ -36,6 +36,7 @@ from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import (
     Working,
     HelpModal,
+    InfoModal,
     ConfirmPrompt,
     FilePrompt,
     FilterPrompt,
@@ -66,6 +67,8 @@ from .render import (
     clip,
     geo_line,
     ping_line,
+    reboot_line,
+    reload_lines,
     render_diag,
     render_json_block,
     hint_bar,
@@ -73,6 +76,7 @@ from .render import (
     render_prompt_text,
     render_status,
     render_tool_call,
+    tool_table,
     render_tool_result,
     sanitize,
     template_names,
@@ -191,8 +195,23 @@ class ChatScreen(Vertical):
         """
         self._show_options(event.value)
 
+    def _tool_names(self) -> "tuple[str, ...]":
+        """Every tool name a reader can type after `/tool enable|disable`.
+
+        The union of what the device advertises and what `tools.disabled` holds: a
+        disabled tool is absent from `hello_ack` by design, and it is exactly the name
+        `enable` must accept. Both facts live on the app, and completion runs on every
+        keystroke, so neither may cost a round trip.
+        """
+        app = self.app
+        caps = app._state.get("capabilities") or {}
+        advertised = {str(name) for name in caps.get("tools") or []}
+        stored = app._existing("tools.disabled")
+        disabled = {n for n in stored if isinstance(n, str)} if isinstance(stored, list) else set()
+        return tuple(sorted(advertised | disabled))
+
     def _show_options(self, value: str) -> None:
-        candidates = options(value)
+        candidates = options(value, self._tool_names())
         self._total = len(candidates)
         self._candidates = candidates[:COMPLETION_ROWS]
         # A refresh is a new list, so the arrow's choice does not carry over.
@@ -1743,6 +1762,23 @@ class BridgeApp(App):
                     self._chat().write(line)
             self._todo_quiet = False
             return
+        if name == "reload" and isinstance(result, dict):
+            # `05` §7: a reload's warnings are the part a reader acts on, and the
+            # JSON block buried them. Rendered from the frame so the typed verb and
+            # `--send /sys reload` produce the same sentence.
+            for line in reload_lines(result):
+                self._chat().write(line)
+            return
+        if name == "reboot" and isinstance(result, dict):
+            self._chat().write(reboot_line(result))
+            return
+        if name == "tools.list" and isinstance(result, dict):
+            # `04` §4.29: the one table both `/tools` and `/tool list` print. It lives
+            # here rather than in `_tool` so the `--send /tools` path, which reaches
+            # the wire through `parse`, renders the same rows as the `list` verb.
+            for line in tool_table(result):
+                self._chat().write(line)
+            return
         if name == "templates.list" and isinstance(result, dict):
             for line in template_names(result):
                 self._chat().write(line)
@@ -1955,9 +1991,6 @@ class BridgeApp(App):
         # the reader to a screen that will not show the answer.
         if head in ("tasks", "mqtt"):
             self.action_show(head if len(words) == 1 else "chat")
-        if head == "sys" and words[1:2] == ["status"]:
-            # `/sys status` is the former `/status`: refresh and show the screen.
-            self.action_show("status")
         if head == "config" and words[1:2] in ([], ["edit"]):
             # `05` §5.7: `/config` and `/config edit` open the settings screen; `get`
             # and `set` stay device frames. A surplus word is named rather than
@@ -1985,29 +2018,35 @@ class BridgeApp(App):
         if head == "onboard":
             await self.onboard()
             return
+        if head in ("tool", "tools"):
+            # `05` §7.4: `list` reads, the other two are a read-modify-write of one
+            # config array. `parse` never sees either head because the array is an
+            # input the device only hands over whole (`config.get`). `/tools` renders
+            # the same table as `/tool list`, which is the point of the frame. This
+            # arm precedes `LOCAL_COMMANDS`, which still lists `tools` so `parse`
+            # leaves the line alone.
+            await self._tool(["list"] if head == "tools" else words[1:])
+            return
         if head in LOCAL_COMMANDS:
             self._run_local(head)
             return
         if head == "thinking":
             await self._thinking(words[1:])
             return
-        if head == "tool":
-            # `05` §7.4: `list` reads, the other two are a read-modify-write of one
-            # config array. `parse` never sees the head because the array is an input
-            # the device only hands over whole (`config.get`).
-            await self._tool(words[1:])
+        if head == "sys" and words[1:2] in (["reload"], ["reboot"]):
+            # `05` §7: both answer in chat as a sentence, which
+            # `_on_command_result` renders from the frame.
+            await self._request(words[1])
             return
-        if head == "sys" and words[1:2] == ["diag"]:
-            # `05-bridge.md` §7: reuses the `status` frame, renders only the
-            # diagnostic half, so the chat gets fresh counters rather than the
-            # last screen refresh. It stays in chat rather than moving the reader
-            # to the screen, which is what the verb asks for.
+        if head == "sys" and words[1:2] in (["diag"], ["status"]):
+            # `05-bridge.md` §5.10: both verbs answer from one fresh `status` frame, in
+            # a modal, so a reader comparing the two does not reopen it. `status`
+            # opens on the general half, `diag` on the counters.
             if await self._request("status") is None:
-                # `_request` already said why. Rendering the cached `status` here
-                # would print last refresh's counters under a comment promising
-                # fresh ones, and would read as the answer to `/sys diag`.
+                # `_request` already said why. Rendering the cached frame here would
+                # show last refresh's counters as this command's answer.
                 return
-            self._chat().write("\n".join(render_diag(self._last_status)))
+            self._sys_info(diag_first=words[1] == "diag")
             return
         if head == "secret" and self._pending_secret is None:
             # `05-bridge.md` §8.1: masked modal, Esc cancels without sending.
@@ -2573,9 +2612,12 @@ class BridgeApp(App):
 
         One array feeds both the capability list and dispatch, so a tool turned off is
         absent from the next run's request rather than shown to the model and then
-        refused. `config.set` replaces a value, so the whole array is written. The
-        advertised set comes from `hello_ack`, which the device does not re-push, so
-        what is shown is the offered set annotated with the array just read.
+        refused. `config.set` replaces a value, so the whole array is written.
+
+        `list` renders `tools.list` (`04` §4.29) rather than `hello_ack`'s
+        capabilities: the catalogue carries the descriptions and the tools the model
+        cannot call, and `/tools` shares this code path so the two surfaces cannot
+        disagree again.
         """
         verb = rest[0] if rest else ""
         if verb not in ("list", "enable", "disable") or len(rest) > 2 or (
@@ -2589,14 +2631,9 @@ class BridgeApp(App):
         disabled = [n for n in stored if isinstance(n, str)] if isinstance(stored, list) else []
 
         if verb == "list":
-            offered = set((self._state.get("capabilities") or {}).get("tools") or [])
-            rows = sorted(offered | set(disabled))
-            if not rows:
-                self._chat().write("no tools")
-            for name in rows:
-                self._chat().write(
-                    f"{name} (disabled)" if name in disabled else f"{name}"
-                )
+            # `_on_command_result` renders the table, so this is the whole read form:
+            # doing it here as well would print it twice.
+            await self._request("tools.list")
             return
 
         name = rest[1]
@@ -2620,7 +2657,24 @@ class BridgeApp(App):
         # array. `applied` is read only to say whether the device took it, and this
         # path has no screen to repaint.
         await self._fetch_config()
-        self._chat().write(f"tool {verb} {name}: {wanted}")
+        # The whole array is the state a reader has to reason about, so it is what the
+        # reply shows; `disabled: none` is the case they are usually aiming for.
+        self._chat().write(
+            f"tool {verb} {name}: disabled = {', '.join(wanted) if wanted else 'none'}"
+        )
+
+    def _sys_info(self, *, diag_first: bool) -> None:
+        """`05` §5.10: the status halves in one scrollable box, the asked-for one first.
+
+        Both come from one `status` frame, which is why this is a modal and not two
+        screens: the general half is `render_status` and the counters are
+        `render_diag`, and the reader usually wants the second while looking at the
+        first.
+        """
+        general = ("", render_status(self._last_status))
+        diagnostics = ("Diagnostics", render_diag(self._last_status))
+        sections = [diagnostics, general] if diag_first else [general, diagnostics]
+        self.push_screen(InfoModal("sys", sections))
 
     async def _model_levels(
         self, chain: object
@@ -2742,10 +2796,6 @@ class BridgeApp(App):
             self.action_show("logs")
         elif head == "help":
             self.action_help()
-        elif head == "tools":
-            caps = self._state.get("capabilities") or {}
-            self._chat().write("tools: " + ", ".join(caps.get("tools") or []))
-            self._chat().write("mcp: " + ", ".join(caps.get("mcp") or []))
         elif head == "mcp":
             servers = self._last_status.get("mcp") or []
             self._chat().write(

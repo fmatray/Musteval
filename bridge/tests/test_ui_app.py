@@ -65,6 +65,14 @@ CONFIG = {
     "ntp": {"servers": ["pool.ntp.org"], "timezone": "UTC"},
 }
 
+#: `04` §4.29's catalogue, in the registry's order: a disabled row is what the table
+#: exists to show, and the descriptions differ so a test cannot pass on a fixed width.
+TOOL_ROWS = [
+    {"name": "gpio.read", "description": "Read a pin's digital level.", "offered": True},
+    {"name": "memory.get", "description": "Report heap and PSRAM free.", "offered": False},
+    {"name": "time.now", "description": "Return the current time.", "offered": True},
+]
+
 ENTRIES = {
     "/workspace/": [
         {"name": "notes.md", "dir": False, "bytes": 5},
@@ -136,6 +144,18 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
             args = frame.get("args") or {}
             if name == "status":
                 return [_result(frame, name, STATUS)]
+            if name == "tools.list":
+                return [_result(frame, name, {"tools": TOOL_ROWS})]
+            if name == "reload":
+                # `04` §4.28: the scopes and the warnings, which are the parts a
+                # reader acts on; a reply without them would render as a sentence no
+                # device sends.
+                return [_result(frame, name,
+                                {"reloaded": ["cfg", "tools"],
+                                 "warnings": [{"scope": "mqtt",
+                                               "message": "broker unreachable"}]})]
+            if name == "reboot":
+                return [_result(frame, name, {"grace_ms": 250})]
             if name == "config.get":
                 return [_result(frame, name, {"config": CONFIG})]
             if name == "config.set":
@@ -217,21 +237,25 @@ async def _await_screen(pilot, app, kind) -> None:
 # --- local commands (`05` §7) -----------------------------------------------
 
 
-async def test_tools_and_mcp_read_from_the_hello_capabilities():
-    """`/tools` and `/mcp` are answered from the handshake, not from a frame.
-
-    The capability list is what the device said it offers, so a bridge that sent a
-    command here would be asking a question it already has the answer to.
+async def test_mcp_reads_from_the_hello_capabilities_and_tools_does_not():
+    """`/mcp` is answered from the handshake: the capability list already says which
+    servers came up. `/tools` is not, because `hello_ack` carries names and the table
+    needs the device's descriptions and the tools the model cannot call.
     """
 
     async def body(app, pilot):
         before = len(app.session._transport.written)  # type: ignore[attr-defined]
-        app.submit("/tools")
-        await _await_chat(pilot, app, "gpio.read")
-        assert "time.now" in _text(app)
         app.submit("/mcp")
         await _await_chat(pilot, app, "fs=up")
         assert len(app.session._transport.written) == before  # type: ignore[attr-defined]
+
+        app.submit("/tools")
+        await _await_chat(pilot, app, "gpio.read")
+        assert any(
+            b'"name":"tools.list"' in frame
+            for frame in app.session._transport.written  # type: ignore[attr-defined]
+        )
+        assert "time.now" in _text(app)
 
     await _run(_device(), body)
 

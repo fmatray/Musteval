@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from bridge.protocol import reset_ids
+from bridge.tests import test_ui_app
 from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
     CONFIG,
     _device,
@@ -49,64 +50,152 @@ def _armed(app, disabled: list[str]) -> None:
     app._state["capabilities"] = {"tools": list(OFFERED)}
 
 
-# -- list ---------------------------------------------------------------
+# -- the table ----------------------------------------------------------
 
 
-async def test_list_marks_the_disabled_names_and_names_every_other_one():
-    """The set that matters is offered-plus-disabled: a name in the array is exactly
-    the one the model will not be shown, so leaving it out would hide the effect."""
+def _rows(app) -> list[list[str]]:
+    """The table as cells: three columns, padded to a common width.
+
+    Read from the rendered text rather than the frame, because the padding and the
+    sort are the bridge's own work — a frame test would pass while the table stayed
+    ragged or unsorted.
+    """
+    # The connect banner and any reply are chat lines too, so a row is a line whose
+    # first cell is one of the catalogue's names.
+    known = {row["name"] for row in test_ui_app.TOOL_ROWS}
+    return [
+        cells
+        for line in _text(app).splitlines()
+        if (cells := line.split()) and cells[0] in known
+    ]
+
+
+async def test_list_renders_one_row_per_tool_in_name_order():
+    """`05` §7.4: a table, sorted by name. The device returns its registry order, so
+    the sort is the bridge's, and a reader scanning for a name relies on it."""
 
     async def body(app, pilot):
-        _armed(app, ["memory.get"])
         await app._tool(["list"])
-        lines = _text(app).splitlines()
-        assert "memory.get (disabled)" in lines
-        assert "gpio.read" in lines
-        assert "time.now" in lines
+        assert [row[0] for row in _rows(app)] == ["gpio.read", "memory.get", "time.now"]
         assert not _sets(app), "a read must not write"
 
     await _run(_device(), body)
 
 
-async def test_list_includes_a_disabled_name_the_offered_set_no_longer_carries():
-    """A name turned off is absent from the next `hello_ack`, so reading only the
-    offered set would make a disabled tool invisible and unenablable."""
+async def test_a_disabled_tool_is_a_row_with_its_state_and_description():
+    """The row the table exists for: a tool the model cannot call now, still named,
+    with the device's own description so the reader knows what they turned off."""
 
     async def body(app, pilot):
-        app._config = _config_with_disabled(["fs.delete"])
-        app._config_fetched = True
+        await app._tool(["list"])
+        (row,) = [cells for cells in _rows(app) if cells[0] == "memory.get"]
+        assert row[1] == "disabled"
+        assert row[2:] == "Report heap and PSRAM free.".split()
+
+    await _run(_device(), body)
+
+
+async def test_the_description_column_is_read_from_the_device_not_a_host_table():
+    """A description the host cannot know: an MCP server writes its own, so any
+    host-side copy would drift from what the model was shown."""
+
+    async def body(app, pilot):
+        await app._tool(["list"])
+        (row,) = [cells for cells in _rows(app) if cells[0] == "gpio.read"]
+        assert row[1] == "enabled"
+        assert row[2:] == "Read a pin's digital level.".split()
+
+    await _run(_device(), body)
+
+
+async def test_list_asks_the_device_for_the_catalogue():
+    """The frame is the contract: reading the cached `hello_ack` would print the
+    advertised set with no descriptions, which is the divergence this frame removes."""
+
+    async def body(app, pilot):
         app._state["capabilities"] = {"tools": ["gpio.read"]}
         await app._tool(["list"])
-        assert "fs.delete (disabled)" in _text(app)
+        assert any(f.get("name") == "tools.list" for f in _written(app))
 
     await _run(_device(), body)
 
 
-async def test_list_fetches_the_config_when_nothing_has_yet():
-    """`/tool` is reachable before any screen has read the document, so the array is
-    read on demand rather than assumed to be in hand."""
-
-    async def body(app, pilot):
-        app._state["capabilities"] = {"tools": list(OFFERED)}
-        app._config_fetched = False
-        await app._tool(["list"])
-        assert app._config_fetched, "the read must fetch rather than treat absence as empty"
-        assert "gpio.read" in _text(app)
-
-    await _run(_device(), body)
-
-
-async def test_an_empty_registry_says_so_rather_than_printing_nothing():
-    """A blank answer reads as a broken command; the device can genuinely offer no
+async def test_an_empty_catalogue_says_so_rather_than_printing_nothing(monkeypatch):
+    """A blank answer reads as a broken command; the device can genuinely carry no
     tools, and the sentence is what tells the two apart."""
 
+    monkeypatch.setattr(test_ui_app, "TOOL_ROWS", [])
+
     async def body(app, pilot):
-        _armed(app, [])
-        app._state["capabilities"] = {}
         await app._tool(["list"])
-        assert "no tools" in _text(app)
+        assert _text(app).splitlines()[-1] == "no tools"
 
     await _run(_device(), body)
+
+
+# -- /tools -------------------------------------------------------------
+
+
+async def test_tools_and_tool_list_print_the_same_table():
+    """`05` §7.4: one surface, one frame. The two commands answered differently
+    before this, which is the defect the frame exists to make impossible."""
+
+    async def body(app, pilot):
+        await app._tool(["list"])
+        from_list = _text(app)
+        await app._run_command("/tools")
+        assert _text(app).startswith(from_list)
+
+    await _run(_device(), body)
+
+
+async def test_tools_spends_no_second_round_trip():
+    """`/tools` is the read form: one `tools.list`, never a `config.set`."""
+
+    async def body(app, pilot):
+        await app._run_command("/tools")
+        assert not _sets(app)
+        assert sum(1 for f in _written(app) if f.get("name") == "tools.list") == 1
+
+    await _run(_device(), body)
+
+
+# -- completion ---------------------------------------------------------
+
+
+def test_completion_offers_the_advertised_and_the_disabled_names():
+    """`05` §7.4: a disabled tool is absent from `hello_ack` by design, and it is
+    exactly the name `enable` must accept, so both sources are unioned."""
+
+    from bridge.ui.help import options
+
+    names = ("gpio.read", "memory.get")
+    assert [c.text for c in options("/tool enable ", names)] == [
+        "/tool enable gpio.read",
+        "/tool enable memory.get",
+    ]
+    assert [c.text for c in options("/tool disable mem", names)] == [
+        "/tool disable memory.get"
+    ]
+
+
+def test_completion_narrows_on_a_partial_tool_name():
+    from bridge.ui.help import options
+
+    assert [c.text for c in options("/tool enable gpio", ("gpio.read", "gpio.write"))] == [
+        "/tool enable gpio.read",
+        "/tool enable gpio.write",
+    ]
+
+
+def test_completion_offers_the_verb_then_nothing_until_a_name_is_typed():
+    """`/tool en` is a partial verb, so the verb list answers; once a verb and a space
+    are in, the candidates are tool names and an empty prefix offers them all."""
+
+    from bridge.ui.help import options
+
+    assert [c.text for c in options("/tool en")] == ["/tool enable"]
+    assert [c.text for c in options("/tool enable ")] == []
 
 
 # -- disable / enable ---------------------------------------------------
@@ -198,15 +287,39 @@ async def test_a_form_outside_the_table_states_the_usage_and_sends_nothing(rest)
 
 async def test_the_command_reaches_the_tool_handler_rather_than_parse():
     """`/tool` is a UI verb: the array is an input the device only hands over whole,
-    so a `parse` arm would have nothing to build a frame from."""
+    so a `parse` arm would have nothing to build a frame from. Typed, not called, so
+    the route through `submit` is what this covers."""
 
     async def body(app, pilot):
-        _armed(app, ["gpio.read"])
+        _armed(app, ["memory.get"])
         app.submit("/tool list")
         for _ in range(120):
-            if "gpio.read (disabled)" in _text(app):
+            if "memory.get" in _text(app):
                 break
             await pilot.pause(0.02)
-        assert "gpio.read (disabled)" in _text(app)
+        (row,) = [line.split() for line in _text(app).splitlines()
+                  if line.split()[:1] == ["memory.get"]]
+        assert row[1] == "disabled"
+
+    await _run(_device(), body)
+
+
+async def test_typing_a_verb_and_a_space_lists_the_device_and_disabled_names():
+    """`05` §5.1: completion runs on every keystroke, so both sources must already be
+    on the app. A disabled tool is absent from `hello_ack` by design and is exactly
+    the name `enable` accepts, so the panel must offer it too — read from the panel,
+    because a helper-only test would pass with the wiring missing."""
+
+    async def body(app, pilot):
+        _armed(app, ["memory.get"])
+        app.query_one("#chat-input").value = "/tool enable gp"
+        await pilot.pause(0.1)
+        import re
+
+        panel = str(app.query_one("#completion").content)
+        assert re.findall(r"/tool enable \S+", panel) == [
+            "/tool enable gpio.read",
+            "/tool enable gpio.write",
+        ]
 
     await _run(_device(), body)

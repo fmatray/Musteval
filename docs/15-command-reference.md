@@ -54,11 +54,11 @@ Column meanings:
 | `/sandbox move <from> <to>` | `from`, `to` | `sandbox.move` | Renames or relocates |
 | `/sandbox read <path>` | `path` | `sandbox.read` | Prints one file; a file is written from the Files screen, never from chat |
 | `/secret set <key>` | `key` | `secret.set` | Value is prompted, masked, and never echoed |
-| `/sys diag` | `diag` | `status` | Renders the diagnostic half of a fresh `status`, in chat |
-| `/sys reboot` | `reboot` | `reboot` | Restarts the device |
-| `/sys reload` | `reload` | `reload` | Re-reads the flash configs |
+| `/sys diag` | `diag` | `status` | Opens the info modal on the diagnostic half of a fresh `status` |
+| `/sys reboot` | `reboot` | `reboot` | Restarts the device; reports the grace period in chat |
+| `/sys reload` | `reload` | `reload` | Re-reads the flash configs; reports each reloaded scope and each warning in chat |
 | `/sys reset-counter` | `reset-counter` | `sys.reset_counter` | Clears the boot-failure counter |
-| `/sys status` | `status` | `status` | Forces a refresh and switches to the Status screen |
+| `/sys status` | `status` | `status` | Opens the info modal on the general half of a fresh `status` |
 | `/tasks` | none | `tasks.list` | Lists tasks and switches to the Tasks screen |
 | `/tasks add` | none taken from the line | (none) | Refused with `a task body must be supplied (add opens a modal)`; a new task is authored with `Ctrl+N` on the Tasks screen |
 | `/tasks delete <id>` | task `id` | `tasks.delete` | Confirms first; the one irreversible command |
@@ -83,8 +83,8 @@ Column meanings:
 | `/todo view` | none | `todo.apply` | Renders phases and tasks; a target is refused |
 | `/tool disable` | `disable <name>` | `config.set tools.disabled` | Removes a name from the model's tool list |
 | `/tool enable` | `enable <name>` | `config.set tools.disabled` | Puts a disabled name back |
-| `/tool list` | `list` | `config.get` | Every offered tool, with the disabled ones marked |
-| `/tools` | none | (Local) | Lists `capabilities.tools` and `capabilities.mcp` |
+| `/tool list` | `list` | `tools.list` | The tool table: name, enabled or disabled, description. Same output as `/tools` |
+| `/tools` | none | `tools.list` | The tool table: name, enabled or disabled, description. Same output as `/tool list` |
 | `/usage` | none | (Local) | Token totals for this link session |
 | `/wifi connect` | `connect` | `wifi.connect` | Joins the best configured network |
 | `/wifi disconnect` | `disconnect` | `wifi.disconnect` | Leaves the network and stays down |
@@ -100,7 +100,7 @@ Column meanings:
 | Device, read-modify-write | `model`, `thinking`, `tool` |
 | Device, a wizard of several frames | `onboard` |
 | Host-only frame | `cancel`, `ping device`, `retry` |
-| Local, no frame | `config` (bare and `edit`), `context`, `export`, `files`, `help`, `logs`, `mcp`, `tools`, `usage`, `quit` |
+| Local, no frame | `config` (bare and `edit`), `context`, `export`, `files`, `help`, `logs`, `mcp`, `usage`, `quit` |
 
 ## Refusals a reader will meet
 

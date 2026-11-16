@@ -26,6 +26,7 @@ from bridge.ui.modals import (
     FilePrompt,
     FilterPrompt,
     HelpModal,
+    InfoModal,
     SecretPrompt,
     ValuePrompt,
 )
@@ -47,8 +48,13 @@ def test_every_device_command_is_documented():
 
 
 def test_every_local_command_is_documented():
+    """`/tools` left this set when it became a `tools.list` read: it is a device
+    command now, and the doc-lock gate below checks it is still a row."""
     documented = {command.name for command in COMMANDS if command.local}
     assert documented == set(LOCAL_COMMANDS)
+    assert "tools" not in LOCAL_COMMANDS
+    tools_command = next(command for command in COMMANDS if command.name == "tools")
+    assert tools_command.local is False
 
 
 def test_sys_is_a_device_command_covering_both_frame_shapes():
@@ -74,20 +80,23 @@ def test_help_text_lists_every_head():
     assert len(HELP_TEXT.splitlines()) > len(COMMANDS)
 
 
-async def test_sys_diag_requests_status_and_renders_the_counters():
-    """`/sys diag` reuses the `status` frame but prints only the diagnostic half."""
+async def test_sys_diag_requests_status_and_shows_the_counters():
+    """`05` §5.10: `/sys diag` reads the `status` frame and shows its counters in the
+    info modal, not in chat."""
     transport = FakeTransport(on_write=_reply)
     session = Session(transport, ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test() as pilot:
         await _app(pilot)
         app.submit("/sys diag")
-        for _ in range(60):
-            if "safe_mode" in _log(app):
+        for _ in range(80):
+            if isinstance(app.screen, InfoModal):
                 break
             await pilot.pause(0.02)
         assert any(b'"name":"status"' in line for line in transport.written)
-        assert "safe_mode" in _log(app)
+        assert isinstance(app.screen, InfoModal)
+        body = "\n".join(str(w.content) for w in app.screen.query("Static"))
+        assert "safe_mode" in body
         await session.close()
 
 

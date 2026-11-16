@@ -28,7 +28,6 @@ from .protocol import (
 #: `05-bridge.md` §7 marks these `(Local)`: no frame leaves the host.
 LOCAL_COMMANDS = frozenset(
     {
-        "tools",
         "mcp",
         "usage",
         "context",
@@ -124,6 +123,12 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
     if head in LOCAL_COMMANDS:
         return []
 
+    if head == "tools":
+        # `05` §7.4: the same table as `/tool list`. The UI intercepts both so the
+        # write verbs can read `config.get` first; this arm keeps `parse` honest for
+        # the read form and for `--send /tools` on the command line.
+        _exact(rest, 0, "/tools")
+        return [_command("tools.list")]
     if head == "templates":
         _exact(rest, 0, "/templates")
         return [_command("templates.list")]

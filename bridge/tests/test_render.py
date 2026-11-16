@@ -20,7 +20,11 @@ from bridge.ui.render import (
     hint_bar,
     key_label,
     render_prompt_bar,
-    render_prompt_text,    todo_lines,
+    reboot_line,
+    reload_lines,
+    render_prompt_text,
+    todo_lines,
+    tool_table,
 )
 from bridge.ui.render import _bar_segments, _fit
 
@@ -403,3 +407,61 @@ def test_a_geo_line_marks_eu_only_when_the_provider_sent_a_bool():
     assert "EU" in geo_line({**base, "in_eu": True})
     assert "EU" not in geo_line(base)
     assert "EU" not in geo_line({**base, "in_eu": 1})
+
+
+# -- `/tools`, `/sys reload`, `/sys reboot` ---------------------------------
+
+
+def test_tool_table_is_one_row_per_tool_in_name_order_with_three_columns():
+    """`04` §4.29: the description is what makes this frame worth a round trip, and a
+    disabled row is the reason it lists names the offer set omits — so the state sits
+    between the name and the prose, where it survives a narrow terminal."""
+
+    lines = tool_table(
+        {
+            "tools": [
+                {"name": "time.now", "description": "Return the current time.",
+                 "offered": True},
+                {"name": "geo.locate", "description": "Return the position.",
+                 "offered": False},
+            ]
+        }
+    )
+    assert lines == [
+        "  geo.locate  disabled  Return the position.",
+        "  time.now    enabled   Return the current time.",
+    ]
+
+
+def test_tool_table_sanitises_a_server_written_description():
+    """An MCP server writes its own description, so the table carries device text."""
+    (line,) = tool_table(
+        {"tools": [{"name": "mcp.x", "description": "a\x1bb", "offered": True}]}
+    )
+    assert "\x1b" not in line
+
+
+def test_tool_table_says_so_when_the_catalogue_is_empty():
+    assert tool_table({"tools": []}) == ["no tools"]
+
+
+def test_reload_lines_give_each_warning_its_own_line():
+    """`04` §4.28: the warnings are the only part a reader acts on."""
+    assert reload_lines(
+        {"reloaded": ["cfg", "tools"],
+         "warnings": [{"scope": "mqtt", "message": "broker unreachable"}]}
+    ) == ["reloaded: cfg, tools", "  warning (mqtt): broker unreachable"]
+
+
+def test_reload_lines_say_when_there_was_nothing_to_report():
+    """A clean reload and a reply that carried no `warnings` field read differently to
+    a reader deciding whether to fix something, so the quiet case says so."""
+    assert reload_lines({"reloaded": [], "warnings": []}) == [
+        "reloaded: nothing",
+        "  no warnings",
+    ]
+
+
+def test_reboot_line_names_the_grace_period():
+    assert reboot_line({"grace_ms": 250}) == "rebooting in 250 ms"
+    assert reboot_line({}) == "rebooting"

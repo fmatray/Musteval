@@ -149,6 +149,34 @@ def geo_line(result: dict[str, Any]) -> str:
     return line
 
 
+def tool_table(result: dict[str, Any]) -> list[str]:
+    """`04` §4.29's answer as one table, sorted by name.
+
+    Three columns: the name, whether the model may call it now, and its description.
+    A row the model cannot call is the reason this frame exists, so the state column
+    sits before the prose where it stays readable on a narrow terminal. Every field is
+    device or network text — an MCP server writes its own description — so all three
+    go through `sanitize`, and the caller writes the lines with `markup=False`.
+    """
+    rows = sorted(
+        (
+            sanitize(str(row.get("name") or "")),
+            "enabled" if row.get("offered") else "disabled",
+            sanitize(str(row.get("description") or "")),
+        )
+        for row in result.get("tools") or []
+        if isinstance(row, dict)
+    )
+    if not rows:
+        return ["no tools"]
+    names = max(len(name) for name, _, _ in rows)
+    states = max(len(state) for _, state, _ in rows)
+    return [
+        f"  {name.ljust(names)}  {state.ljust(states)}  {desc}"
+        for name, state, desc in rows
+    ]
+
+
 def wifi_scan_lines(result: dict[str, Any]) -> list[str]:
     """`04-protocol.md` §4.24's answer, one line per network, strongest first.
 
@@ -522,7 +550,11 @@ def hint_bar(pairs: list[tuple[str, str]]) -> Text:
 
 
 def render_diag(status: dict[str, Any]) -> list[str]:
-    """`/diag`: the diagnostic half of `status`, per `05-bridge.md` §7."""
+    """`/sys diag`: the counters half of `status`, per `05-bridge.md` §5.10.
+
+    The same lines `/sys status` shows second in its box; the split is what lets a
+    reader ask for the counters without the WiFi paragraph above them.
+    """
     mem = status.get("mem") or {}
     sysinfo = status.get("sys") or {}
     llm = status.get("llm") or {}
@@ -536,6 +568,32 @@ def render_diag(status: dict[str, Any]) -> list[str]:
         f"llm calls hour: {llm.get('calls_hour')}/{llm.get('limit_hour')}",
         f"llm calls day: {llm.get('calls_day')}/{llm.get('limit_day')}",
     ]
+
+
+def reload_lines(result: dict[str, Any]) -> list[str]:
+    """`/sys reload`: what reloaded, then each warning that needs an action.
+
+    `04` §4.28's reply is `{reloaded, warnings}`. The scopes are one line — a reader
+    who typed `/sys reload` wants to know it happened — and a warning gets its own,
+    because `scope: message` is the only part of this reply anyone acts on.
+    """
+    scopes = [sanitize(str(scope)) for scope in result.get("reloaded") or []]
+    warnings = [w for w in result.get("warnings") or [] if isinstance(w, dict)]
+    lines = [f"reloaded: {', '.join(scopes)}" if scopes else "reloaded: nothing"]
+    for warning in warnings:
+        lines.append(
+            f"  warning ({sanitize(str(warning.get('scope') or '?'))}): "
+            f"{sanitize(str(warning.get('message') or ''))}"
+        )
+    if not warnings:
+        lines.append("  no warnings")
+    return lines
+
+
+def reboot_line(result: dict[str, Any]) -> str:
+    """`/sys reboot`: the grace period, in the unit the reader thinks in."""
+    grace = result.get("grace_ms")
+    return f"rebooting in {grace} ms" if grace is not None else "rebooting"
 
 
 # -- syntax highlighting -------------------------------------------------

@@ -29,6 +29,7 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
 )
 from bridge.ui.modals import (
     ConfirmPrompt,
+    InfoModal,
     FilePrompt,
     FilterPrompt,
     SecretPrompt,
@@ -74,19 +75,27 @@ async def test_a_bare_command_opens_its_screen_and_a_sub_command_stays_in_chat()
     await _run(_device(), body)
 
 
-async def test_sys_status_opens_the_grid_and_sys_diag_stays_in_chat():
-    """`05` §7: the two verbs read one frame and differ in where the answer lands.
-    `/sys status` is the former `/status`, so it moves the reader; `/sys diag`
-    prints counters without taking the screen away."""
+async def test_sys_status_and_sys_diag_open_one_modal_on_different_halves():
+    """`05` §5.10: both read one `status` frame and show the same two sections, so a
+    reader comparing heap against the quota does not close one box to open another.
+    The verb only decides which half is first."""
 
     async def body(app, pilot):
         app.submit("/sys diag")
-        await _await_chat(pilot, app, "heap")
-        assert app.query_one("#chat").display is True
-        assert app.query_one("#status").display is False
+        await _until(pilot, lambda: isinstance(app.screen, InfoModal))
+        assert isinstance(app.screen, InfoModal)
+        # The asked-for half leads: `diag` puts the counters first.
+        assert app.screen.sections[0][0] == "Diagnostics"
+        app.screen.dismiss(None)
+        await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
+
         app.submit("/sys status")
-        await _until(pilot, lambda: app.query_one("#status").display)
-        assert app.query_one("#status").display is True
+        await _until(pilot, lambda: isinstance(app.screen, InfoModal))
+        assert app.screen.sections[0][0] == ""
+        assert app.screen.sections[1][0] == "Diagnostics"
+        app.screen.dismiss(None)
+        await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
+        assert app.query_one("#chat").display is True
 
     await _run(_device(), body)
 
@@ -100,8 +109,6 @@ async def test_bare_config_and_config_edit_open_the_settings_screen():
         app.submit("/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
         assert app.query_one("#settings").display is True
-        app.submit("/sys status")
-        await _until(pilot, lambda: app.query_one("#status").display)
         app.submit("/config edit")
         await _until(pilot, lambda: app.query_one("#settings").display)
         assert app.query_one("#settings").display is True
@@ -167,19 +174,42 @@ async def test_files_normalises_its_path_and_refuses_an_escape():
     await _run(_device(), body)
 
 
-async def test_diag_refetches_rather_than_rendering_a_stale_grid():
-    """`05` §7: the diagnostic half is a live read, so a reader asking for it gets
-    current counters rather than whatever the screen last painted."""
+async def test_sys_info_refetches_rather_than_rendering_the_last_frame():
+    """`05` §5.10: a reader asking for the box gets current counters, not whatever the
+    screen last painted — the modal shows `_last_status`, so the frame must be fresh
+    before it opens."""
 
     async def body(app, pilot):
         before = len([f for f in _frames(app) if f.get("name") == "status"])
         app.submit("/sys diag")
-        await _until(
-            pilot,
-            lambda: len([f for f in _frames(app) if f.get("name") == "status"]) > before,
-        )
+        await _until(pilot, lambda: isinstance(app.screen, InfoModal))
         assert len([f for f in _frames(app) if f.get("name") == "status"]) == before + 1
-        await _await_chat(pilot, app, "heap")
+        app.screen.dismiss(None)
+        await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
+
+    await _run(_device(), body)
+
+
+async def test_sys_reload_reports_the_scopes_and_each_warning():
+    """`04` §4.28: the warnings are the only part a reader acts on, so each gets its
+    own line rather than being flattened into a JSON block."""
+
+    async def body(app, pilot):
+        app.submit("/sys reload")
+        await _await_chat(pilot, app, "warning")
+        text = _text(app)
+        assert "reloaded: cfg, tools" in text
+        assert "warning (mqtt): broker unreachable" in text
+        assert "{" not in text, "a reload answers in prose, not a JSON block"
+
+    await _run(_device(), body)
+
+
+async def test_sys_reboot_reports_the_grace_period_in_words():
+    async def body(app, pilot):
+        app.submit("/sys reboot")
+        await _await_chat(pilot, app, "rebooting in 250 ms")
+        assert "rebooting in 250 ms" in _text(app)
 
     await _run(_device(), body)
 

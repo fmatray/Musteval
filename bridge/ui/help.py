@@ -125,7 +125,9 @@ COMMANDS: tuple[CommandHelp, ...] = (
     ),
     CommandHelp("wifi", "/wifi scan|status|connect|disconnect|reconnect",
                 "scan the radio, or read and steer the station", False),
-    CommandHelp("tools", "/tools", "list built-in and MCP tools", True),
+    CommandHelp(
+        "tools", "/tools", "tool table: name, state, description", False
+    ),
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),
     CommandHelp("usage", "/usage", "token totals for this link session", True),
     CommandHelp("context", "/context", "input size and token usage", True),
@@ -312,12 +314,17 @@ def _summary(name: str) -> str:
     return ""
 
 
-def options(value: str) -> list[Completion]:
+def options(value: str, tools: "tuple[str, ...]" = ()) -> list[Completion]:
     """Candidate completions for the token being typed, in catalogue order.
 
     A sub-command gets its own line from `SUBCOMMAND_HELP`, falling back to the
     head's summary when the table has none: `/tasks ` answers "which form does
     what", while `/tasks` alone answers "what is this command".
+
+    `tools` names the tools the device offers, for the one command whose argument is
+    a tool name (`05-bridge.md` §7.4). It is a parameter rather than a lookup because
+    this module holds the catalogue and nothing else; the caller has the last
+    `hello_ack` and hands the names in.
     """
     if not value.startswith("/"):
         return []
@@ -328,6 +335,14 @@ def options(value: str) -> list[Completion]:
             for name in _NAMES
             if name.startswith(head)
         ]
+    if head == "tool":
+        verb, spaced, name = partial.partition(" ")
+        if spaced and verb in ("enable", "disable"):
+            return [
+                Completion(f"/tool {verb} {candidate}", f"{verb} {candidate}")
+                for candidate in sorted(tools)
+                if candidate.startswith(name)
+            ]
     subcommands = _SUBCOMMANDS.get(head)
     if subcommands is None:
         return []

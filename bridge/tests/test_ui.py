@@ -494,6 +494,8 @@ async def test_ui_shows_a_prompt_reply():
 
 
 async def test_ui_routes_a_local_command_without_touching_the_wire():
+    """`/usage` is answered from the link's own counters. `/tools` is not local any
+    more: it reads `tools.list`, because the descriptions live on the device."""
     from bridge.ui import BridgeApp
 
     transport = FakeTransport(on_write=_reply)
@@ -506,11 +508,11 @@ async def test_ui_routes_a_local_command_without_touching_the_wire():
             await pilot.pause(0.02)
         await pilot.pause(0.1)
         before = len(transport.written)
-        app.submit("/tools")
+        app.submit("/usage")
         await pilot.pause(0.2)
         assert len(transport.written) == before
         text = "\n".join(str(line.text) for line in app.query_one("#chat-log").lines)
-        assert "time.now" in text
+        assert "total tokens" in text
         await session.close()
 
 

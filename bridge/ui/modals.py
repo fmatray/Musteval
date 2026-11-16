@@ -1050,6 +1050,54 @@ class Working(PromptBox[None]):
                          classes="prompt-hint")
 
 
+class InfoModal(ModalScreen[None]):
+    """`05` §5.10: `/sys status` and `/sys diag` in a scrollable box.
+
+    One modal for both verbs, because they are two halves of one `status` frame: a
+    reader comparing heap against the LLM's remaining quota should not have to close
+    one box and open another. The section a verb asks for is the one that scrolls
+    into view; the other stays there.
+
+    A modal rather than a screen: the composer keeps its half-typed prompt, which is
+    the `help` rule (`05` §5.6) and applies more strongly here, since `/sys status`
+    is a glance rather than a place to work.
+    """
+
+    CSS = _CSS + """
+.info-box {
+    width: 80%;
+    max-width: 100%;
+    height: 70%;
+    border: thick $accent;
+    padding: 0 1;
+}
+#info-body { height: 1fr; }
+.info-heading { text-style: bold; }
+"""
+    BINDINGS = [Binding("escape", "cancel", "Close", show=False)]
+
+    def __init__(self, title: str, sections: "list[tuple[str, list[str]]]") -> None:
+        super().__init__()
+        self.title_text = title
+        self.sections = sections
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="info-box"):
+            yield Static(self.title_text, classes="prompt-title")
+            with VerticalScroll(id="info-body"):
+                for index, (heading, lines) in enumerate(self.sections):
+                    if index:
+                        yield Static("")
+                    if heading:
+                        yield Static(heading, classes="info-heading")
+                    # `markup=False`: an MCP or broker supplied value can reach a
+                    # status field, so the box never parses these lines as markup.
+                    yield Static("\n".join(lines), markup=False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class HelpModal(ModalScreen[None]):
     """`05` §5.6: the command catalogue, one tab per group.
 
