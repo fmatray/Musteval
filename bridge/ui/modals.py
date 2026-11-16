@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any, TypeVar
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
@@ -1090,9 +1091,10 @@ class InfoModal(ModalScreen[None]):
                         yield Static("")
                     if heading:
                         yield Static(heading, classes="info-heading")
-                    # `markup=False`: an MCP or broker supplied value can reach a
-                    # status field, so the box never parses these lines as markup.
-                    yield Static("\n".join(lines), markup=False)
+                    # Parsed as markup, like `StatusScreen._paint`: `render_status`
+                    # escapes every device-supplied value before splicing it, and the
+                    # verdict colours are half of what the grid says.
+                    yield Static(Text.from_markup("\n".join(lines)))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

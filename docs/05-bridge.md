@@ -649,10 +649,12 @@ reopened loses what the reader had chosen.
 in a `VerticalScroll`. `/sys status` and `/sys diag` are its only callers, and they
 pass the same two sections in opposite order — `status` leads with the general half,
 `diag` with the counters — so a reader comparing heap against its quota does not close
-one box to open another. The body is a `Static` with `markup=False`: a device string
-such as a broker error or an SSID is not markup, and Textual would otherwise read a
-`[` in it as a style tag. The box scrolls rather than growing, because the diagnostics
-half is longer than a 24-row terminal.
+one box to open another. The body is a `Static` built with `Text.from_markup`, the
+same way `StatusScreen._paint` builds the grid: `render_status` returns markup and
+`escape`s every device-supplied value before splicing it, so the verdict colours are
+rendered and an SSID or broker error containing `[` stays text. (A `markup=False`
+body prints the tags at the reader instead.) The box scrolls rather than growing,
+because the diagnostics half is longer than a 24-row terminal.
 
 ## 6. Keybindings
 

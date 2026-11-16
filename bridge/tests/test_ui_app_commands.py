@@ -174,6 +174,29 @@ async def test_files_normalises_its_path_and_refuses_an_escape():
     await _run(_device(), body)
 
 
+async def test_sys_modal_renders_the_grid_instead_of_printing_its_tags():
+    """`05` §5.10: the general half is `render_status`, which is markup with every
+    device string already escaped. A body that does not parse it prints `[b]WIFI [/b]`
+    at the reader; one that parses it unescaped turns an SSID into a style. This reads
+    the widget's rendered text, which is the only place that difference shows."""
+
+    async def body(app, pilot):
+        app.submit("/sys status")
+        await _until(pilot, lambda: isinstance(app.screen, InfoModal))
+        await pilot.pause(0.1)
+        body = app.screen.query_one("#info-body")
+        rendered = "\n".join(
+            str(widget.render()) for widget in body.query("Static") if widget.content
+        )
+        assert "WIFI " in rendered
+        assert "[b]" not in rendered and "[/b]" not in rendered
+        assert "[green]" not in rendered
+        app.screen.dismiss(None)
+        await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
+
+    await _run(_device(), body)
+
+
 async def test_sys_info_refetches_rather_than_rendering_the_last_frame():
     """`05` §5.10: a reader asking for the box gets current counters, not whatever the
     screen last painted — the modal shows `_last_status`, so the frame must be fresh
