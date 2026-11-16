@@ -283,10 +283,14 @@ TEST_CASE("a declarative request carries its template, query and default method"
     TEST_ASSERT_EQUAL_STRING("q={q}", tool.query);
     TEST_ASSERT_EQUAL_STRING("{\"k\":\"v\"}", tool.body);
     TEST_ASSERT_EQUAL_STRING("a.b", tool.response_path);
-    /* `schema` is the `parameters` value alone, not the wrapper it emitted in. */
-    TEST_ASSERT_EQUAL_CHAR('{', tool.schema[0]);
-    TEST_ASSERT_NULL(strstr(tool.schema, "\"parameters\""));
-    TEST_ASSERT_NOT_NULL(strstr(tool.schema, "\"q\""));
+    /* `schema` is the `parameters` value alone, not the wrapper it emitted in. The
+     * value is compared whole: the wrapper's trailing brace used to survive the
+     * re-slice and made every declarative schema malformed, which the two shape
+     * assertions above could not see. Key order is `json_emit`'s canonical one
+     * (`AGENTS.md` Core Principle 4), not the order the file wrote. */
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"properties\":{\"q\":{\"type\":\"string\"}},\"type\":\"object\"}",
+        tool.schema);
 }
 
 /* `tools/web.md`: `{{arg}}` in a template is replaced from the call's arguments, and

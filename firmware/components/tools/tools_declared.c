@@ -231,8 +231,12 @@ esp_err_t tools_declared_compile(const char *stem, const char *body, size_t len,
         }
         json_add_node(json_root(tmp), "parameters", schema);
         size_t written = 0;
-        char text[sizeof out->schema];
-        err = json_emit(tmp, text, sizeof text, &written);
+        /* Emitted straight into `out->schema` rather than a local of the same size.
+         * A 2 KiB local here is a 2144-byte frame, and `agent_start` reaches this
+         * through `tools_context_from_config` on the main task's 3584-byte stack —
+         * that overflowed and panic-looped the device. The capacity is the same
+         * either way, so this is the same refusal with no second buffer. */
+        err = json_emit(tmp, out->schema, sizeof out->schema, &written);
         json_free(tmp);
         if (err != ESP_OK) {
             if (why) snprintf(why, why_cap, "parameters does not fit");
@@ -243,12 +247,13 @@ esp_err_t tools_declared_compile(const char *stem, const char *body, size_t len,
          * closing brace have to go. Keeping that brace made every declarative
          * schema malformed, and `tools_json` answered by emitting the empty fallback
          * — a tool the model was offered with no parameters at all. */
-        const char *colon = strchr(text, ':');
+        const char *colon = strchr(out->schema, ':');
         if (colon != NULL) {
             const char *value = colon + 1;
             size_t value_len = strlen(value);
             if (value_len > 0 && value[value_len - 1] == '}') value_len--;
-            snprintf(out->schema, sizeof out->schema, "%.*s", (int)value_len, value);
+            memmove(out->schema, value, value_len);
+            out->schema[value_len] = '\0';
         } else {
             err = ESP_ERR_INVALID_ARG;
             if (why) snprintf(why, why_cap, "parameters did not emit");

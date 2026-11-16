@@ -1087,7 +1087,13 @@ live: `tools_declared_loaded()` lists the image's `/tools/` once, compiles every
 `<stem>.json` through `tools_declared_compile` and keeps the rest as
 `tools_context_t.declared`, and `mcp_discovered()` supplies the third. A file the
 loader drops is absent from `tools` and from `capabilities.tools` rather than offered
-and then failing per call; a file costs one tool, never boot. Each entry is
+and then failing per call; a file costs one tool, never boot. The load is lazy and
+whoever asks first pays for it, which makes the compile path stack-frugal by
+requirement: `agent_start` primes the prompt and the tool array at boot (§3.1), so
+the first caller is the main task's 3584-byte stack, not `link_task`'s 12 KiB — a
+2048-byte local buffer in the compile frame overflowed exactly that stack and
+panic-looped the device at boot. The emitted schema is therefore built straight into
+`tools_declared_t.schema`, never into a local of the same size. Each entry is
 one `{"type":"function","function":{...}}`. The value `llm` receives is the bare
 array — `[{"type":"function",...}]` — with no enclosing object, because `llm` splices
 it into a member of its own request. A slice that carries the wrapper's closing brace
