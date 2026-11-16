@@ -71,10 +71,14 @@ static void budget_restore(void)
 esp_err_t llm_init(void)
 {
     s_provider_count = 0;
-    s_last_error[0] = '\0';
-    s_answered_id[0] = '\0';
-    s_answered_model[0] = '\0';
-    s_available = false;
+    /* The last-call facts — `s_available`, the answered id and model, `s_last_error` —
+     * are deliberately not reset here. `llm_init` reads config and makes no call, so
+     * writing "the last call failed" from it was a claim about something that had not
+     * happened: `config.set` re-runs this function for any `llm.*` path, so a write
+     * that changed nothing flipped `available` from true to false and the bar
+     * announced `llm down` for a provider that was answering. Only `llm_query`
+     * produces these facts, and only `llm_query` writes them. The static initial
+     * values are already the honest "no call yet" state. */
     llm_budget_reset(&s_budget);
     budget_restore();
 
@@ -227,10 +231,12 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
 
             /* Nobody is waiting for this answer any more: not a provider failure, so
              * neither retried nor failed over. `run_once` reports it as `E_CANCELLED`
-             * through this value. */
+             * through this value — which is why neither the last-answer claim nor
+             * `s_last_error` is touched here. A cancel says nothing about whether the
+             * provider can answer: marking it down made the bar report `llm down`
+             * for an operator's own Esc, and left a `cancelled` string as the
+             * `E_LLM_UNAVAILABLE` message for the next run. */
             if (err == ESP_ERR_NOT_FINISHED) {
-                snprintf(s_last_error, sizeof s_last_error, "%s: cancelled", p->id);
-                s_available = false;
                 return ESP_ERR_NOT_FINISHED;
             }
 

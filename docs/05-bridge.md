@@ -187,7 +187,12 @@ The primary interaction pane.
     and keep the model. All three are what the device is *configured* to call
     (`04` §3.9), not what last answered, so the segment is there from the first
     `status` after boot rather than from the first successful call; `llm down`
-    still reports the separate fact that the last call did not succeed.
+    still reports the separate fact that the last call did not succeed, and is
+    shown only when `llm.last_error` names why. `available: false` with a null
+    `last_error` is a device that has not called yet, not a provider that failed —
+    rendering it as `down` blamed a provider that was answering, and every
+    `config.set` on an `llm.*` path used to produce exactly that state by
+    re-running the chain read.
   - Two facts sit immediately behind the link word, because the bar drops from
     the right: `SAFE MODE` while safe mode is active, and the uptime from
     `status.uptime_s` as one compact segment — `45s`, `12m05s`, `3h04m`, `1d2h`.

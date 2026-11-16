@@ -315,6 +315,20 @@ def render_tool_result(frame_body: dict[str, Any]) -> str:
     return f"  ✗ {tool} ({duration}ms) {error.get('code')}: {clip(str(error.get('message')), RESULT_CLIP)}"
 
 
+def llm_verdict(llm: dict[str, Any]) -> bool | None:
+    """Whether the provider answered, or `None` when no call has decided it.
+
+    `04` §3.9 defines `available` as "last call succeeded", so a device that has
+    not called yet reports `false` with a null `last_error` and nothing is wrong.
+    `last_error` is what names a call that actually failed, so the two together
+    are the only honest "down": reading `available` alone sent the reader after a
+    provider that was answering (`/sys` and the prompt bar both did).
+    """
+    if llm.get("available"):
+        return True
+    return False if llm.get("last_error") else None
+
+
 def render_status(status: dict[str, Any]) -> list[str]:
     """The `05-bridge.md` §5.2 grid, one line per row."""
     wifi = status.get("wifi") or {}
@@ -354,7 +368,7 @@ def render_status(status: dict[str, Any]) -> list[str]:
         f"[b]TIME [/b] unix {clock.get('unix')} | tz {escape(str(clock.get('tz')))} "
         f"| synced {verdict(clock.get('synced'), 'yes', 'no')}",
         f"[b]LLM  [/b] {escape(str(llm.get('provider')))} ({escape(str(llm.get('model')))}) "
-        f"| available {verdict(llm.get('available'), 'yes', 'no')}",
+        f"| available {verdict(llm_verdict(llm), 'yes', 'no')}",
         f"[b]AGENT[/b] {busy} | queue {agent.get('queue_depth')}/{agent.get('max_queue')}",
         f"[b]MEM  [/b] heap {mem.get('heap_free')} | psram {mem.get('psram_free')}",
         f"[b]DISK [/b] userfs {userfs.get('used_bytes')}/{userfs.get('total_bytes')} "
@@ -480,7 +494,8 @@ def _bar_segments(
              "muted")
         )
         # A provider that is down is a fact worth the space; a working one is not.
-        if not llm.get("available", True):
+        # `available` alone cannot say it — see `llm_verdict`.
+        if llm_verdict(llm) is False:
             segments.append(("llm down", "bad"))
 
     if agent:

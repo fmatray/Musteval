@@ -326,7 +326,15 @@ time, and as a platform service it needs no port.
   service start-up is otherwise the sole caller and a written document would sit
   unread until the next `reload`. It holds no state an in-flight request reads (the
   provider entry is copied per attempt), so re-running it cannot disturb a run that
-  is already posting.
+  is already posting. It writes no last-call fact: `s_available`, the answered id and
+  model, and `s_last_error` belong to `llm_query`, because they describe a call and
+  `llm_init` makes none. Resetting them here made a `config.set` on any `llm.*` path
+  — including one that changed nothing — flip `llm.available` from true to false, and
+  the bar announced `llm down` for a provider that was answering.
+- A **cancelled** call is likewise not a provider failure, so `ESP_ERR_NOT_FINISHED`
+  leaves the last-answer facts untouched. `agent` reports it as `E_CANCELLED` from its
+  own `s_cancel`; writing `cancelled` into `s_last_error` also left that string as the
+  `E_LLM_UNAVAILABLE` message the next genuine failure would have shown.
 
 The budget, the body and the chain order are pure and host-tested (`llm_budget.c`,
 `llm_body.c`); `llm.c` resolves secrets, reads NVS and posts, and is board-only.

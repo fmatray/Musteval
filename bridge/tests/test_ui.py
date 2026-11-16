@@ -704,8 +704,12 @@ def test_an_unreachable_link_shows_no_fact_that_would_be_stale():
 
 
 def test_the_bar_reports_the_facts_that_explain_a_trouble():
+    # A call that actually failed: `available` false *with* `last_error` naming why.
+    # `available` false alone is a device that has not called yet, which is not a
+    # trouble and used to be reported as one.
     status = {
-        "llm": {"provider": "openai", "model": "m", "available": False},
+        "llm": {"provider": "openai", "model": "m", "available": False,
+                "last_error": "openai: http 401"},
         "agent": {"busy": True, "run_id": "r-7", "queue_depth": 2, "max_queue": 2},
         "sys": {"safe_mode": True},
     }
@@ -715,6 +719,40 @@ def test_the_bar_reports_the_facts_that_explain_a_trouble():
     assert "busy r-7" in segments
     assert "queue 2/2" in segments
     assert "SAFE MODE" in segments
+
+
+def test_a_device_that_has_not_called_yet_is_not_reported_as_down():
+    """`04` §3.9: `available` is "last call succeeded", not "the provider is up".
+
+    A device that boots with a valid chain reports `available: false` with a null
+    `last_error` until the first call. Reading that as a failure announced
+    `llm down` for a provider that was answering — and a `config.set` on any
+    `llm.*` path re-ran `llm_init`, which cleared the flag, so an unrelated write
+    produced the same false alarm.
+    """
+    status = {
+        "llm": {"provider": "ollama", "model": "gemma4:31b", "thinking": "max",
+                "available": False, "last_error": None},
+        "agent": {"busy": False, "queue_depth": 0, "max_queue": 2},
+    }
+    bar = render_prompt_bar("connected", {"device": "m01"}, status, 99)
+    assert "llm down" not in bar
+    # The configured model is still named: it is a different fact, and dropping it
+    # would make the bar silent about a device that is working.
+    assert "ollama/gemma4:31b/max" in bar
+
+
+def test_the_status_grid_does_not_call_an_uncalled_provider_down():
+    status = {"llm": {"provider": "ollama", "model": "gemma4:31b",
+                      "available": False, "last_error": None}}
+    llm_row = next(line for line in render_status(status) if "LLM" in line)
+    assert "available" in llm_row
+    assert "[red]no[/red]" not in llm_row
+    # And a real failure still says so, in red.
+    failed = dict(status, llm={"provider": "ollama", "model": "gemma4:31b",
+                               "available": False, "last_error": "http 401"})
+    failed_row = next(line for line in render_status(failed) if "LLM" in line)
+    assert "[red]no[/red]" in failed_row
 
 
 def test_a_queue_of_zero_is_not_a_segment():
