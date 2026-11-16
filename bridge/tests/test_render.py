@@ -16,6 +16,7 @@ from bridge.ui.render import (
     UNREACHABLE,
     WIFI_WORDS,
     binding_pairs,
+    context_lines,
     format_uptime,
     hint_bar,
     key_label,
@@ -474,3 +475,63 @@ def test_reload_lines_say_when_there_was_nothing_to_report():
 def test_reboot_line_names_the_grace_period():
     assert reboot_line({"grace_ms": 250}) == "rebooting in 250 ms"
     assert reboot_line({}) == "rebooting"
+
+
+def test_context_lines_names_every_block_and_sizes_it() -> None:
+    """`04` §4.30's eight blocks, all eight on screen.
+
+    A missing block reads as one the device cannot report, and a reader checking
+    "where did my budget go" cannot tell a zero from an omission, so `thinking` must
+    appear with its measured 0 rather than being filtered out.
+    """
+    blocks = {
+        "system_prompt": 4096,
+        "skills": 512,
+        "tools": 300,
+        "user": 40,
+        "assistant": 30,
+        "thinking": 0,
+        "tool_calls": 20,
+        "tool_output": 10,
+    }
+    lines = context_lines(
+        {"budget": 16384, "used": 5000, "free": 11384, "messages": 3, "blocks": blocks}
+    )
+    # One row per block, in the document's order, each naming its own byte count.
+    assert len(lines) == 8 + 1 + 1 + 2
+    for label, key in zip(
+        ["system prompt", "skills", "tools", "user messages",
+         "assistant messages", "assistant thinking", "tool calls", "tool outputs"],
+        blocks,
+    ):
+        row = next(line for line in lines if line.startswith(f"  {label}"))
+        assert row.split()[len(label.split()):][0] == str(blocks[key])
+    assert lines[-2] == "used 5000 of 16384 B, 11384 B free"
+    assert lines[-1] == "3 messages in the history"
+
+
+def test_context_lines_floors_the_bytes_column_at_its_header() -> None:
+    """A run whose every block is a single digit still lines up under `bytes`."""
+    lines = context_lines(
+        {"budget": 16384, "used": 8, "free": 16376, "messages": 1,
+         "blocks": {"user": 8}}
+    )
+    assert lines[0] == "  block               bytes  share"
+    row = next(line for line in lines if line.startswith("  user messages"))
+    start = lines[0].index("bytes")
+    # `bytes` and the digit occupy the same field: the header names the column it
+    # sits over, which is the whole point of flooring the width at the label.
+    assert lines[0][start:start + 5] == "bytes"
+    assert row[start:start + 5] == "    8"
+
+
+def test_context_lines_survives_a_reply_that_omits_the_blocks() -> None:
+    """A malformed or older reply shows zeros rather than raising at the reader."""
+    lines = context_lines({})
+    assert "used 0 of 0 B, 0 B free" in lines
+    assert "0 messages in the history" in lines
+
+
+def test_context_lines_calls_one_message_singular() -> None:
+    lines = context_lines({"budget": 100, "used": 1, "free": 99, "messages": 1})
+    assert lines[-1] == "1 message in the history"

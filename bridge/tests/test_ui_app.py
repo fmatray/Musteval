@@ -260,9 +260,10 @@ async def test_mcp_reads_from_the_hello_capabilities_and_tools_does_not():
     await _run(_device(), body)
 
 
-async def test_usage_and_context_report_the_running_totals():
-    """`/usage` and `/context` describe what this session has spent, so a prompt must
-    have run first and their numbers must move with it."""
+async def test_usage_reports_the_running_totals():
+    """`/usage` describes what this session has spent, so a prompt must have run
+    first and its number must move with it. (`/context` is not local: it asks the
+    device for the next request's blocks, `05` §7.5.)"""
 
     async def body(app, pilot):
         app.submit("/usage")
@@ -271,8 +272,6 @@ async def test_usage_and_context_report_the_running_totals():
         await _await_chat(pilot, app, "done")
         app.submit("/usage")
         await _await_chat(pilot, app, "total tokens: 2")
-        app.submit("/context")
-        await _await_chat(pilot, app, "last input: 5 bytes | tokens: 2")
 
     await _run(_device(), body)
 

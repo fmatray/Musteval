@@ -634,6 +634,37 @@ class TestAgent:
                 reply_to=frame.id,
             )
             return
+        elif name == "context.budget":
+            # `04` §4.30: the eight blocks of the next request, measured from the
+            # conversation this double actually keeps, so `/clear` visibly moves the
+            # numbers instead of leaving a constant a broken client could also match.
+            # `system_prompt` and `tools` are this fake's own sizes, not the board's.
+            blocks = {"system_prompt": 0, "skills": 0, "tools": 0,
+                      "user": 0, "assistant": 0, "thinking": 0,
+                      "tool_calls": 0, "tool_output": 0}
+            for message in self._history:
+                role = message.get("role")
+                if role in ("user", "assistant", "tool"):
+                    block = "tool_output" if role == "tool" else role
+                    blocks[block] += len(json.dumps(message))
+            used = sum(blocks.values())
+            self.reply(
+                "command.result",
+                {
+                    "name": name,
+                    "ok": True,
+                    "result": {
+                        "budget": 16384,
+                        "used": used,
+                        "free": max(0, 16384 - used),
+                        "messages": len(self._history),
+                        "blocks": blocks,
+                    },
+                    "duration_ms": 0,
+                },
+                reply_to=frame.id,
+            )
+            return
         elif name == "tools.list":
             # `04` §4.29: rows derived from the same `CANNED_TOOLS` the handshake
             # advertises, so a table test cannot pass against a catalogue the double

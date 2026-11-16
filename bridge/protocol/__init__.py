@@ -117,6 +117,8 @@ COMMAND_NAMES = frozenset(
         "net.ping",
         # `04-protocol.md` §4.28: forget the conversation the next prompt carries.
         "history.clear",
+        # `04-protocol.md` §4.30: the eight blocks of the next request, sized.
+        "context.budget",
     }
 )
 

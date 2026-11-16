@@ -556,3 +556,33 @@ async def test_a_refused_clear_keeps_the_pane():
         _device({"history.clear": {"code": "E_BUSY", "message": "agent run in flight"}}),
         body,
     )
+
+
+async def test_context_opens_one_modal_listing_every_block():
+    """`05` §7.5: `/context` asks the device for the eight blocks of the next request
+    and shows them in one box. Two things are worth pinning: it must reach the wire
+    (a host-side estimate would be a number the device contradicts), and every block
+    must be visible — a table that silently dropped the empty ones would leave the
+    reader unable to tell "no thinking" from "not measured"."""
+
+    async def body(app, pilot):
+        app.submit("/context")
+        await _until(pilot, lambda: isinstance(app.screen, InfoModal))
+        assert isinstance(app.screen, InfoModal), f"screen is {app.screen!r}"
+        await pilot.pause(0.1)
+
+        sent = [f for f in _frames(app) if f.get("name") == "context.budget"]
+        assert sent, "the bridge answered from the host instead of asking the device"
+
+        body = app.screen.query_one("#info-body")
+        rendered = "\n".join(str(widget.render()) for widget in body.query("Static"))
+        for label in ("system prompt", "skills", "tools", "user messages",
+                      "assistant messages", "assistant thinking", "tool calls",
+                      "tool outputs"):
+            assert label in rendered, f"{label} missing from the box:\n{rendered}"
+        assert "B free" in rendered
+
+        app.screen.dismiss(None)
+        await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
+
+    await _run(_device(), body)

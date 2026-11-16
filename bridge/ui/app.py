@@ -62,6 +62,7 @@ from . import onboard
 from .render import (
     LINK_WORDS,
     binding_pairs,
+    context_lines,
     UNREACHABLE,
     SlashHighlighter,
     clip,
@@ -1064,7 +1065,6 @@ class BridgeApp(App):
         self._tasks: list[dict[str, Any]] = []
         self._last_prompt: str | None = None
         self._usage_total = 0
-        self._last_input_bytes = 0
         self._seen_lines: set[str] = set()
         self._reader_pinged = False
         self._files_path: str = ""
@@ -1617,7 +1617,6 @@ class BridgeApp(App):
         self._logs().write(line)
 
     def _on_agent_start(self, frame: Frame) -> None:
-        self._last_input_bytes = frame.body.get("input_bytes", 0)
         self._chat().write(f"thinking… [run {frame.body.get('run_id')}]", kind="thinking")
 
     def _on_agent_tool(self, frame: Frame) -> None:
@@ -1766,7 +1765,6 @@ class BridgeApp(App):
             # the reader with an empty pane and a device that still remembers.
             self._chat().action_clear_log()
             self._usage_total = 0
-            self._last_input_bytes = 0
             self._last_prompt = None
             self._chat().write(f"cleared {result.get('messages', 0)} message(s)")
             self._refresh_bar()
@@ -1798,6 +1796,14 @@ class BridgeApp(App):
             # reply body raw and never builds a `BridgeApp`.
             for line in tool_table(result):
                 self._chat().write(line)
+            return
+        if name == "context.budget" and isinstance(result, dict):
+            # `05` §7.5: the eight blocks of the next request, in a modal because it is
+            # a glance at a budget rather than a place to work — the same rule as the
+            # `/sys` box. `context_lines` owns the layout so the modal and any future
+            # reader of the frame cannot disagree about the order of the blocks.
+            body = context_lines(result)
+            self.push_screen(InfoModal("context", [("", body)]))
             return
         if name == "templates.list" and isinstance(result, dict):
             for line in template_names(result):
@@ -2823,10 +2829,6 @@ class BridgeApp(App):
             )
         elif head == "usage":
             self._chat().write(f"total tokens: {self._usage_total}")
-        elif head == "context":
-            self._chat().write(
-                f"last input: {self._last_input_bytes} bytes | tokens: {self._usage_total}"
-            )
         elif head == "export":
             stamp = time.strftime("%Y%m%d-%H%M%S")
             self._chat().write(f"exported bridge-export-{stamp}.md")

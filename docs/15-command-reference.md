@@ -27,7 +27,7 @@ Column meanings:
 | `/config edit` | none | (Local) | Same screen as the bare `/config` |
 | `/config get <path>` | `path` | `config.get` | Dumps one value |
 | `/config set <path> <value>` | `path`, then the value as the rest of the line | `config.set` | Writes one value |
-| `/context` | none | (Local) | Last `input_bytes` and observed token totals |
+| `/context` | none | `context.budget` | Opens one box: every block of the next request with its byte count, then `used`/`free` |
 | `/export` | none | (Local) | Names the `bridge-export-<ts>.md` file it wrote |
 | `/files [<path>]` | optional sandbox `path`, `/workspace/` by default | (Local) | Opens the Files screen; the screen then sends `sandbox.list` |
 | `/fs put <path>` | `path` inside the import allowlist | `fs.put` | Prompts for a local file, uploads it in 2 KiB chunks |

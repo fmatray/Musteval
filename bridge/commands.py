@@ -30,7 +30,6 @@ LOCAL_COMMANDS = frozenset(
     {
         "mcp",
         "usage",
-        "context",
         "export",
         "quit",
         "logs",
@@ -129,6 +128,12 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         # the read form and for `--send /tools` on the command line.
         _exact(rest, 0, "/tools")
         return [_command("tools.list")]
+    if head == "context":
+        # `05` §7.5: the block sizes come from the device, because the prompt, the tool
+        # array and the history are all device state. A host-side estimate would be a
+        # number the reader might act on and the device would contradict.
+        _exact(rest, 0, "/context")
+        return [_command("context.budget")]
     if head == "templates":
         _exact(rest, 0, "/templates")
         return [_command("templates.list")]

@@ -178,6 +178,67 @@ def tool_table(result: dict[str, Any]) -> list[str]:
     ]
 
 
+#: `04` §4.30's eight blocks, in the order the document lists them, with the label the
+#: modal shows. The order is the prompt's own shape — what the model is told, then what
+#: was said, then what was called — so a reader can see where the bytes went.
+CONTEXT_BLOCKS = (
+    ("system_prompt", "system prompt"),
+    ("skills", "skills"),
+    ("tools", "tools"),
+    ("user", "user messages"),
+    ("assistant", "assistant messages"),
+    ("thinking", "assistant thinking"),
+    ("tool_calls", "tool calls"),
+    ("tool_output", "tool outputs"),
+)
+
+
+def context_lines(result: dict[str, Any]) -> list[str]:
+    """`04` §4.30's answer as one aligned block per part of the next request.
+
+    Every block is a measured byte count, so the only formatting question is whether a
+    zero is worth a row. It is: "thinking 0 B" is the honest answer to "where did my
+    budget go", and a block silently missing from the list reads as one the device
+    cannot report. The share column is against `budget`, not against `used`, because
+    the reader is deciding how close the next request is to being refused.
+    """
+    try:
+        budget = int(result.get("budget") or 0)
+    except (TypeError, ValueError):
+        budget = 0
+    blocks = result.get("blocks")
+    if not isinstance(blocks, dict):
+        blocks = {}
+
+    rows: list[tuple[str, int, str]] = []
+    for key, label in CONTEXT_BLOCKS:
+        try:
+            value = int(blocks.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        share = f"{100 * value / budget:.0f}%" if budget > 0 else "—"
+        rows.append((label, value, share))
+
+    labels = max(len(label) for label, _, _ in rows)
+    widths = max([len(str(value)) for _, value, _ in rows] + [len("bytes")])
+    lines = [f"  {'block'.ljust(labels)}  {'bytes'.rjust(widths)}  share"]
+    lines += [
+        f"  {label.ljust(labels)}  {str(value).rjust(widths)}  {share}"
+        for label, value, share in rows
+    ]
+
+    try:
+        used = int(result.get("used") or 0)
+        free = int(result.get("free") or 0)
+        messages = int(result.get("messages") or 0)
+    except (TypeError, ValueError):
+        used, free, messages = 0, 0, 0
+    lines.append("")
+    lines.append(f"used {used} of {budget} B, {free} B free")
+    lines.append(f"{messages} message{'s' if messages != 1 else ''} in the history")
+    return lines
+
+
 def wifi_scan_lines(result: dict[str, Any]) -> list[str]:
     """`04-protocol.md` §4.24's answer, one line per network, strongest first.
 

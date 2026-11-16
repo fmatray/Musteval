@@ -130,7 +130,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
     ),
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),
     CommandHelp("usage", "/usage", "token totals for this link session", True),
-    CommandHelp("context", "/context", "input size and token usage", True),
+    CommandHelp("context", "/context", "the next request's blocks, sized", False),
     CommandHelp("todo", "/todo [op] [target]", "read and steer the run's todo list", False),
     CommandHelp("export", "/export", "write the chat log to a markdown file", True),
     CommandHelp("onboard", "/onboard", "set wifi, provider key and model", True),

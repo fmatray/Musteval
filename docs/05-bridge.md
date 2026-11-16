@@ -656,6 +656,10 @@ rendered and an SSID or broker error containing `[` stays text. (A `markup=False
 body prints the tags at the reader instead.) The box scrolls rather than growing,
 because the diagnostics half is longer than a 24-row terminal.
 
+`/context` is its third caller, with one untitled section: the block table from
+`render.context_lines` (`§7.5`). One box, because a budget is a glance rather than a
+place to work, which is the same rule that put `/sys` there.
+
 ## 6. Keybindings
 
 Focus follows the screen: entering a screen puts focus on the widget that consumes
@@ -783,7 +787,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/tools` | `command {name:"tools.list"}` | none | The tool table: name, enabled or disabled, description. Same output as `/tool list` |
 | `/mcp` | (Local) | none | Lists servers from the last `status.mcp[]` |
 | `/usage` | (Local) | none | Token totals from observed `agent.final.usage` |
-| `/context` | (Local) | none | Shows last `input_bytes` and observed `usage` totals |
+| `/context` | `command {name:"context.budget"}` | none | Opens one box listing every block of the next request — system prompt, skills, tools, user messages, assistant messages, assistant thinking, tool calls, tool outputs — with its measured byte count and share of `LLM_BODY_MAX`, then `used`/`free` and the history depth (§7.5) |
 | `/todo [op] [target]` | `command {name:"todo.apply"}` | `op, task?, phase?, items?, list?, reason?` | Renders the phases and their tasks as one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished and a blocked task's `blocker` shown. Bare `/todo` is `view`. Verbs: `init [<phase> <item>...]` (no arguments clears), `start <task>`, `append <phase> <item>...`, `done`, `drop`, `rm`, `block`, `unblock`. A trailing target is sent as both `task` and `phase`: the tool's own `task → phase` chain decides which one matched, so `/todo done auth` finishes every task in phase `auth` without the bridge guessing, and each op keeps its own rule for what a phase target means (`block` still leaves a finished task alone). A required argument is refused by the bridge rather than sent. A finished run whose `agent.final` carried `todo_open: true` prints a hint pointing here, so an unfinished plan is visible instead of silent. `edit` is a UI verb, not an op: the completion list offers it after the device verbs, and it opens the tree editor of §6.2. The editor reads the live tree (`todo.apply` with `view`), lets the reader select a phase or a task, modify it, add one before or after it, drop it, or move it, and sends one `init` that rewrites the whole list. Esc sends nothing. Because that frame replaces every task, the editor re-reads the tree just before sending and refuses its own edit with `the todo list changed while you were editing` when the run moved anything meanwhile: an edit made against a stale tree would otherwise overwrite the run's own work. Because no device op moves, renames or inserts at a position, a full-list rewrite is the only way to express those edits — which is why `init`'s `items` accepts an object carrying a task's own `status` and `blocker` (`tools/todo.md` §Operations): a string would reset every task to `pending` and turn reordering into data loss. |
 | `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
@@ -1099,10 +1103,10 @@ schema, so the bridge cannot say which file defined a tool or show its parameter
 `/sys reload` reports `tools` in `reloaded[]` when the directory parsed, without
 naming them.
 
-`/context` shows only frame-borne values: the last `agent.start.input_bytes` and
-the summed `agent.final.usage`. Config limits such as `llm.max_history_messages`
-and `agent.max_input_bytes` are not on the wire, so the bridge cannot show them
-without a `/config get` round trip.
+`/context` reads `context.budget` (`04-protocol.md` §4.30) rather than measuring
+anything itself: the prompt, the tool array and the history are all device state, so
+a host-side estimate would be a number the device contradicts. Config limits such as
+`llm.max_history_messages` and `agent.max_input_bytes` are still not on the wire.
 
 Deliberately absent, because the device has no surface for them: `/compact` (the
 device keeps `llm.max_history_messages` messages, trims oldest-first, pins the
@@ -1213,6 +1217,34 @@ model's request unchanged, which is the failure mode worth naming.
   change that did not happen. A name nobody offers is accepted on `disable`: a tool
   that returns later then needs no config edit, and its entry stays inert meanwhile
   (`03-config.md` §Full schema).
+
+### 7.5 `/context`
+
+One box, one row per block of the next request, each with its measured byte count and
+its share of `LLM_BODY_MAX` (`04-protocol.md` §4.30). The eight rows are the order the
+document lists them — what the model is told, then what was said, then what was called —
+so the box reads top-down as the prompt does.
+
+| Row | Means |
+|---|---|
+| `system prompt` | `agent.system_prompt`, whole |
+| `skills` | the skill index appended to it, a suffix and so a subset of the row above |
+| `tools` | the tool array, with `tools.disabled` already removed |
+| `user messages` / `assistant messages` | the conversation's prose |
+| `assistant thinking` | always `0`: a trace is never pushed to the history, so it costs the next request nothing |
+| `tool calls` / `tool outputs` | what the run did |
+
+- **A zero row is drawn, not dropped.** "Assistant thinking 0 B" answers "where did my
+  budget go" with the honest answer; a block missing from the list reads as one the
+  device cannot report, and the reader cannot tell that from a measured nothing.
+- **The share is against `budget`, not `used`**, because the question the box answers
+  is how close the next request is to being refused. The two summary lines below the
+  table carry `used`/`free` and the history depth.
+- **The layout lives in `render.context_lines`**, not in the modal, so the numbers and
+  their order have one owner and a test can read them without driving a screen.
+- **It is never estimated on the host.** `/context` sends `context.budget` and renders
+  the reply; a local count of the conversation would miss the prompt, the skill index
+  and the tool array, which are the blocks a reader is usually surprised by.
 
 ## 8. Secrets & Redaction
 

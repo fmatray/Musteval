@@ -430,8 +430,12 @@ async def test_onboard_typed_as_a_command_opens_the_network_step():
 
 
 async def test_the_local_verbs_answer_from_state_already_in_hand():
-    """`05` §6.2: `usage`, `context` and `export` are local, so they cost no frame.
-    `export` names the file it wrote; the other two quote the counters."""
+    """`05` §7: `usage` and `export` are local, so they cost no frame. `export` names
+    the file it wrote; `usage` quotes the counters.
+
+    `/context` is deliberately absent: it asks the device (`context.budget`), because
+    the prompt, the tool array and the history are device state and a host-side count
+    would be a number the device contradicts (`05` §7.5)."""
     from bridge.protocol import Frame as F
 
     async def body(app, pilot):
@@ -450,13 +454,12 @@ async def test_the_local_verbs_answer_from_state_already_in_hand():
               body={"run_id": "r-2", "input_bytes": 42})
         )
         before = len(app.session._transport.written)
-        for verb in ("/usage", "/context", "/export", "/help"):
+        for verb in ("/usage", "/export", "/help"):
             app.submit(verb)
             await pilot.pause(0.15)
         assert len(app.session._transport.written) == before
         text = _text(app)
         assert "total tokens: 128" in text
-        assert "last input: 42 bytes" in text
         assert "exported bridge-export-" in text
 
     await _run(_device(), body)

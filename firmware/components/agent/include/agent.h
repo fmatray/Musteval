@@ -161,6 +161,40 @@ esp_err_t agent_history_append(char *history, size_t cap, size_t *used,
 esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages,
                              bool pin_head);
 
+/* `04` §4.30: what one `context.budget` reply reports. Every field is measured, never
+ * estimated — a byte count the reader is meant to act on ("you are near the cap") has
+ * to be the count the loop will actually send, or the number is decoration.
+ *
+ * `skills` is the part of `system_prompt` this build appended: the index is written
+ * into the same buffer (`build_system_prompt`), so the two are reported as a whole and
+ * a part, not as two independent blocks. `free` is `LLM_BODY_MAX` minus every measured
+ * block and the frame's own envelope, and it is a fact about the *next* request: the
+ * prompt, the history and the tool array are all rebuilt per round. */
+typedef struct {
+    size_t system_prompt; /* bytes of `agent.system_prompt`, escaped size not counted */
+    size_t skills;        /* the appended skill index, a suffix of the above */
+    size_t tools;         /* the tool array spliced into `tools` */
+    size_t user;          /* `role:"user"` messages in the history */
+    size_t assistant;     /* `role:"assistant"` content, tool calls excluded */
+    size_t thinking;      /* always 0: a trace is never appended to the history */
+    size_t tool_calls;    /* the `tool_calls` arrays on assistant turns */
+    size_t tool_output;   /* `role:"tool"` messages */
+    size_t used;          /* the sum of the eight blocks, plus the array's own syntax */
+    size_t free;          /* `LLM_BODY_MAX` minus `used` */
+    size_t budget;        /* `LLM_BODY_MAX`, so a client needs no second source */
+    size_t messages;      /* history messages measured */
+} agent_context_usage_t;
+
+/* Classify each history message by its `role` into `out`. Pure: the history is text
+ * the loop already holds, and the classification is arithmetic over it, so this is a
+ * host test rather than a claim about the board.
+ *
+ * `thinking` is always 0. The reasoning trace rides its own `agent.thinking` frame
+ * (`04` §3.21) and is never pushed to the history, so it consumes no part of the
+ * request body — reporting it as a block with a byte count would be a lie that grows
+ * when the model thinks more. */
+esp_err_t agent_history_measure(const char *history, agent_context_usage_t *out);
+
 /* How many messages the array holds. Pure. */
 size_t agent_history_count(const char *history);
 
@@ -339,6 +373,13 @@ esp_err_t agent_start(void);
  * Only the conversation is dropped. The todo tree, the task list and the counters
  * `status` reports are other owners' state. */
 esp_err_t agent_history_reset(size_t *dropped);
+
+/* `04` §4.30: the eight blocks of the next request, measured against `LLM_BODY_MAX`.
+ * Reads the prompt, the skill index and the tool array the last run built, plus the
+ * live history, so the answer describes what a prompt sent *now* would carry. Safe
+ * during a run: the history is one buffer, and a byte count read while the run appends
+ * to it is a snapshot of a moment, not a claim about the whole run. */
+esp_err_t agent_context_usage(agent_context_usage_t *out);
 
 /* The live todo tree, which is the state the close-out check reads across runs
  * (`02-firmware.md` §4.1). `reload` clears it. */

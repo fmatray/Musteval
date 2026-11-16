@@ -1095,6 +1095,39 @@ static void answer_command(const json_node_t *frame)
         /* The epilogue below owns `name` and `ok` on the envelope, so neither is set
          * here: a second copy inside `result` would be the same fact said twice. */
         built = ESP_OK;
+    } else if (name && strcmp(name, "context.budget") == 0) {
+        /* `04` §4.30: the eight blocks of the next request, against `LLM_BODY_MAX`.
+         * Busy-safe like `status`: it reads buffers the loop owns but writes none, so a
+         * run in flight makes the numbers a snapshot rather than a refusal. Every
+         * number is measured by `agent`, which is the only owner of the prompt, the
+         * tool array and the history. */
+        agent_context_usage_t usage;
+        esp_err_t cerr = agent_context_usage(&usage);
+        if (cerr != ESP_OK) {
+            emit_failure(name, reply_to, "E_INTERNAL", "context not readable");
+            json_free(body); return;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "context.budget");
+        json_add_bool(root, "ok", true);
+        if (result != NULL) {
+            json_add_int(result, "budget", (int64_t)usage.budget);
+            json_add_int(result, "used", (int64_t)usage.used);
+            json_add_int(result, "free", (int64_t)usage.free);
+            json_add_int(result, "messages", (int64_t)usage.messages);
+            json_node_t *blocks = json_add_object(result, "blocks");
+            if (blocks != NULL) {
+                json_add_int(blocks, "system_prompt", (int64_t)usage.system_prompt);
+                json_add_int(blocks, "skills", (int64_t)usage.skills);
+                json_add_int(blocks, "tools", (int64_t)usage.tools);
+                json_add_int(blocks, "user", (int64_t)usage.user);
+                json_add_int(blocks, "assistant", (int64_t)usage.assistant);
+                json_add_int(blocks, "thinking", (int64_t)usage.thinking);
+                json_add_int(blocks, "tool_calls", (int64_t)usage.tool_calls);
+                json_add_int(blocks, "tool_output", (int64_t)usage.tool_output);
+            }
+        }
+        built = ESP_OK;
     } else if (name && strcmp(name, "sys.reset_counter") == 0) {
         int32_t prev = 0;
         if (store_nvs_get_int("boot_failures", &prev) != ESP_OK) prev = 0;

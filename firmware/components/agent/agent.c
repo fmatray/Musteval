@@ -92,6 +92,11 @@ static SemaphoreHandle_t s_todo_lock;
 static char *s_history;
 static size_t s_history_used;
 static char *s_system_prompt;
+/* `04` §4.30: how many bytes of `s_system_prompt` are the appended skill index, so the
+ * two can be reported as a whole and a part rather than as two blocks that add up to
+ * more than the buffer they share. Set by `build_system_prompt`, which is the only
+ * writer. */
+static size_t s_skills_bytes;
 static char *s_tools_json;
 static char *s_response;
 static agent_reply_t *s_reply;
@@ -202,6 +207,7 @@ static void build_system_prompt(void)
     }
 
     size_t used = strlen(s_system_prompt);
+    s_skills_bytes = 0;
     if (used >= AGENT_INPUT_BUFFER_MAX - 1) return;
 
     size_t count = 0;
@@ -216,6 +222,7 @@ static void build_system_prompt(void)
     if (skills_index(skills, count, s_system_prompt + used,
                      cap - used, budget,
                      &written, &dropped) == ESP_OK) {
+        s_skills_bytes = written;
         if (dropped > 0) {
             ESP_LOGW(TAG, "skills: %u dropped from the index to fit %u bytes",
                      (unsigned)dropped, (unsigned)budget);
@@ -904,6 +911,18 @@ esp_err_t agent_start(void)
 
     todo_list_clear(agent_todo_phases());
 
+    /* Build the prompt and the tool array once here, before the agent task exists, so
+     * `context.budget` (`04` §4.30) can answer on a device that has run nothing yet.
+     * `run_once` rebuilds both per run, so this is the pre-first-run value rather than
+     * a cached one; doing it here rather than lazily on the link task is what keeps it
+     * off a buffer a run could be writing. */
+    load_run_settings();
+    build_system_prompt();
+    tools_context_t boot_ctx;
+    tools_context_from_config(&boot_ctx);
+    boot_ctx.todo.apply = todo_port_apply;
+    build_tools_json(&boot_ctx);
+
     BaseType_t ok = xTaskCreate(agent_task, "agent", AGENT_TASK_STACK, NULL,
                                 AGENT_TASK_PRIORITY, &s_task);
     if (ok != pdPASS) {
@@ -976,6 +995,46 @@ void agent_status(agent_status_t *out)
     out->busy = s_busy;
     out->run_id = s_busy ? s_run_id : NULL;
     out->queue_depth = s_queue != NULL ? (int32_t)uxQueueMessagesWaiting(s_queue) : 0;
+}
+
+/* `04` §4.30: the eight blocks of the next request. Every block is a measurement of a
+ * buffer the loop already holds, so the reply costs one walk of the history and no
+ * allocation. `used` adds the history's own `[`, `]` and the commas between messages,
+ * because those bytes are part of the body too and a budget that ignored them would be
+ * optimistic exactly where the reader is deciding whether to clear.
+ *
+ * `free` floors at 0: a device whose prompt and history together exceed `LLM_BODY_MAX`
+ * has a real problem, and reporting a negative number would hide it behind a wrap. */
+esp_err_t agent_context_usage(agent_context_usage_t *out)
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* `s_history_used == 0` is the authoritative "nothing written yet" (`04` §4.28):
+     * the buffer is uninitialized then, so parsing it would read whatever the
+     * allocation held and the first `/context` after a boot would fail. Every other
+     * reader guards the same way. (`agent_start` builds the prompt and the tool array
+     * once before the agent task exists, so the two blocks that live in those buffers
+     * are already meaningful here without a rebuild that could race a run.) */
+    esp_err_t err = agent_history_measure(s_history_used > 0 ? s_history : "[]", out);
+    if (err != ESP_OK) return err;
+
+    out->system_prompt = strlen(s_system_prompt);
+    out->skills = s_skills_bytes > out->system_prompt ? out->system_prompt : s_skills_bytes;
+    out->tools = strlen(s_tools_json);
+    out->thinking = 0;
+
+    size_t used = out->system_prompt + out->tools + out->user + out->assistant +
+                  out->tool_calls + out->tool_output;
+    if (out->messages > 1) used += out->messages - 1; /* the commas */
+    if (out->messages > 0) used += 2;                /* `[` and `]` */
+
+    out->used = used;
+    out->budget = LLM_BODY_MAX;
+    out->free = used < LLM_BODY_MAX ? LLM_BODY_MAX - used : 0;
+    return ESP_OK;
 }
 
 /* `04` §4.28: the one writer from outside a run. Refused while one is live, because

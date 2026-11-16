@@ -74,22 +74,102 @@ size_t agent_history_count(const char *history)
     return count;
 }
 
-/* True when the message object at `p` has `"role"` equal to `role`. The bytes are
+/* True when the `n`-byte message at `p` has `"role"` equal to `role`. The bytes are
  * known-valid JSON built by `store`/`agent`, so this scans for the key rather than
- * parsing a second time. */
-static bool message_has_role(const char *p, const char *role)
+ * parsing a second time.
+ *
+ * Bounded by `n` because `agent_history_measure` (`04` §4.30) classifies one message
+ * at a time: an unbounded scan would find the *next* message's `"role"` and bill this
+ * message's bytes to the wrong block. */
+static bool message_has_role_n(const char *p, size_t n, const char *role)
 {
-    const char *key = strstr(p, "\"role\"");
+    const char *end = p + n;
+    const char *key = NULL;
+    for (const char *q = p; q + 6 <= end; q++) {
+        if (memcmp(q, "\"role\"", 6) == 0) {
+            key = q + 6;
+            break;
+        }
+    }
     if (key == NULL) return false;
-    key += 6;
-    while (*key == ' ' || *key == '\t' || *key == '\n' || *key == '\r') key++;
-    if (*key != ':') return false;
+    while (key < end && (*key == ' ' || *key == '\t' || *key == '\n' || *key == '\r')) key++;
+    if (key >= end || *key != ':') return false;
     key++;
-    while (*key == ' ' || *key == '\t' || *key == '\n' || *key == '\r') key++;
-    if (*key != '"') return false;
+    while (key < end && (*key == ' ' || *key == '\t' || *key == '\n' || *key == '\r')) key++;
+    if (key >= end || *key != '"') return false;
     key++;
     size_t len = strlen(role);
+    if ((size_t)(end - key) < len + 1) return false;
     return strncmp(key, role, len) == 0 && key[len] == '"';
+}
+
+/* The same question against a NUL-terminated message, for the callers that already
+ * know where the array ends (trim and truncate walk it themselves). */
+static bool message_has_role(const char *p, const char *role)
+{
+    return message_has_role_n(p, strlen(p), role);
+}
+
+/* `04` §4.30: which block of the prompt a message's bytes are billed to. One message
+ * is one role plus, for the assistant turn that asked for tools, the calls it carries;
+ * `agent_history_measure` adds the tool results to the `tool_output` block.
+ *
+ * `thinking` stays 0: the model's reasoning trace is never written to the history. It
+ * arrives on `agent_reply_t.thinking` and leaves in its own `agent.thinking` frame
+ * (`04` §3.21) without being appended, so there is nothing to measure and pretending
+ * otherwise would report a block that can never grow. */
+static size_t measure_tool_calls(const char *p, size_t n)
+{
+    for (size_t i = 0; i + 12 <= n; i++) {
+        if (memcmp(p + i, "\"tool_calls\"", 12) == 0) return n - i;
+    }
+    return 0;
+}
+
+/* Walk a JSON array of messages and add each message's byte length to the block its
+ * `role` names. Pure, so the arithmetic behind `04` §4.30 is a host test rather than
+ * a claim about the board (`agent_history.c`).
+ *
+ * A message with no recognised role, or bytes that are not an array, contribute
+ * nothing: `04` §4.30 reports what the loop will send, and a message the loop cannot
+ * classify is one the provider will refuse rather than one that consumes budget.
+ *
+ * There is no `system` arm: `agent_history_push` writes only `user`, `assistant` and
+ * `tool`, and the prompt lives in its own buffer, so a `role:"system"` message here
+ * would be one the loop never wrote. */
+esp_err_t agent_history_measure(const char *history, agent_context_usage_t *out)
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof *out);
+    if (history == NULL) return ESP_ERR_INVALID_ARG;
+
+    const char *p = first_message(history);
+    if (p == NULL) return ESP_ERR_INVALID_ARG;
+
+    for (;;) {
+        /* A truncated array is not an empty one: `[` alone ends on `\0`, and reporting
+         * it as a clean zero-message history would tell a reader their context is
+         * empty when the buffer is simply unreadable. */
+        if (*p == '\0') return ESP_ERR_INVALID_ARG;
+        if (*p == ']') break;
+        size_t n = value_end(p);
+        if (n == 0) return ESP_ERR_INVALID_ARG;
+
+        size_t calls = measure_tool_calls(p, n);
+        if (message_has_role_n(p, n, "tool")) {
+            out->tool_output += n;
+        } else if (message_has_role_n(p, n, "assistant")) {
+            out->assistant += n - calls;
+            out->tool_calls += calls;
+        } else if (message_has_role_n(p, n, "user")) {
+            out->user += n;
+        }
+        out->messages += 1;
+
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    }
+    return ESP_OK;
 }
 
 esp_err_t agent_history_trim(char *history, size_t *used, int32_t max_messages,

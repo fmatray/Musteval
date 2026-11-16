@@ -2653,3 +2653,63 @@ TEST_CASE("history_append with a zero bound writes an empty array once", "[m4]")
     TEST_ASSERT_EQUAL_STRING("[]", history);
     TEST_ASSERT_EQUAL_size_t(2, used);
 }
+
+/* `04` §4.30: every block is the length of the messages it names, and the four role
+ * blocks must add up to the history's own byte total. A test that only checked "not
+ * zero" would pass against a classifier that billed every message to `user`. */
+TEST_CASE("history_measure bills each message to the block its role names", "[m4]")
+{
+    const char *history =
+        "[{\"role\":\"user\",\"content\":\"hi\"},"
+        "{\"role\":\"assistant\",\"content\":\"ok\",\"tool_calls\":[{\"id\":\"c1\"}]},"
+        "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"},"
+        "{\"role\":\"user\",\"content\":\"again\"}]";
+    agent_context_usage_t usage;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_measure(history, &usage));
+
+    size_t user = strlen("{\"role\":\"user\",\"content\":\"hi\"}") +
+                  strlen("{\"role\":\"user\",\"content\":\"again\"}");
+    size_t assistant = strlen("{\"role\":\"assistant\",\"content\":\"ok\"}");
+    size_t calls = strlen(",\"tool_calls\":[{\"id\":\"c1\"}]");
+    size_t tool = strlen("{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"}");
+
+    TEST_ASSERT_EQUAL_size_t(4, usage.messages);
+    TEST_ASSERT_EQUAL_size_t(user, usage.user);
+    TEST_ASSERT_EQUAL_size_t(assistant, usage.assistant);
+    TEST_ASSERT_EQUAL_size_t(calls, usage.tool_calls);
+    TEST_ASSERT_EQUAL_size_t(tool, usage.tool_output);
+    /* Nothing measured twice: the calls are carved out of the assistant turn rather
+     * than counted on top of it, so the two blocks are the message's own length. */
+    TEST_ASSERT_EQUAL_size_t(strlen("{\"role\":\"assistant\",\"content\":\"ok\","
+                                    "\"tool_calls\":[{\"id\":\"c1\"}]}"),
+                              usage.assistant + usage.tool_calls);
+}
+
+TEST_CASE("history_measure never bills a thinking block", "[m4]")
+{
+    /* The trace rides `agent.thinking` (`04` §3.21) and is never appended to the
+     * history, so a history carrying content that *looks* like reasoning still reports
+     * nothing for it. This is the fact `04` §4.30 states outright. */
+    const char *history =
+        "[{\"role\":\"assistant\",\"content\":\"reasoning: 2+2=4 then 4*3=12\"}]";
+    agent_context_usage_t usage;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_measure(history, &usage));
+    TEST_ASSERT_EQUAL_size_t(0, usage.thinking);
+    TEST_ASSERT_EQUAL_size_t(strlen("{\"role\":\"assistant\",\"content\":\"reasoning: 2+2=4 then 4*3=12\"}"),
+                              usage.assistant);
+}
+
+TEST_CASE("history_measure refuses bytes that are not a message array", "[m4]")
+{
+    agent_context_usage_t usage;
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_history_measure(NULL, &usage));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_history_measure("[", &usage));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG,
+                          agent_history_measure("{\"role\":\"user\"}", &usage));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, agent_history_measure("[]", NULL));
+
+    /* An empty array is valid and measures nothing. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_measure("[]", &usage));
+    TEST_ASSERT_EQUAL_size_t(0, usage.messages);
+    TEST_ASSERT_EQUAL_size_t(0, usage.user + usage.assistant + usage.tool_output);
+}

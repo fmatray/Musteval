@@ -653,6 +653,7 @@ reads are never refused.
 | `todo.apply` | `{op, task?, phase?, items?, list?, reason?}` | `{phases:[{name, tasks:[{content,status,blocker?}]}]}` | `E_TOOL` (schema violation, `no task matches "<target>"`, or a bound breach), `E_INTERNAL` | yes |
 | `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
 | `history.clear` | `{}` | `{cleared, messages}` | `E_BUSY` (a run is in flight) | no |
+| `context.budget` | `{}` | `{budget, used, free, messages, blocks:{system_prompt, skills, tools, user, assistant, thinking, tool_calls, tool_output}}` | `E_INTERNAL` (the prompt, tool array or history is not allocated) | yes |
 
 
 ### 4.1 `status`
@@ -1437,6 +1438,62 @@ disabled name at all.
 **A run in flight does not hide a tool.** `offered` is computed from the config and
 the loaded sets, not from the run's own snapshot, so a mid-run toggle shows in the
 next `tools.list` while the run continues with the array it started with.
+
+### 4.30 `context.budget`
+
+The eight blocks of the next request, measured in bytes against `LLM_BODY_MAX`
+(16384), so `/context` (`05-bridge.md` §7.5) can show where the budget went without
+a second frame and without the host guessing.
+
+```json
+{"v":1,"type":"command","id":"b-45","ts":1730572630,"name":"context.budget","args":{}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-55","ts":1730572630,"reply_to":"b-45","name":"context.budget","ok":true,"result":{"budget":16384,"used":1304,"free":15080,"messages":3,"blocks":{"system_prompt":900,"skills":200,"tools":300,"user":40,"assistant":30,"thinking":0,"tool_calls":20,"tool_output":10}},"duration_ms":2}
+```
+
+| Block | What is counted |
+|---|---|
+| `system_prompt` | `agent.system_prompt` as read from `/prompts/system.md`, whole |
+| `skills` | the skill index appended to that prompt — a **suffix of `system_prompt`**, not an eighth region of its own |
+| `tools` | the tool array spliced into `tools`, after `tools_offered` dropped the disabled ones |
+| `user` | every `role:"user"` message in the history |
+| `assistant` | `role:"assistant"` messages, their `tool_calls` excluded |
+| `thinking` | **always 0** |
+| `tool_calls` | the `tool_calls` arrays on assistant turns |
+| `tool_output` | every `role:"tool"` message |
+
+**`thinking` is honestly zero.** The model's reasoning trace arrives on
+`agent.thinking` (`§3.21`) and is never appended to the history, so it consumes no
+part of the request body. A block that reported the trace's length would be a number
+that can never be acted on, because nothing about it makes the next request larger.
+The field exists so a client can render the row without a special case for "this one
+is never measurable", and so a future trace-in-history change has a name to fill in.
+
+**Every number is measured, never estimated.** The prompt, the tool array and the
+history are device state, and the whole point of the frame is a number the reader may
+act on — "clear the conversation, you are at 90 %" is only honest if `used` is the
+count the loop will send. This is why the frame exists rather than the bridge reading
+`agent.start.input_bytes`: that field is one round's *input*, not the assembled body.
+
+**`used` includes the history's own syntax**: its `[`, `]` and the commas between
+messages. Those bytes ship, so a budget that ignored them would be optimistic exactly
+where the margin is thin. `free` is `budget - used`, floored at 0; a device over the
+cap reports 0 rather than a negative number.
+
+**`skills` overlaps `system_prompt`.** The index is appended into the same buffer
+(`02-firmware.md` §`skills`), so the two fields are a whole and a part. Adding all eight
+blocks would double-count it; a client that wants the non-skill prompt subtracts.
+
+**Busy-safe.** A run in flight appends to the history between rounds, so the numbers
+are a snapshot of the moment the frame was built, not a claim about the whole run.
+It writes nothing, so it does not take `history.clear`'s `E_BUSY` refusal. The
+prompt, tool array and history are rebuilt per run, and `agent_start` builds the first
+two once before the loop starts, so the frame answers on a device that has run nothing
+yet — a boot-time `/context` reports the persona and the tools, not two zeros. A
+`context.budget` after `/clear` reports the shrunken history; one after `/tool disable`
+reports the new array only once the next run has rebuilt it.
 
 ## 5. Error codes
 
