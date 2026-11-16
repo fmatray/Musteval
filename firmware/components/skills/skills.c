@@ -17,6 +17,12 @@ static const char *TAG = "skills";
  * 4096 B. */
 static char s_file[SKILL_FILE_MAX + 1];
 static skill_meta_t s_meta[SKILLS_MAX];
+/* The scan's directory listing, for the same reason `s_file` is static: as a local,
+ * `store_entry_t entries[SKILLS_MAX]` made the `skills_scan` frame 1312 B, and
+ * `skills_scan` is reached from `agent_start` on `main`'s 3584 B stack with only
+ * ~1080 B left — a boot crash. File scope takes the frame to 160 B.
+ * `skills_scan` is already non-reentrant through `s_meta`. */
+static store_entry_t s_entries[SKILLS_MAX];
 
 esp_err_t skills_read_body(const char *name, char *out, size_t cap, size_t *len)
 {
@@ -60,24 +66,23 @@ esp_err_t skills_scan(skill_meta_t *out, size_t cap, size_t *count)
     if (out == NULL || count == NULL) return ESP_ERR_INVALID_ARG;
     *count = 0;
 
-    store_entry_t entries[SKILLS_MAX];
     size_t found = 0;
-    esp_err_t err = store_list_dir("/skills/", entries, SKILLS_MAX, &found);
+    esp_err_t err = store_list_dir("/skills/", s_entries, SKILLS_MAX, &found);
     if (err == ESP_ERR_NOT_FOUND) return ESP_OK;  /* no tree yet is not a failure */
     if (err != ESP_OK) return err;
 
     size_t at = 0;
     for (size_t i = 0; i < found && at < cap; i++) {
-        if (entries[i].dir) continue;
-        size_t name_len = strlen(entries[i].name);
+        if (s_entries[i].dir) continue;
+        size_t name_len = strlen(s_entries[i].name);
         const char *suffix = ".md";
-        if (name_len <= 3 || strcmp(entries[i].name + name_len - 3, suffix) != 0) {
+        if (name_len <= 3 || strcmp(s_entries[i].name + name_len - 3, suffix) != 0) {
             continue;
         }
         char stem[SKILL_NAME_MAX];
         size_t stem_len = name_len - 3;
         if (stem_len >= sizeof stem) continue;
-        memcpy(stem, entries[i].name, stem_len);
+        memcpy(stem, s_entries[i].name, stem_len);
         stem[stem_len] = '\0';
 
         char path[64];

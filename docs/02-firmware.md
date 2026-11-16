@@ -1111,6 +1111,18 @@ description and a parameter schema of the same shape declarative tools require
 §Tool schema): `type: "object"`, `properties`, `required`, plus `enum` for a closed
 value set; nothing else.
 
+The stack rule binds everything `agent_start` reaches, not only the compile path,
+because it runs last in `start_services` with the least headroom: a probe on the
+target measured 1080 bytes free on the main task at `before agent_start`. The
+1312-byte `skills_scan` frame — its `store_entry_t entries[SKILLS_MAX]` local,
+reached from `agent_start` through `build_system_prompt` → `skills_current` —
+overflowed that stack on every normal boot and drove the device into the guard's
+safe mode, which in turn booted cleanly because it skips `start_services`; the
+crash therefore looked like a safe-mode latch rather than an overflow. The listing
+now lives in a file-scope buffer beside `s_meta`, for the same reason `s_file` is
+static. A fixed-size aggregate in any function `agent_start` can reach is a boot
+crash, not a saving.
+
 Two built-in schemas nest: `task.set` and `todo`. The `task.set` `task` object
 mirrors `/tasks.json` verbatim (`03-config.md` §Task schema) so the model authors a
 task in the shape the file stores, and `todo`'s `list` is an array of `{phase, items}`
