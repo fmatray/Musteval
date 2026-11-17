@@ -193,50 +193,70 @@ CONTEXT_BLOCKS = (
 )
 
 
-def context_lines(result: dict[str, Any]) -> list[str]:
-    """`04` §4.30's answer as one aligned block per part of the next request.
+def context_blocks(result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """`04` §4.30's answer as the left pane's rows: `(key, label, counter, share)`.
 
-    Every block is a measured byte count, so the only formatting question is whether a
-    zero is worth a row. It is: "thinking 0 B" is the honest answer to "where did my
-    budget go", and a block silently missing from the list reads as one the device
-    cannot report. The share column is against `budget`, not against `used`, because
-    the reader is deciding how close the next request is to being refused.
+    The counter is the item count from `counts`, not the byte count from `blocks`,
+    because a reader looking at "skills 3" is asking how many skills are in the index,
+    and one looking at "user messages 2" is asking how many turns there are. The share
+    is the block's byte share of the reply's own `budget` for the same reason
+    `/context` has always shown it: the counters say what is in the request, the share
+    says where the budget went, and a reader needs both to answer "what can I drop".
+
+    A block with no counter in `counts` gets an em dash rather than a zero: a zero is
+    a measured answer, and `system_prompt` is the one block the device does not count
+    because it is a single document.
     """
+    counts = result.get("counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    blocks = result.get("blocks")
+    if not isinstance(blocks, dict):
+        blocks = {}
     try:
         budget = int(result.get("budget") or 0)
     except (TypeError, ValueError):
         budget = 0
-    blocks = result.get("blocks")
-    if not isinstance(blocks, dict):
-        blocks = {}
-
-    rows: list[tuple[str, int, str]] = []
+    rows: list[tuple[str, str, str, str]] = []
     for key, label in CONTEXT_BLOCKS:
+        if key in counts:
+            try:
+                counter = str(int(counts.get(key) or 0))
+            except (TypeError, ValueError):
+                counter = "—"
+        else:
+            counter = "—"
+        share = "—"
         try:
-            value = int(blocks.get(key) or 0)
+            size = int(blocks.get(key) or 0)
         except (TypeError, ValueError):
-            value = 0
-        share = f"{100 * value / budget:.0f}%" if budget > 0 else "—"
-        rows.append((label, value, share))
+            size = 0
+        if budget > 0:
+            share = f"{size * 100 // budget}%"
+        rows.append((key, label, counter, share))
+    return rows
 
-    labels = max(len(label) for label, _, _ in rows)
-    widths = max([len(str(value)) for _, value, _ in rows] + [len("bytes")])
-    lines = [f"  {'block'.ljust(labels)}  {'bytes'.rjust(widths)}  share"]
-    lines += [
-        f"  {label.ljust(labels)}  {str(value).rjust(widths)}  {share}"
-        for label, value, share in rows
-    ]
 
+def context_summary(result: dict[str, Any]) -> str:
+    """`04` §4.30's totals as one line under the `/context` list.
+
+    The bytes are the frame's own numbers, not a sum of the blocks: `used` is what the
+    device reports for the whole request, and a reader comparing it against `budget`
+    is asking how close the next prompt is to being refused. The message count is the
+    history's own, which is not the sum of the four role counters either — a message
+    with a role the classifier does not recognise counts in neither.
+    """
     try:
+        budget = int(result.get("budget") or 0)
         used = int(result.get("used") or 0)
         free = int(result.get("free") or 0)
         messages = int(result.get("messages") or 0)
     except (TypeError, ValueError):
-        used, free, messages = 0, 0, 0
-    lines.append("")
-    lines.append(f"used {used} of {budget} B, {free} B free")
-    lines.append(f"{messages} message{'s' if messages != 1 else ''} in the history")
-    return lines
+        budget = used = free = messages = 0
+    return (
+        f"used {used} of {budget} B, {free} B free · "
+        f"{messages} message{'s' if messages != 1 else ''} in the history"
+    )
 
 
 def wifi_scan_lines(result: dict[str, Any]) -> list[str]:

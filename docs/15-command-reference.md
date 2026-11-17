@@ -23,11 +23,12 @@ Column meanings:
 |---|---|---|---|
 | `/cancel` | none | `cancel` | `reason: "user"`; stops the run in flight. Answers in chat either way, the device text printed verbatim: `run cancelled` or `nothing to cancel` |
 | `/clear` | none | `history.clear` | Forgets the conversation on the device and in the pane |
+| `/compact` | none | `context.compact` | Asks first, naming the message count and bytes; reports `summarised N messages, kept K, X B -> Y B` and says the summary is now the only copy |
 | `/config` | none | (Local) | Opens the Settings screen; the screen sends `config.get` and `config.set` |
 | `/config edit` | none | (Local) | Same screen as the bare `/config` |
 | `/config get <path>` | `path` | `config.get` | Dumps one value |
 | `/config set <path> <value>` | `path`, then the value as the rest of the line | `config.set` | Writes one value |
-| `/context` | none | `context.budget` | Opens one box: every block of the next request with its byte count, then `used`/`free` |
+| `/context` | none | `context.budget`, `context.block` | Opens one split box: the eight blocks with their item counts on the left, the selected block's text on the right |
 | `/export` | none | (Local) | Names the `bridge-export-<ts>.md` file it wrote |
 | `/files [<path>]` | optional sandbox `path`, `/workspace/` by default | (Local) | Opens the Files screen; the screen then sends `sandbox.list` |
 | `/fs put <path>` | `path` inside the import allowlist | `fs.put` | Prompts for a local file, uploads it in 2 KiB chunks |

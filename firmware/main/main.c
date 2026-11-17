@@ -194,6 +194,15 @@ static int64_t uptime_s(void)
 }
 
 #define SANDBOX_READ_CAP 8192
+/* `04` §4.32: the block text cap, the same number `sandbox.read` uses. A block above
+ * it is truncated in the reply, not in the buffer the run sends. */
+#define CONTEXT_BLOCK_CAP 8192
+
+/* One 8 KiB scratch for `sandbox.read` and `context.block`. Both are reached
+ * synchronously from `answer_command` on `link_task`, so they are never live at the
+ * same time, and DIRAM is the scarce resource here rather than code size. */
+static char s_line_scratch[CONTEXT_BLOCK_CAP + 1];
+
 #define SANDBOX_LIST_MAX STORE_WS_FILE_COUNT
 
 /* `04` §2: an id is allocated per frame from the device's one counter, so a frame
@@ -332,10 +341,10 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
          * Dispatch is single-threaded, so one buffer is correct; a mutex would be
          * dead weight. The cap matches the
          * document exactly: a larger read would not fit the 16384-byte TX limit. */
-        static char s_text[SANDBOX_READ_CAP + 1];
+        char *s_text = s_line_scratch;
         size_t len = 0, total = 0;
         bool truncated = false;
-        esp_err_t rerr = store_read_text(s_sandbox_path, 0, s_text, SANDBOX_READ_CAP,
+        esp_err_t rerr = store_read_text(s_sandbox_path, 0, s_text, CONTEXT_BLOCK_CAP,
                                          &len, &total, &truncated);
         if (rerr != ESP_OK) {
             emit_failure("sandbox.read", reply_to, wire_code(rerr), "Read failed");
@@ -667,6 +676,73 @@ static void ping_task(void *arg)
     vTaskDelete(NULL);
 }
 
+
+/* `04` §4.33: the summarisation call is one `llm_query` at the provider's own
+ * timeout, which a command handler must not sit through. The task owns every byte it
+ * needs, because the caller's frame is freed when `answer_command` returns. */
+typedef struct {
+    char reply_to[LINK_ID_MAX + 1];
+    uint32_t keep;
+    int64_t start_us;
+} compact_args_t;
+
+static void compact_task(void *arg)
+{
+    compact_args_t *ca = arg;
+    uint32_t summarised = 0, kept = 0;
+    size_t before_bytes = 0, after_bytes = 0;
+    static char s_summary[AGENT_COMPACT_SUMMARY_MAX + 1];
+    esp_err_t err = agent_context_compact(ca->keep, &summarised, &kept, &before_bytes,
+                                          &after_bytes, s_summary, sizeof s_summary);
+
+    json_doc_t *doc = json_new_object();
+    if (doc == NULL) { free(ca); vTaskDelete(NULL); return; }
+    json_node_t *root = json_root(doc);
+    /* `d-<counter>` per frame: `frame_id`'s buffer is shared with `link_task`. */
+    char id[16];
+    link_next_id(id, sizeof id);
+    json_add_string(root, "name", "context.compact");
+    if (err == ESP_OK) {
+        json_add_bool(root, "ok", true);
+        json_node_t *result = json_add_object(root, "result");
+        if (result != NULL) {
+            json_add_int(result, "summarised", (int64_t)summarised);
+            json_add_int(result, "kept", (int64_t)kept);
+            json_add_int(result, "before_bytes", (int64_t)before_bytes);
+            json_add_int(result, "after_bytes", (int64_t)after_bytes);
+            json_add_string(result, "summary", s_summary);
+        }
+    } else {
+        json_add_bool(root, "ok", false);
+        json_node_t *error = json_add_object(root, "error");
+        const char *code = "E_INTERNAL";
+        const char *msg = "compaction failed";
+        if (err == ESP_ERR_INVALID_STATE) { code = "E_BUSY"; msg = "agent run in flight"; }
+        else if (err == ESP_ERR_NOT_SUPPORTED) { code = "E_CONFIG"; msg = "nothing to compact"; }
+        else if (err == ESP_ERR_INVALID_ARG) { code = "E_CONFIG"; msg = "invalid keep"; }
+        else if (err == ESP_ERR_INVALID_SIZE) { code = "E_TOOL"; msg = "summary did not fit"; }
+        else if (err == ESP_ERR_NOT_FOUND) { code = "E_TOOL"; msg = "the model answered nothing usable"; }
+        /* `agent_context_compact` translates `llm_query`'s budget refusal to
+         * `ESP_ERR_INVALID_RESPONSE`, because `ESP_ERR_INVALID_STATE` is already the
+         * busy guard's code. `ESP_ERR_TIMEOUT`/`ESP_FAIL` is a provider that did not
+         * answer, the pair the agent loop maps the same way. */
+        else if (err == ESP_ERR_INVALID_RESPONSE) { code = "E_LLM_RATE"; msg = "call budget exhausted"; }
+        else if (err == ESP_ERR_TIMEOUT || err == ESP_FAIL) {
+            code = "E_LLM_UNAVAILABLE"; msg = "no provider answered";
+        }
+        if (error != NULL) {
+            json_add_string(error, "code", code);
+            json_add_string(error, "message", msg);
+        }
+    }
+    json_add_int(root, "duration_ms",
+                 (int64_t)((esp_timer_get_time() - ca->start_us) / 1000));
+
+    link_emit_body("command.result", id, 0, ca->reply_to, doc);
+    json_free(doc);
+    free(ca);
+    vTaskDelete(NULL);
+}
 
 static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
                                      json_node_t *result)
@@ -1163,8 +1239,92 @@ static void answer_command(const json_node_t *frame)
                 json_add_int(blocks, "tool_calls", (int64_t)usage.tool_calls);
                 json_add_int(blocks, "tool_output", (int64_t)usage.tool_output);
             }
+            /* `04` §4.30 `counts`: how many items each block holds. `skills` and
+             * `tools` are the lengths of what was actually built, so `tools.disabled`
+             * and a removed subsystem's tools are already absent. There is no
+             * `system_prompt` counter: it is one document. */
+            json_node_t *counts = json_add_object(result, "counts");
+            if (counts != NULL) {
+                json_add_int(counts, "skills", (int64_t)usage.count_skills);
+                json_add_int(counts, "tools", (int64_t)usage.count_tools);
+                json_add_int(counts, "user", (int64_t)usage.count_user);
+                json_add_int(counts, "assistant", (int64_t)usage.count_assistant);
+                json_add_int(counts, "thinking", (int64_t)usage.count_thinking);
+                json_add_int(counts, "tool_calls", (int64_t)usage.count_tool_calls);
+                json_add_int(counts, "tool_output", (int64_t)usage.count_tool_output);
+            }
         }
         built = ESP_OK;
+    } else if (name && strcmp(name, "context.block") == 0) {
+        /* `04` §4.32: one block of the next request, as text. Busy-safe: it reads the
+         * buffers a run owns but writes none, so a run in flight makes the answer a
+         * snapshot rather than a refusal. */
+        /* `04` §2.1: a frame with no `block` breaks the schema, which is
+         * `E_PROTOCOL`; a `block` naming nothing is `E_CONFIG`. The split matters
+         * because the first is a bridge bug and the second is a caller's typo. */
+        const char *block = json_string(json_get(args, "block"));
+        if (block == NULL) {
+            emit_failure(name, reply_to, "E_PROTOCOL", "missing block");
+            json_free(body); return;
+        }
+        size_t b_written = 0, b_total = 0;
+        esp_err_t berr = agent_context_block(block, s_line_scratch,
+                                             sizeof s_line_scratch, &b_written, &b_total);
+        if (berr == ESP_ERR_INVALID_ARG) {
+            emit_failure(name, reply_to, "E_CONFIG", "unknown block");
+            json_free(body); return;
+        }
+        if (berr != ESP_OK) {
+            emit_failure(name, reply_to, "E_INTERNAL", "context not readable");
+            json_free(body); return;
+        }
+        json_node_t *result = json_add_object(root, "result");
+        json_add_string(root, "name", "context.block");
+        json_add_bool(root, "ok", true);
+        if (result != NULL) {
+            json_add_string(result, "block", block);
+            json_add_int(result, "bytes", (int64_t)b_written);
+            json_add_string(result, "text", s_line_scratch);
+            json_add_bool(result, "truncated", b_total > b_written);
+        }
+        built = ESP_OK;
+    } else if (name && strcmp(name, "context.compact") == 0) {
+        /* `04` §4.33: replaces the conversation with a model-written summary. Refused
+         * while a run is in flight, like `history.clear`: the run appends to and
+         * trims the same buffer between rounds. */
+        agent_status_t agent;
+        agent_status(&agent);
+        if (agent.busy) {
+            emit_failure(name, reply_to, "E_BUSY", "agent run in flight");
+            json_free(body); return;
+        }
+        int64_t keep = 0;
+        const json_node_t *keep_node = json_get(args, "keep");
+        if (keep_node != NULL && !json_int(keep_node, &keep)) {
+            emit_failure(name, reply_to, "E_CONFIG", "invalid keep");
+            json_free(body); return;
+        }
+        if (keep < 0 || keep > (int64_t)AGENT_COMPACT_KEEP_MAX) {
+            emit_failure(name, reply_to, "E_CONFIG", "invalid keep");
+            json_free(body); return;
+        }
+        compact_args_t *ca = calloc(1, sizeof *ca);
+        if (ca == NULL) {
+            emit_failure(name, reply_to, "E_INTERNAL", "compaction task not started");
+            json_free(body); return;
+        }
+        snprintf(ca->reply_to, sizeof ca->reply_to, "%s", reply_to);
+        ca->keep = (uint32_t)keep;
+        ca->start_us = esp_timer_get_time();
+        /* 8192 words: the summarisation buffer is static, but the provider's TLS
+         * handshake runs on this task's stack. */
+        if (xTaskCreate(compact_task, "ctx_compact", 8192, ca, 4, NULL) != pdPASS) {
+            free(ca);
+            emit_failure(name, reply_to, "E_INTERNAL", "compaction task not started");
+            json_free(body); return;
+        }
+        json_free(body);
+        return;
     } else if (name && strcmp(name, "sys.reset_counter") == 0) {
         int32_t prev = 0;
         if (store_nvs_get_int("boot_failures", &prev) != ESP_OK) prev = 0;

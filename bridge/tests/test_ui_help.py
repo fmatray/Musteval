@@ -484,6 +484,16 @@ def _every_modal() -> list[tuple[str, Any]]:
         ("InfoModal", lambda: M.InfoModal(
             "Diagnostics", [("Memory", ["heap 1"]), ("Boot", ["safe false"])]
         )),
+        ("ContextModal", lambda: M.ContextModal(
+            {
+                "budget": 16384,
+                "used": 1304,
+                "free": 15080,
+                "messages": 3,
+                "blocks": {"user": 40, "assistant": 30},
+                "counts": {"skills": 2, "tools": 18, "user": 2, "assistant": 1},
+            }
+        )),
         ("HelpModal", lambda: M.HelpModal(help_tabs())),
         ("TodoEditor", lambda: M.TodoEditor([{"name": "p1", "tasks": []}])),
         ("_PickBox", lambda: M._PickBox(
@@ -543,7 +553,7 @@ async def test_every_modal_keeps_a_one_row_two_column_gutter(size):
             app.push_screen(factory())
             await pilot.pause(0.2)
             box = pilot.app.screen.query_one(
-                ".prompt-box, .pick-box, .info-box, .help-box"
+                ".prompt-box, .pick-box, .info-box, .help-box, .context-box"
             )
             left = box.region.x
             right = width - box.region.right
@@ -621,7 +631,7 @@ async def test_a_modal_that_overflows_scrolls_rather_than_drawing_past_its_borde
             app.push_screen(factory())
             await pilot.pause(0.3)
             box = pilot.app.screen.query_one(
-                ".prompt-box, .pick-box, .info-box, .help-box"
+                ".prompt-box, .pick-box, .info-box, .help-box, .context-box"
             )
             area = box.content_region
             for child in box.walk_children():
@@ -657,7 +667,7 @@ _MODAL_CHROME_ROWS = 4
 #: ceiling. Both are documents rather than forms: the help catalogue is a tab per
 #: command group and the file editor is a file. §4's "content-sized unless it is a
 #: document" is the exemption; every other box must hug its rows.
-_DOCUMENT_MODALS = frozenset({"HelpModal", "FilePrompt"})
+_DOCUMENT_MODALS = frozenset({"HelpModal", "FilePrompt", "ContextModal"})
 
 #: Two rows of slack over the leaf count: a `Select` reports its closed height while
 #: its options list contributes a border row, and a one-row `Static` can wrap to two
@@ -709,7 +719,7 @@ async def test_a_modal_box_is_its_content_and_not_a_fraction_of_the_screen(size)
             app.push_screen(factory())
             await pilot.pause(0.2)
             box = pilot.app.screen.query_one(
-                ".prompt-box, .pick-box, .info-box, .help-box"
+                ".prompt-box, .pick-box, .info-box, .help-box, .context-box"
             )
             content = box.content_region.height
             leaves = _leaf_rows(box)

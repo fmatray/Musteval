@@ -16,7 +16,8 @@ from bridge.ui.render import (
     UNREACHABLE,
     WIFI_WORDS,
     binding_pairs,
-    context_lines,
+    context_blocks,
+    context_summary,
     format_uptime,
     hint_bar,
     key_label,
@@ -477,61 +478,108 @@ def test_reboot_line_names_the_grace_period():
     assert reboot_line({}) == "rebooting"
 
 
-def test_context_lines_names_every_block_and_sizes_it() -> None:
-    """`04` §4.30's eight blocks, all eight on screen.
+def test_context_blocks_name_every_block_in_the_documents_order() -> None:
+    """`04` §4.30's eight blocks, all eight offered as rows.
 
     A missing block reads as one the device cannot report, and a reader checking
     "where did my budget go" cannot tell a zero from an omission, so `thinking` must
-    appear with its measured 0 rather than being filtered out.
+    appear with its measured 0 rather than being filtered out of the list.
     """
-    blocks = {
-        "system_prompt": 4096,
-        "skills": 512,
-        "tools": 300,
-        "user": 40,
-        "assistant": 30,
+    counts = {
+        "skills": 3,
+        "tools": 18,
+        "user": 2,
+        "assistant": 1,
         "thinking": 0,
-        "tool_calls": 20,
-        "tool_output": 10,
+        "tool_calls": 4,
+        "tool_output": 4,
     }
-    lines = context_lines(
-        {"budget": 16384, "used": 5000, "free": 11384, "messages": 3, "blocks": blocks}
+    blocks = {"system_prompt": 4096, "tools": 1638, "user": 40}
+    rows = context_blocks({"budget": 16384, "counts": counts, "blocks": blocks})
+    assert [key for key, _, _, _ in rows] == [
+        "system_prompt", "skills", "tools", "user", "assistant", "thinking",
+        "tool_calls", "tool_output",
+    ]
+    assert [label for _, label, _, _ in rows] == [
+        "system prompt", "skills", "tools", "user messages", "assistant messages",
+        "assistant thinking", "tool calls", "tool outputs",
+    ]
+    # The counter is the item count, and `thinking`'s zero is a measurement rather
+    # than an omission: the trace never enters the history.
+    assert [counter for _, _, counter, _ in rows] == [
+        "—", "3", "18", "2", "1", "0", "4", "4"
+    ]
+    # The share is the block's byte share of the budget, so "what can I drop" and
+    # "what is in there" are answered from the same row.
+    assert [share for _, _, _, share in rows] == [
+        "25%", "0%", "9%", "0%", "0%", "0%", "0%", "0%"
+    ]
+
+
+def test_context_blocks_show_an_em_dash_for_a_block_with_no_measurement() -> None:
+    """`system_prompt` is one document, so the device sends no counter for it, and a
+    reply with no `budget` makes no share measurable.
+
+    A zero would be an answer and would tell a reader there is no prompt.
+    """
+    rows = context_blocks({"counts": {"user": 1}})
+    prompt = next(row for row in rows if row[0] == "system_prompt")
+    assert prompt[2] == "—"
+    # No budget in the reply: no share is measurable, which is not "0%".
+    assert prompt[3] == "—"
+    assert next(row for row in rows if row[0] == "user")[2] == "1"
+
+
+def test_context_blocks_survive_a_reply_that_omits_the_counts() -> None:
+    """A malformed or older reply lists the blocks with no numbers, not nothing."""
+    rows = context_blocks({})
+    assert len(rows) == 8
+    assert {counter for _, _, counter, _ in rows} == {"—"}
+    assert {share for _, _, _, share in rows} == {"—"}
+
+
+def test_context_blocks_treat_a_non_numeric_measurement_as_unmeasured() -> None:
+    """`17` §4: a value the device chose is data. A string in a numeric field is the
+    device's reply, not the bridge's to crash on — the compositor is behind this
+    function, so a `TypeError` here blanks every screen the modal is opened over.
+    """
+    rows = context_blocks(
+        {"budget": "many", "blocks": {"skills": "big", "tools": None},
+         "counts": {"skills": "lots", "tools": 18}}
     )
-    # One row per block, in the document's order, each naming its own byte count.
-    assert len(lines) == 8 + 1 + 1 + 2
-    for label, key in zip(
-        ["system prompt", "skills", "tools", "user messages",
-         "assistant messages", "assistant thinking", "tool calls", "tool outputs"],
-        blocks,
-    ):
-        row = next(line for line in lines if line.startswith(f"  {label}"))
-        assert row.split()[len(label.split()):][0] == str(blocks[key])
-    assert lines[-2] == "used 5000 of 16384 B, 11384 B free"
-    assert lines[-1] == "3 messages in the history"
+    by_key = {key: (counter, share) for key, _, counter, share in rows}
+    # An unmeasurable size has no share, and an unmeasurable count is not a zero.
+    assert by_key["skills"] == ("—", "—")
+    # No usable budget means no share, even for a block whose size is known: a share of
+    # zero is a claim about a budget the reply did not give.
+    assert by_key["tools"] == ("18", "—")
+    assert by_key["system_prompt"] == ("—", "—")
 
 
-def test_context_lines_floors_the_bytes_column_at_its_header() -> None:
-    """A run whose every block is a single digit still lines up under `bytes`."""
-    lines = context_lines(
-        {"budget": 16384, "used": 8, "free": 16376, "messages": 1,
-         "blocks": {"user": 8}}
+def test_context_summary_reads_the_frames_own_totals() -> None:
+    """`used` and `budget` are the frame's numbers, not a sum of the blocks.
+
+    A reader comparing them is asking how close the next prompt is to being refused,
+    which is a different question from which block is largest.
+    """
+    assert context_summary(
+        {"budget": 16384, "used": 5000, "free": 11384, "messages": 3}
+    ) == "used 5000 of 16384 B, 11384 B free · 3 messages in the history"
+
+
+def test_context_summary_treats_a_non_numeric_total_as_zero() -> None:
+    """Same trust boundary as the blocks: `"many"` is a reply this function must
+    render, not one it must raise on."""
+    assert context_summary({"budget": "many", "used": 5000, "free": 11384}) == (
+        "used 0 of 0 B, 0 B free · 0 messages in the history"
     )
-    assert lines[0] == "  block               bytes  share"
-    row = next(line for line in lines if line.startswith("  user messages"))
-    start = lines[0].index("bytes")
-    # `bytes` and the digit occupy the same field: the header names the column it
-    # sits over, which is the whole point of flooring the width at the label.
-    assert lines[0][start:start + 5] == "bytes"
-    assert row[start:start + 5] == "    8"
 
 
-def test_context_lines_survives_a_reply_that_omits_the_blocks() -> None:
-    """A malformed or older reply shows zeros rather than raising at the reader."""
-    lines = context_lines({})
-    assert "used 0 of 0 B, 0 B free" in lines
-    assert "0 messages in the history" in lines
+def test_context_summary_calls_one_message_singular() -> None:
+    assert context_summary(
+        {"budget": 100, "used": 1, "free": 99, "messages": 1}
+    ).endswith("1 message in the history")
 
 
-def test_context_lines_calls_one_message_singular() -> None:
-    lines = context_lines({"budget": 100, "used": 1, "free": 99, "messages": 1})
-    assert lines[-1] == "1 message in the history"
+def test_context_summary_survives_a_reply_that_omits_the_totals() -> None:
+    assert context_summary({}) == "used 0 of 0 B, 0 B free · 0 messages in the history"

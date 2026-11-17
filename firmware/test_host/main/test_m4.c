@@ -2699,6 +2699,209 @@ TEST_CASE("history_measure never bills a thinking block", "[m4]")
                               usage.assistant);
 }
 
+/* `04` §4.30 counts: each counter is the number of items the block holds, not its
+ * size. The assistant turn below carries two calls, which is the case a counter that
+ * counted turns would get wrong. */
+TEST_CASE("history_measure counts items, not bytes", "[m4]")
+{
+    const char *history =
+        "[{\"role\":\"user\",\"content\":\"hi\"},"
+        "{\"role\":\"assistant\",\"content\":\"ok\",\"tool_calls\":["
+        "{\"id\":\"c1\"},{\"id\":\"c2\"}]},"
+        "{\"role\":\"tool\",\"content\":\"r\",\"tool_call_id\":\"c1\"},"
+        "{\"role\":\"tool\",\"content\":\"s\",\"tool_call_id\":\"c2\"},"
+        "{\"role\":\"user\",\"content\":\"again\"}]";
+    agent_context_usage_t usage;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_measure(history, &usage));
+
+    TEST_ASSERT_EQUAL_size_t(2, usage.count_user);
+    TEST_ASSERT_EQUAL_size_t(1, usage.count_assistant);
+    TEST_ASSERT_EQUAL_size_t(2, usage.count_tool_output);
+    /* One turn, two calls: the counter names calls because that is what a reader is
+     * asking about when they ask how many tools ran. */
+    TEST_ASSERT_EQUAL_size_t(2, usage.count_tool_calls);
+    TEST_ASSERT_EQUAL_size_t(0, usage.count_thinking);
+}
+
+/* `04` §4.32: a block is the text of the messages it names, joined by newlines. The
+ * test names the exact expected string rather than checking "not empty", so a
+ * selector that returned the whole history would fail here. */
+TEST_CASE("history_block returns the messages a role names", "[m4]")
+{
+    const char *history =
+        "[{\"role\":\"user\",\"content\":\"hi\"},"
+        "{\"role\":\"assistant\",\"content\":\"ok\"},"
+        "{\"role\":\"user\",\"content\":\"again\"}]";
+    char out[512];
+    size_t written = 0, total = 0;
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_block(history, "user", out, sizeof out,
+                                                      &written, &total));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"role\":\"user\",\"content\":\"hi\"}\n"
+        "{\"role\":\"user\",\"content\":\"again\"}", out);
+    TEST_ASSERT_EQUAL_size_t(strlen(out), written);
+    TEST_ASSERT_EQUAL_size_t(strlen(out), total);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_block(history, "assistant", out,
+                                                      sizeof out, &written, &total));
+    TEST_ASSERT_EQUAL_STRING("{\"role\":\"assistant\",\"content\":\"ok\"}", out);
+
+    /* `tool_calls` is a block the wire names (`04` §4.32), and its rule is not a
+     * role match: an assistant message with no tool call is the assistant's turn, and
+     * a reader who selected "tool calls" did not ask for it. */
+    const char *called =
+        "[{\"role\":\"assistant\",\"content\":\"ok\"},"
+        "{\"role\":\"assistant\",\"content\":null,"
+        "\"tool_calls\":[{\"id\":\"c1\",\"name\":\"gpio\"}]}]";
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_block(called, "tool_calls", out,
+                                                      sizeof out, &written, &total));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"role\":\"assistant\",\"content\":null,"
+        "\"tool_calls\":[{\"id\":\"c1\",\"name\":\"gpio\"}]}", out);
+
+    /* `NULL` is every message, which is what a reader who selects nothing means. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_block(history, NULL, out, sizeof out,
+                                                      &written, &total));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"role\":\"user\",\"content\":\"hi\"}\n"
+        "{\"role\":\"assistant\",\"content\":\"ok\"}\n"
+        "{\"role\":\"user\",\"content\":\"again\"}", out);
+}
+
+/* A block larger than the buffer reports the whole length, so the caller can say the
+ * text was truncated rather than silently showing a prefix (`04` §4.32). */
+TEST_CASE("history_block reports truncation instead of overrunning", "[m4]")
+{
+    const char *history =
+        "[{\"role\":\"user\",\"content\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]";
+    char out[16];
+    size_t written = 0, total = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_block(history, "user", out, sizeof out,
+                                                      &written, &total));
+    TEST_ASSERT_EQUAL_size_t(15, written);
+    TEST_ASSERT_EQUAL_size_t(strlen("{\"role\":\"user\",\"content\":"
+                                    "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"), total);
+    TEST_ASSERT_EQUAL_INT(0, (int)strlen(out) >= (int)sizeof out);
+}
+
+/* `04` §4.33: `keep` is applied before summarising, so the two halves never overlap.
+ * `slice` names what the model is asked to summarise, `suffix` what is kept verbatim. */
+TEST_CASE("history slice and suffix split the history at keep", "[m4]")
+{
+    const char *history =
+        "[{\"role\":\"user\",\"content\":\"one\"},"
+        "{\"role\":\"assistant\",\"content\":\"two\"},"
+        "{\"role\":\"user\",\"content\":\"three\"}]";
+    char out[512];
+    size_t written = 0, total = 0;
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_slice(history, 1, out, sizeof out,
+                                                      &written, &total));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"role\":\"user\",\"content\":\"one\"}\n"
+        "{\"role\":\"assistant\",\"content\":\"two\"}", out);
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_suffix(history, 1, out, sizeof out,
+                                                       &written, &total));
+    TEST_ASSERT_EQUAL_STRING("{\"role\":\"user\",\"content\":\"three\"}", out);
+
+    /* `keep: 2` is the case `/compact 2` sends, and it is the only one that joins:
+     * two kept messages are one NDJSON document per line, so the second needs the
+     * newline the single-message case has no use for. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_suffix(history, 2, out, sizeof out,
+                                                       &written, &total));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"role\":\"assistant\",\"content\":\"two\"}\n"
+        "{\"role\":\"user\",\"content\":\"three\"}", out);
+
+    /* Keeping everything leaves nothing to summarise, and the rewrite below is then a
+     * refusal to compact at all rather than a summary of nothing. */
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_slice(history, 3, out, sizeof out,
+                                                      &written, &total));
+    TEST_ASSERT_EQUAL_size_t(0, total);
+}
+
+/* `04` §4.33: the summary opens the history as `role:"user"` with the trailing
+ * sentence, and the kept messages follow it. A summary carrying a quote or a newline
+ * must not produce JSON the history cannot be parsed from. */
+TEST_CASE("history replace_with_summary opens on the escaped summary", "[m4]")
+{
+    char history[1024];
+    snprintf(history, sizeof history,
+             "[{\"role\":\"user\",\"content\":\"one\"},"
+             "{\"role\":\"assistant\",\"content\":\"two\"}]");
+    size_t used = strlen(history);
+    char scratch[1024];
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+                          agent_history_replace_with_summary(
+                              history, sizeof history, &used, "said \"hi\"\nand left", 1,
+                              scratch, sizeof scratch));
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[{\"role\":\"user\",\"content\":\"said \\\"hi\\\"\\nand left"
+        "\\n\\nThe conversation above was compacted into this summary. "
+        "Continue from it.\"},"
+        "{\"role\":\"assistant\",\"content\":\"two\"}]",
+        history);
+    TEST_ASSERT_EQUAL_size_t(strlen(history), used);
+
+    /* The result must be readable by the same parser the request builder trusts. */
+    agent_context_usage_t usage;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_measure(history, &usage));
+    TEST_ASSERT_EQUAL_size_t(2, usage.messages);
+    TEST_ASSERT_EQUAL_size_t(1, usage.count_user);
+    TEST_ASSERT_EQUAL_size_t(1, usage.count_assistant);
+}
+
+/* `04` §4.33: a model writes Markdown, so its summary carries carriage returns,
+ * tabs and occasionally a control character from a copied transcript. Every one of
+ * them is escaped, or the history the request builder sends is not JSON. */
+TEST_CASE("history replace_with_summary escapes every control character", "[m4]")
+{
+    char history[512];
+    snprintf(history, sizeof history, "[{\"role\":\"user\",\"content\":\"one\"}]");
+    size_t used = strlen(history);
+    char scratch[512];
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+                          agent_history_replace_with_summary(
+                              history, sizeof history, &used,
+                              "a\r\tb\x01" "c\\d", 0, scratch, sizeof scratch));
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[{\"role\":\"user\",\"content\":\"a\\r\\tb\\u0001c\\\\d"
+        "\\n\\nThe conversation above was compacted into this summary. "
+        "Continue from it.\"}]",
+        history);
+
+    /* The proof is the parser, not the string: the escape is right only if the
+     * history it produced is one `agent_history_measure` can walk. */
+    agent_context_usage_t usage;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_history_measure(history, &usage));
+    TEST_ASSERT_EQUAL_size_t(1, usage.messages);
+}
+
+/* A buffer that cannot hold the result is refused and left exactly as it was: a
+ * half-written history is a conversation no provider can be sent (`04` §4.33). */
+TEST_CASE("history replace_with_summary refuses rather than half-writing", "[m4]")
+{
+    char history[64];
+    snprintf(history, sizeof history, "[{\"role\":\"user\",\"content\":\"one\"}]");
+    char before[64];
+    snprintf(before, sizeof before, "%s", history);
+    size_t used = strlen(history);
+    char scratch[128];
+
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_SIZE,
+                          agent_history_replace_with_summary(
+                              history, sizeof history, &used, "a summary long enough to "
+                              "overflow the buffer", 0, scratch, sizeof scratch));
+    TEST_ASSERT_EQUAL_STRING(before, history);
+    TEST_ASSERT_EQUAL_size_t(strlen(before), used);
+}
+
 TEST_CASE("history_measure refuses bytes that are not a message array", "[m4]")
 {
     agent_context_usage_t usage;

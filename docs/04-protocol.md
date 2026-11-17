@@ -654,7 +654,9 @@ reads are never refused.
 | `todo.apply` | `{op, task?, phase?, items?, list?, reason?}` | `{phases:[{name, tasks:[{content,status,blocker?}]}]}` | `E_TOOL` (schema violation, `no task matches "<target>"`, or a bound breach), `E_INTERNAL` | yes |
 | `net.ping` | `{target}` | `{target, host, sent, received, loss_pct, rtt_min_ms, rtt_avg_ms, rtt_max_ms}` | `E_CONFIG` (unknown target, no provider, no ntp server, no config), `E_WIFI` (link down), `E_BUSY` (a ping already in flight), `E_INTERNAL` (ping session could not start) | yes |
 | `history.clear` | `{}` | `{cleared, messages}` | `E_BUSY` (a run is in flight) | no |
-| `context.budget` | `{}` | `{budget, used, free, messages, blocks:{system_prompt, skills, tools, user, assistant, thinking, tool_calls, tool_output}}` | `E_INTERNAL` (the prompt, tool array or history is not allocated) | yes |
+| `context.budget` | `{}` | `{budget, used, free, messages, blocks:{system_prompt, skills, tools, user, assistant, thinking, tool_calls, tool_output}, counts:{skills, tools, user, assistant, thinking, tool_calls, tool_output}}` | `E_INTERNAL` (the prompt, tool array or history is not allocated) | yes |
+| `context.block` | `{block}` | `{block, bytes, text, truncated}` | `E_CONFIG` (unknown block), `E_PROTOCOL` (missing or non-string `block`) | yes |
+| `context.compact` | `{keep?}` | `{summarised, kept, before_bytes, after_bytes, summary}` | `E_BUSY` (a run is in flight), `E_LLM_UNAVAILABLE` (every provider failed), `E_LLM_RATE` (the budget is exhausted), `E_CONFIG` (bad `keep`), `E_TOOL` (the model answered nothing usable) | no |
 
 
 ### 4.1 `status`
@@ -1453,7 +1455,7 @@ a second frame and without the host guessing.
 ```
 
 ```json
-{"v":1,"type":"command.result","id":"d-55","ts":1730572630,"reply_to":"b-45","name":"context.budget","ok":true,"result":{"budget":16384,"used":1304,"free":15080,"messages":3,"blocks":{"system_prompt":900,"skills":200,"tools":300,"user":40,"assistant":30,"thinking":0,"tool_calls":20,"tool_output":10}},"duration_ms":2}
+{"v":1,"type":"command.result","id":"d-55","ts":1730572630,"reply_to":"b-45","name":"context.budget","ok":true,"result":{"budget":16384,"used":1304,"free":15080,"messages":3,"blocks":{"system_prompt":900,"skills":200,"tools":300,"user":40,"assistant":30,"thinking":0,"tool_calls":20,"tool_output":10},"counts":{"skills":2,"tools":18,"user":2,"assistant":1,"thinking":0,"tool_calls":1,"tool_output":1}},"duration_ms":2}
 ```
 
 | Block | What is counted |
@@ -1484,6 +1486,19 @@ count the loop will send. This is why the frame exists rather than the bridge re
 messages. Those bytes ship, so a budget that ignored them would be optimistic exactly
 where the margin is thin. `free` is `budget - used`, floored at 0; a device over the
 cap reports 0 rather than a negative number.
+
+**`counts` is how many items each block holds**, beside the byte count, because a
+reader asking "what is in my context" wants `18 tools` and `2 skills` and a byte
+count cannot answer it. `skills` is the number of skills whose index made it into the
+prompt, which is the skills the index had room for and not the skills on disk.
+`tools` is the length of the array `tools_json` actually built, so `tools.disabled`
+entries and the tools an unconfigured subsystem removes are already absent — the
+number the model is offered, never the registry size. `user`, `assistant`,
+`tool_calls` and `tool_output` count history messages and calls, so
+`counts.assistant` and `counts.user` add up with `counts.tool_output` to `messages`
+on a history whose tool calls all resolved. `thinking` is 0 for the reason its byte
+count is: a trace never enters the history. There is no `counts.system_prompt`: it is
+one document, and "1" answers nothing.
 
 **`skills` overlaps `system_prompt`.** The index is appended into the same buffer
 (`02-firmware.md` §`skills`), so the two fields are a whole and a part. Adding all eight
@@ -1532,6 +1547,121 @@ edit here.
 (§2.1); erasure has no shorthand, so `secret.delete` is a command name only and the
 frame type list is unchanged. A frame of `type: "secret.delete"` is `E_PROTOCOL`, the
 same as any other name that is not a type.
+
+### 4.32 `context.block`
+
+The text of one block of the next request, so a reader can see *what* the budget is
+being spent on rather than only how much. Where `§4.30` answers "where did the bytes
+go", this answers "what are they".
+
+```json
+{"v":1,"type":"command","id":"b-46","ts":1730572632,"name":"context.block","args":{"block":"system_prompt"}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-56","ts":1730572633,"reply_to":"b-46","name":"context.block","ok":true,"result":{"block":"system_prompt","bytes":900,"text":"You are Musteval.\n","truncated":false},"duration_ms":4}
+```
+
+| Arg | Type | Required | Notes |
+|---|---|---|---|
+| `block` | string | yes | One of the eight names `blocks` carries in `§4.30` |
+
+| Field | Means |
+|---|---|
+| `block` | The name asked for, echoed |
+| `bytes` | The block's **whole** length, so it stays truthful when `truncated` is `true` |
+| `text` | The block's content as UTF-8 text, cut to the cap below |
+| `truncated` | `text` is a prefix and the block is longer |
+
+**The cap is 8192 raw bytes**, the same as `sandbox.read` (§4.18) and for the same
+reason: ordinary UTF-8 leaves the whole `command.result` inside the 16384-byte TX
+limit once the envelope and escaping are added. A block above the cap returns its
+first 8192 bytes and MUST NOT be continued in a second frame. Pathological content
+that still overflows after escaping is answered with `E_STORAGE` naming the cause,
+like the read.
+
+**`system_prompt` includes the skill index.** The index is appended into the same
+buffer (`§4.30`), so the whole prompt is what a reader asking for the persona should
+get, and `skills` returns the index alone. That is the one pair where the two blocks
+overlap, and it is why `§4.30` calls `skills` a suffix rather than an eighth region.
+
+**`tools` is the array's JSON text**, exactly as it ships — the model's own view, not
+a description of the registry. `skills` is the index, likewise verbatim, so a reader
+can see which skills the prompt had room for.
+
+**`user`, `assistant`, `thinking`, `tool_calls` and `tool_output` return the history's
+messages of that kind**, one per line as the JSON text each message already is, in
+history order. Returning the array verbatim instead would hand a reader the wrapper
+and its commas, which are not a block. `thinking` is always empty for the reason
+`§4.30` gives.
+
+**An unknown block is `E_CONFIG`, not an empty answer.** A client that mistypes a
+name has a bug, and an empty string would render as a block that is genuinely empty —
+the same reading a zero row avoids in `§4.30`.
+
+**Busy-safe**, like `§4.30`: it reads the same buffers and writes none.
+
+### 4.33 `context.compact`
+
+Replaces the conversation with a model-written summary of it. This is the one command
+that spends the LLM budget on the conversation rather than on the user's question, and
+the one that rewrites the history without discarding it.
+
+```json
+{"v":1,"type":"command","id":"b-47","ts":1730572640,"name":"context.compact","args":{"keep":2}}
+```
+
+```json
+{"v":1,"type":"command.result","id":"d-57","ts":1730572651,"reply_to":"b-47","name":"context.compact","ok":true,"result":{"summarised":14,"kept":2,"before_bytes":12040,"after_bytes":1830,"summary":"## Goal\n..."},"duration_ms":11043}
+```
+
+| Arg | Type | Required | Notes |
+|---|---|---|---|
+| `keep` | int | no | How many of the newest messages to keep verbatim after the summary. Default 0, ceiling 8 |
+
+| Field | Means |
+|---|---|
+| `summarised` | How many messages the summary replaced |
+| `kept` | How many of the newest messages were kept verbatim |
+| `before_bytes` | `used` before the compaction, so a caller can show the saving |
+| `after_bytes` | `used` after it |
+| `summary` | The summary text that now opens the history |
+
+**The summary becomes the first message, as `role:"user"`.** A provider rejects a
+history whose first message is `assistant`, and a `system` message would be a second
+persona beside the prompt the device already sends. The shape is
+`{"role":"user","content":"<summary>\n\nThe conversation above was compacted into
+this summary. Continue from it."}`: it is a user turn because it is what the user's
+conversation has become, and the trailing sentence is what stops the model reading the
+summary as a fresh request and answering it.
+
+**`keep` is applied before summarising, not after.** The messages to keep are the
+newest `keep`, and they are excluded from the text sent for summarising, so the model
+is never asked to summarise text that will also be present verbatim. The kept
+messages follow the summary in history order.
+
+**Refused with `E_BUSY` while a run is in flight**, like `history.clear` (§4.28): the
+run appends to and trims the same buffer between rounds, and a history rewritten
+under it is one whose tool results no longer answer its calls. The run's own trim is
+the mechanism that keeps a long run bounded (`02-firmware.md` §4.2); this is the
+operator's.
+
+**The summarisation call is one `llm_query`**, with a fixed system prompt that tells
+the model it is summarising rather than continuing, and the serialised conversation
+as the user prompt. It carries no tools, so the model cannot act on the conversation
+it is reading. A reply that exceeds the output cap is refused with `E_TOOL` rather
+than stored: a summary cut mid-sentence is a checkpoint that silently lost its
+ending, which is worse than having compacted nothing.
+
+**A failed compaction changes nothing.** The buffer is rewritten only after a usable
+summary is in hand, so a provider failure, a budget refusal or an empty answer leaves
+the conversation exactly as it was and the error names the cause. This is why the
+command is safe to send on a device whose radio is marginal.
+
+**On success the buffer is replaced, not appended.** The old messages are gone: the
+summary is the only record of them on the device, so a caller that wants the
+transcript must have exported it first. `05-bridge.md` §7.5's `/compact` says so in
+chat before it sends.
 
 ## 5. Error codes
 

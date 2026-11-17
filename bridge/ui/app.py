@@ -34,6 +34,7 @@ from .help import COMMANDS, CommandSuggester, Completion, help_tabs, options
 from .history import PromptHistory, history_path
 from .logs import LogBuffer, LogFilter, render_log_line
 from .modals import (
+    ContextModal,
     Working,
     HelpModal,
     InfoModal,
@@ -66,7 +67,6 @@ from .onboard import provider_secret_key, wifi_secret_key
 from .render import (
     LINK_WORDS,
     binding_pairs,
-    context_lines,
     UNREACHABLE,
     SlashHighlighter,
     clip,
@@ -1804,12 +1804,12 @@ class BridgeApp(App):
                 self._chat().write(line)
             return
         if name == "context.budget" and isinstance(result, dict):
-            # `05` §7.5: the eight blocks of the next request, in a modal because it is
-            # a glance at a budget rather than a place to work — the same rule as the
-            # `/sys` box. `context_lines` owns the layout so the modal and any future
-            # reader of the frame cannot disagree about the order of the blocks.
-            body = context_lines(result)
-            self.push_screen(InfoModal("context", [("", body)]))
+            # `05` §7.5: the blocks of the next request on the left, the selected
+            # block's text on the right. A modal because it is a glance at a budget
+            # rather than a place to work — the same rule as the `/sys` box.
+            # `context_blocks` owns the row layout so the list and the counters
+            # cannot disagree about the order or the labels.
+            self.push_screen(ContextModal(result))
             return
         if name == "templates.list" and isinstance(result, dict):
             for line in template_names(result):
@@ -2064,6 +2064,9 @@ class BridgeApp(App):
             return
         if head == "thinking":
             await self._thinking(words[1:])
+            return
+        if head == "compact":
+            await self._compact(words[1:])
             return
         if head == "sys" and words[1:2] in (["reload"], ["reboot"]):
             # `05` §7: both answer in chat as a sentence, which
@@ -2603,6 +2606,115 @@ class BridgeApp(App):
             return [], [f"{refused}; type the ssid"]
         return networks, [truncated] if truncated else []
 
+    async def _quiet(
+        self, name: str, args: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Send one command and return `(result, note)`, bypassing the renderer.
+
+        `_request` hands every reply to `_on_command_result`, which is right for a
+        command the reader typed and wrong for one this code asked on their behalf:
+        `context.budget` opens the `/context` modal, so a budget read for a count would
+        open a box nobody requested — under the confirm that is about to be pushed.
+
+        `note` is why there is no result, phrased for chat; the caller decides whether
+        to say it. A caller that shows the same facts in a pane of its own (the scan
+        modal) leaves it alone, and one that has no pane writes it.
+        """
+        try:
+            reply = await self.session.request(
+                Frame(
+                    type="command",
+                    id=new_id("b"),
+                    ts=0,
+                    body={"name": name, "args": args or {}},
+                )
+            )
+        except (SessionError, asyncio.TimeoutError):
+            return None, "the device did not answer in time"
+        if reply.type != "command.result":
+            return None, "the device sent no result"
+        if not reply.body.get("ok"):
+            error = reply.body.get("error") or {}
+            return None, f"refused ({error.get('code') or 'no answer'})"
+        return reply.body.get("result"), None
+
+    async def _compact(self, rest: list[str]) -> None:
+        """`05` §7.5: replace the conversation with a model-written summary.
+
+        Four steps, and the confirm between the second and the third is the one that
+        matters: the device discards the messages it summarises, so the transcript has
+        to be exported *before* the frame is sent. The modal names what will go —
+        messages and bytes — rather than asking "are you sure", because the count is
+        the only thing that makes the answer decidable.
+        """
+        # One owner for the arity and the bounds: `parse` already refuses a `keep` it
+        # cannot honour, and a second copy here is a second place for the ceiling to
+        # drift from `04` §4.33.
+        try:
+            args = parse(
+                "/compact" + (f" {' '.join(rest)}" if rest else "")
+            )[0].body["args"]
+        except CommandError as exc:
+            self._chat().write(f"{exc}", kind="error")
+            return
+
+        budget, note = await self._quiet("context.budget")
+        if not isinstance(budget, dict):
+            # A compaction on numbers it could not read would be a summary of a guess.
+            self._chat().write(f"compact: {note}", kind="error")
+            return
+        keep = int(args.get("keep") or 0)
+        messages = int(budget.get("messages") or 0)
+        used = int(budget.get("used") or 0)
+        if messages <= keep:
+            # `05` §7.5's wording, which a reader sees before spending a request.
+            self._chat().write("compact: the conversation is empty")
+            return
+
+        answer = await self.push_screen_wait(
+            ConfirmPrompt(
+                f"Compact {messages} messages ({used} B) into a summary, keeping the "
+                f"newest {keep}?"
+            )
+        )
+        if not answer:
+            self._chat().write("compact cancelled")
+            return
+
+        result, note = await self._quiet("context.compact", args)
+        if not isinstance(result, dict):
+            # `05` §7.5: `E_BUSY` names the thing to do first, because "busy" alone
+            # leaves a reader with no next step.
+            if note == "refused (E_BUSY)":
+                self._chat().write(
+                    "compact: a run is in flight; cancel it first, then compact",
+                    kind="error",
+                )
+            else:
+                # `05` §7.5: a refusal leaves the history untouched, and saying so is
+                # what stops a reader assuming the conversation is already shorter.
+                self._chat().write(
+                    f"compact: {note}; the conversation is unchanged", kind="error"
+                )
+            return
+        before = int(result.get("before_bytes") or 0)
+        after = int(result.get("after_bytes") or 0)
+        kept = int(result.get("kept") or 0)
+        summarised = int(result.get("summarised") or 0)
+        self._chat().write(
+            f"summarised {summarised} message{'s' if summarised != 1 else ''}, "
+            f"kept {kept}, {before} B -> {after} B"
+        )
+        # `05` §7.5: the summary is now the only copy, and saying so is what keeps the
+        # command trustworthy — a reader who had not exported the transcript has just
+        # lost it.
+        self._chat().write(
+            "the summary is now the only copy of the conversation; "
+            "/export writes the chat log to a file"
+        )
+        self._chat().write(result.get("summary") or "(the device sent no summary text)")
+
+
     async def _thinking(self, rest: list[str]) -> None:
         """`05` §7.2: read, or read-modify-write, the provider's thinking level.
 
@@ -2786,6 +2898,49 @@ class BridgeApp(App):
             return
         await self._wifi_add_scanned(networks)
 
+    async def on_context_modal_request_block(
+        self, event: "ContextModal.RequestBlock"
+    ) -> None:
+        """`05` §7.5: fetch one block's text for the modal's right pane.
+
+        The request goes through `parse` for the same reason `_wifi_scan_quiet` does:
+        the app cannot name a command the parser refuses. The reply is deliberately
+        not routed through `_on_command_result`, which would open a second modal on
+        top of the one already asking.
+        """
+        block = event.block
+        try:
+            async with self._working("reading the block", "context.block"):
+                reply = await self.session.request(
+                    Frame(
+                        type="command",
+                        id=new_id("b"),
+                        ts=0,
+                        body={"name": "context.block", "args": {"block": block}},
+                    )
+                )
+        except (SessionError, asyncio.TimeoutError):
+            self._chat().write("the block could not be read", kind="error")
+            return
+        if reply.type != "command.result" or not reply.body.get("ok"):
+            error = reply.body.get("error") or {}
+            self._chat().write(
+                f"block refused ({error.get('code') or 'no answer'})", kind="error"
+            )
+            return
+        result = reply.body.get("result") or {}
+        screen = self.screen
+        if not isinstance(screen, ContextModal):
+            # The reader closed the box while the frame was in flight; there is no
+            # pane to fill and writing the text to chat would answer a question they
+            # have already dismissed.
+            return
+        screen.show_block(
+            block,
+            str(result.get("text") or ""),
+            bool(result.get("truncated")),
+        )
+
     async def _wifi_scan_quiet(
         self,
     ) -> tuple[list[dict[str, Any]], str | None, str | None]:
@@ -2805,13 +2960,15 @@ class BridgeApp(App):
                 "scanning for networks",
                 "wifi.scan; a few seconds, longer in a busy band",
             ):
-                reply = await self.session.request(parse("/wifi scan")[0])
+                result, note = await self._quiet("wifi.scan")
         except (SessionError, asyncio.TimeoutError):
             return [], "scan unavailable", None
-        if reply.type != "command.result" or not reply.body.get("ok"):
-            error = reply.body.get("error") or {}
-            return [], f"scan refused ({error.get('code') or 'no answer'})", None
-        result = reply.body.get("result") or {}
+        if not isinstance(result, dict):
+            # `05` §7.2's notes are pinned by `test_ui_app_errors.py`, and the code the
+            # device named is the part a reader acts on.
+            if note and note.startswith("refused ("):
+                return [], f"scan {note}", None
+            return [], "scan unavailable", None
         networks = [n for n in result.get("networks") or [] if isinstance(n, dict)]
         truncated = None
         if result.get("truncated"):

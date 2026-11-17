@@ -26,7 +26,13 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
     _text,
 )
 from bridge.ui import BridgeApp
-from bridge.ui.modals import ConfirmPrompt, FilePrompt, SecretPrompt, ValuePrompt
+from bridge.ui.modals import (
+    ConfirmPrompt,
+    ContextModal,
+    FilePrompt,
+    SecretPrompt,
+    ValuePrompt,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -151,6 +157,105 @@ async def test_a_scan_that_cannot_run_falls_back_to_a_typed_ssid():
         networks, notes = await app._onboard_scan()
         assert networks == []
         assert notes == ["scan unavailable; type the ssid"]
+
+    await _run(_device(), body)
+
+
+async def test_quiet_reports_a_reply_that_is_not_a_result_as_no_result():
+    """`05` §7.5: a frame that answers a command with something other than
+    `command.result` is a link-level surprise, and the note must say that rather than
+    reading `ok` off a body that has none — which would be a `KeyError`-shaped crash
+    on a reply the protocol allows."""
+    async def body(app, pilot):
+        async def not_a_result(_frame, **_kwargs):
+            return Frame(type="pong", id="d-9", ts=0, body={})
+
+        app.session.request = not_a_result  # type: ignore[assignment]
+        result, note = await app._quiet("context.budget")
+        assert result is None
+        assert note == "the device sent no result"
+
+    await _run(_device(), body)
+
+
+async def test_quiet_returns_the_result_of_a_reply_that_succeeded():
+    """The other half of the same contract: `ok` and a `result` is a result."""
+
+    async def body(app, pilot):
+        result, note = await app._quiet("context.budget")
+        assert note is None
+        assert isinstance(result, dict) and result["budget"] == 16384
+
+    await _run(_device(), body)
+
+
+async def test_a_block_read_that_fails_says_so_and_leaves_the_pane_alone():
+    """`05` §7.5: a `context.block` that cannot be answered is reported in chat and
+    the right pane keeps its prompt, because a pane that half-fills is a block the
+    reader cannot tell from a complete one."""
+
+    async def body(app, pilot):
+        app.submit("/context")
+        await _await_screen(pilot, app, ContextModal)
+        modal = app.screen
+
+        async def broken(_frame, **_kwargs):
+            raise SessionError("nothing on the wire")
+
+        # Broken after the box opened: the budget read is what opens it, so breaking
+        # the link first would test that the box never appears instead of the pane.
+        app.session.request = broken  # type: ignore[assignment]
+        view = modal.query_one("#context-blocks")
+        view.focus()
+        view.action_cursor_down()
+        view.action_cursor_down()
+        await pilot.press("enter")
+        await _await_chat(pilot, app, "the block could not be read")
+        assert "the block could not be read" in _text(app)
+        assert "text of" not in str(modal.query_one("#context-text").render())
+        modal.dismiss(None)
+
+    await _run(_device(), body)
+
+
+async def test_a_refused_block_names_the_code_rather_than_echoing_it():
+    """`04` §4.32: an unknown block is `E_CONFIG`. The code is named so a reader can
+    quote it, and the pane is not filled."""
+
+    async def body(app, pilot):
+        app.submit("/context")
+        await _await_screen(pilot, app, ContextModal)
+        modal = app.screen
+
+        async def refused(_frame, **_kwargs):
+            return Frame(type="command.result", id="d-4", ts=0,
+                         body={"name": "context.block", "ok": False,
+                               "error": {"code": "E_CONFIG", "message": "unknown"}})
+
+        app.session.request = refused  # type: ignore[assignment]
+        modal.selected = "nope"
+        modal.post_message(ContextModal.RequestBlock("nope"))
+        await _await_chat(pilot, app, "block refused (E_CONFIG)")
+        assert "block refused (E_CONFIG)" in _text(app)
+        modal.dismiss(None)
+
+    await _run(_device(), body)
+
+
+async def test_a_block_answer_for_a_closed_box_is_dropped():
+    """`05` §7.5: the reader can close the box while the frame is in flight, and a
+    chat line for a block they have dismissed answers a question they withdrew."""
+
+    async def body(app, pilot):
+        app.submit("/context")
+        await _await_screen(pilot, app, ContextModal)
+        app.screen.dismiss(None)
+        await pilot.pause(0.1)
+        # The message still reaches the app: nothing is waiting for it, and it must
+        # not raise or paint into the screen that replaced the box.
+        app.post_message(ContextModal.RequestBlock("skills"))
+        await pilot.pause(0.3)
+        assert "reading the block" not in _text(app)
 
     await _run(_device(), body)
 

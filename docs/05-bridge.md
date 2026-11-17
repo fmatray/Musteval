@@ -814,7 +814,8 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/tools` | `command {name:"tools.list"}` | none | The tool table: name, enabled or disabled, description. Same output as `/tool list` |
 | `/mcp` | (Local) | none | Lists servers from the last `status.mcp[]` |
 | `/usage` | (Local) | none | Token totals from observed `agent.final.usage` |
-| `/context` | `command {name:"context.budget"}` | none | Opens one box listing every block of the next request — system prompt, skills, tools, user messages, assistant messages, assistant thinking, tool calls, tool outputs — with its measured byte count and share of `LLM_BODY_MAX`, then `used`/`free` and the history depth (§7.5) |
+| `/context` | `command {name:"context.budget"}`, `command {name:"context.block"}` | none | Opens one split box: the blocks of the next request with their item counts on the left, and the selected block's text on the right, fetched on selection (§7.5) |
+| `/compact [keep]` | `command {name:"context.compact"}` | none | Asks first, naming the message count and the bytes; then has the device summarise the conversation and reports what it replaced and what it kept (§7.5) |
 | `/todo [op] [target]` | `command {name:"todo.apply"}` | `op, task?, phase?, items?, list?, reason?` | Renders the phases and their tasks as one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished and a blocked task's `blocker` shown. Bare `/todo` is `view`. Verbs: `init [<phase> <item>...]` (no arguments clears), `start <task>`, `append <phase> <item>...`, `done`, `drop`, `rm`, `block`, `unblock`. A trailing target is sent as both `task` and `phase`: the tool's own `task → phase` chain decides which one matched, so `/todo done auth` finishes every task in phase `auth` without the bridge guessing, and each op keeps its own rule for what a phase target means (`block` still leaves a finished task alone). A required argument is refused by the bridge rather than sent. A finished run whose `agent.final` carried `todo_open: true` prints a hint pointing here, so an unfinished plan is visible instead of silent. `edit` is a UI verb, not an op: the completion list offers it after the device verbs, and it opens the tree editor of §6.2. The editor reads the live tree (`todo.apply` with `view`), lets the reader select a phase or a task, modify it, add one before or after it, drop it, or move it, and sends one `init` that rewrites the whole list. Esc sends nothing. Because that frame replaces every task, the editor re-reads the tree just before sending and refuses its own edit with `the todo list changed while you were editing` when the run moved anything meanwhile: an edit made against a stale tree would otherwise overwrite the run's own work. Because no device op moves, renames or inserts at a position, a full-list rewrite is the only way to express those edits — which is why `init`'s `items` accepts an object carrying a task's own `status` and `blocker` (`tools/todo.md` §Operations): a string would reset every task to `pending` and turn reordering into data loss. |
 | `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
@@ -1135,11 +1136,15 @@ anything itself: the prompt, the tool array and the history are all device state
 a host-side estimate would be a number the device contradicts. Config limits such as
 `llm.max_history_messages` and `agent.max_input_bytes` are still not on the wire.
 
-Deliberately absent, because the device has no surface for them: `/compact` (the
-device keeps `llm.max_history_messages` messages, trims oldest-first, pins the
-running question so it cannot evict itself, and has no summarisation step to
-invoke), and `/mcp add|remove|test` (MCP servers are config-file entries; changing
-them means `config.set` and `reload`).
+Deliberately absent, because the device has no surface for it: `/mcp add|remove|test`
+(MCP servers are config-file entries; changing them means `config.set` and `reload`).
+
+`/compact` used to be on that list, on the grounds that the device keeps
+`llm.max_history_messages` messages, trims oldest-first and had no summarisation step
+to invoke. The trim was the reason it looked unnecessary and the reason it was not: a
+run that hits the cap loses its oldest messages with no record of what they said, so
+the one command that could have kept a record was the one withheld. `§4.33` adds the
+missing surface and §7.5 wires it.
 
 `/clear` used to be on that list, on the grounds that history lives on the device in
 PSRAM and had no reset command. That made the command impossible rather than
@@ -1245,33 +1250,62 @@ model's request unchanged, which is the failure mode worth naming.
   that returns later then needs no config edit, and its entry stays inert meanwhile
   (`03-config.md` §Full schema).
 
-### 7.5 `/context`
+### 7.5 `/context` and `/compact`
 
-One box, one row per block of the next request, each with its measured byte count and
-its share of `LLM_BODY_MAX` (`04-protocol.md` §4.30). The eight rows are the order the
-document lists them — what the model is told, then what was said, then what was called —
-so the box reads top-down as the prompt does.
+`/context` opens one box split down the middle: the eight blocks of the next request
+on the left, the selected block's content on the right. It is a glance at a budget,
+not a place to work, which is why it is a modal rather than a screen.
 
-| Row | Means |
+| Left column | Right column |
 |---|---|
-| `system prompt` | `agent.system_prompt`, whole |
-| `skills` | the skill index appended to it, a suffix and so a subset of the row above |
-| `tools` | the tool array, with `tools.disabled` already removed |
-| `user messages` / `assistant messages` | the conversation's prose |
-| `assistant thinking` | always `0`: a trace is never pushed to the history, so it costs the next request nothing |
-| `tool calls` / `tool outputs` | what the run did |
+| one row per block, with its item count and its share of `LLM_BODY_MAX` | the selected block's text, empty until a row is selected |
 
-- **A zero row is drawn, not dropped.** "Assistant thinking 0 B" answers "where did my
+- **The left rows come from `context.budget`** (`04-protocol.md` §4.30), one send for
+  the whole list. The eight rows are the order the document lists them — what the
+  model is told, then what was said, then what was called — so the column reads
+  top-down as the prompt does.
+- **The right pane comes from `context.block`** (`§4.32`), sent when a row is
+  selected, not with the list: the sum of the eight blocks is most of the request
+  body, and fetching them all to show one would be a second copy of the prompt on
+  every `/context`.
+- **The pane is sized for a 120-column, 40-row read** and scrolls past that. A block
+  is a document, so it gets `height: auto` under a `max-height: 100%` ceiling like
+  every other box (`17-ux-rules.md` §4); the 120/40 figure is the measure it is
+  comfortable at, not a fraction of the terminal.
+- **Each row carries its counter**: skills, tools, messages by role, tool calls and
+  tool outputs. `counts.tools` is the length of the array the model is offered, so a
+  disabled tool is not counted — the number answers "what is in my context", and a
+  tool the model cannot call is not in it. `counts.skills` is the skills the index had
+  room for, not the files on disk.
+- **A zero row is drawn, not dropped.** "assistant thinking 0" answers "where did my
   budget go" with the honest answer; a block missing from the list reads as one the
   device cannot report, and the reader cannot tell that from a measured nothing.
-- **The share is against `budget`, not `used`**, because the question the box answers
-  is how close the next request is to being refused. The two summary lines below the
-  table carry `used`/`free` and the history depth.
-- **The layout lives in `render.context_lines`**, not in the modal, so the numbers and
-  their order have one owner and a test can read them without driving a screen.
-- **It is never estimated on the host.** `/context` sends `context.budget` and renders
+- **Nothing is estimated on the host.** `/context` sends `context.budget` and renders
   the reply; a local count of the conversation would miss the prompt, the skill index
   and the tool array, which are the blocks a reader is usually surprised by.
+- **`render.context_blocks` owns the row layout**, not the modal, so the numbers and
+  their order have one owner and a test can read them without driving a screen.
+
+`/compact` sends `context.compact` (`§4.33`) and reports what it replaced. It is the
+one command that spends the LLM budget on the conversation rather than on a question,
+and the one that destroys history, so it asks first:
+
+1. It sends `context.budget`, and refuses in chat when there is nothing to compact:
+   `compact: the conversation is empty`. The check is the device's own count, not the
+   pane's, because `/clear` is not the only thing that empties a history.
+2. It confirms in a modal naming what will be lost: the message count and the bytes,
+   from the same reply. `Esc` cancels with `compact cancelled`, so a modal opened by
+   mistake cannot spend a request and rewrite the history.
+3. It sends `context.compact` and reports `summarised N messages, kept K, X B -> Y B`.
+4. **It says the summary is now the only copy** in chat, because that is true: the old
+   messages are gone and `05` §5.6's `/export` is how a reader keeps them. A command
+   that silently discards a transcript is one a reader stops trusting.
+
+A refusal is reported with the device's code, like every other command: `E_BUSY` when
+a run is in flight (`cancel it first, then compact`), `E_LLM_UNAVAILABLE` and
+`E_LLM_RATE` from the summarisation call, and `E_TOOL` when the model's answer was
+unusable. **A failed compaction leaves the history untouched**, so the message says so
+rather than implying the conversation is now shorter.
 
 ### 7.6 `/wifi list` and `/wifi edit`
 

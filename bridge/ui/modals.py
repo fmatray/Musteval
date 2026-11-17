@@ -8,11 +8,14 @@ from typing import Any, TypeVar
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import (
     Input,
+    ListItem,
+    ListView,
     OptionList,
     LoadingIndicator,
     Select,
@@ -28,7 +31,7 @@ from .. import providers
 from ..commands import CommandError, todo_edit_tree, todo_init
 from ..protocol import Frame
 from . import onboard
-from .render import _TODO_MARKS, sanitize
+from .render import _TODO_MARKS, context_blocks, context_summary, sanitize
 
 _T = TypeVar("_T")
 
@@ -62,7 +65,7 @@ ModalScreen, * {
    that wants `terminal - 4` cannot say so, but `max-width: 100%` inside a margin
    resolves to exactly that. Before this line a box declared `width: 60` touched both
    edges of a 60-column terminal, and `width: 84` touched both at 80. */
-.prompt-box, .pick-box, .info-box, .help-box {
+.prompt-box, .pick-box, .info-box, .help-box, .context-box {
     margin: 1 2;
     /* `17` §4: a box hugs its content on both axes. Height is the one that was
        wrong: `info-box` asked for 70% of the screen and `help-box` for 80%, so a
@@ -1136,6 +1139,138 @@ class InfoModal(ModalScreen[None]):
                 # escapes every device-supplied value before splicing it, and the
                 # verdict colours are half of what the grid says.
                 yield Static(Text.from_markup("\n".join(lines)))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ContextModal(ModalScreen[None]):
+    """`05` §7.5: `/context` in two panes — the blocks of the next request on the
+    left, the selected block's text on the right.
+
+    A modal rather than a screen for the `help` reason (`05` §5.6): the composer keeps
+    its half-typed prompt, and this is a glance at a budget rather than a place to
+    work.
+
+    The right pane is empty until a block is selected. It is deliberately not
+    pre-filled with the first block: a reader opening `/context` is asking what the
+    next request is made of, and a pane showing text they did not ask for reads as
+    the answer to a question they have not asked yet.
+    """
+
+    CSS = _CSS + """
+.context-box {
+    /* `17` §4: same rule as `.info-box` — a percentage so the gutter survives a
+       60-column terminal, a column cap so the text keeps a readable measure. The cap
+       is 120 columns for the right pane plus the 22-column list, the box's two
+       columns of border and its four of padding, so the pane beside the list is
+       exactly the 120-column measure the task names. A `124` box (the `/context`
+       width before the split) leaves 96. */
+    width: 96%;
+    max-width: 148;
+}
+.context-title { text-style: bold; }
+#context-panes {
+    height: auto;
+    max-height: 100%;
+}
+#context-blocks {
+    /* `17` §4: the list is one row per block, so it is content-sized; eight blocks
+       never outgrow the pane the terminal allows. */
+    width: 22;
+    height: auto;
+    max-height: 100%;
+}
+#context-blocks > ListItem { padding: 0 1; }
+#context-body {
+    /* `17` §4: the right pane is the variable part, so it is the scroll view, and
+       `auto` under a 40-row cap is the whole point of it: an empty pane is one row
+       rather than 40 of border waiting for text, and a block longer than 40 rows
+       grows to the cap and then scrolls. A fixed `height: 40` inflated every box to
+       the terminal's ceiling before a single block had been read. */
+    width: 1fr;
+    height: auto;
+    max-height: 40;
+}
+.context-counter { color: $text-muted; }
+"""
+    BINDINGS = [
+        Binding("escape", "cancel", "Close", show=False),
+        # `05` §7.5: `Enter` on the list selects, which `ListView` does with
+        # `Selected`, so there is no binding for it here.
+    ]
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__()
+        self.result = result
+        #: The block the reader has selected, or `None` for the empty right pane.
+        self.selected: str | None = None
+        #: Filled by `on_mount` from the frame, so the list and the pane agree.
+        self.blocks: list[tuple[str, str, str, str]] = []
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="context-box"):
+            yield Static("Context", classes="context-title")
+            yield Static(context_summary(self.result), classes="context-counter")
+            with Horizontal(id="context-panes"):
+                yield ListView(id="context-blocks")
+                # The pane is a scroll view, not a `Static`: a whole prompt runs past
+                # 40 rows and a clipped pane would hide the end of the block the reader
+                # asked for. `markup=False` on the inner `Static` because the block
+                # text is the device's, verbatim, and a `[...]` in a prompt or a file
+                # named by the conversation would otherwise read as Rich markup — the
+                # `17` §4 rule that a value the device chose is data, not markup.
+                with VerticalScroll(id="context-body"):
+                    yield Static("", id="context-text", markup=False)
+
+    def on_mount(self) -> None:
+        self.blocks = context_blocks(self.result)
+        view = self.query_one("#context-blocks", ListView)
+        # Two columns inside each row, because a `ListView` row is one line: the
+        # counter first (`04` §4.30's item count) then the share of the budget, which
+        # is the pair the doc's left column names.
+        for key, label, counter, share in self.blocks:
+            view.append(ListItem(Static(f"{label}  {counter}  {share}"), id=f"ctx-{key}"))
+
+    class RequestBlock(Message):
+        """Asks the app to send `context.block` for this key.
+
+        The modal does not own a session: `BridgeApp` is the only holder of the wire
+        (`09` §3), so the request travels up as a message and the answer comes back
+        through `show_block`.
+        """
+
+        def __init__(self, block: str) -> None:
+            super().__init__()
+            self.block = block
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """`05` §7.5: selecting a block asks the device for that block's text.
+
+        The event carries the list item, and the item's id is `ctx-<key>`, so the key
+        needs no second map beside the one `context_blocks` already returned.
+        """
+        # No guard on `event.item`: every row this list is built with carries an id,
+        # and a guard no caller can reach is a branch the gate pays for.
+        item = event.item
+        key = item.id.removeprefix("ctx-")
+        self.selected = key
+        self.query_one("#context-text", Static).update("asking the device for this block…")
+        self.post_message(self.RequestBlock(key))
+
+    def show_block(self, block: str, text: str, truncated: bool) -> None:
+        """Fill the right pane, ignoring an answer for a block the reader has left.
+
+        A reader who selects twice quickly has two requests in flight, and the slower
+        one may answer last. Showing it would put one block's text under another
+        block's row.
+        """
+        if block != self.selected:
+            return
+        body = text if text else "this block is empty"
+        if truncated:
+            body += "\n\n[truncated: the whole block is longer than the pane reports]"
+        self.query_one("#context-text", Static).update(body)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

@@ -121,6 +121,10 @@ COMMAND_NAMES = frozenset(
         "history.clear",
         # `04-protocol.md` §4.30: the eight blocks of the next request, sized.
         "context.budget",
+        # `04-protocol.md` §4.32: one block's text, for the `/context` pane.
+        "context.block",
+        # `04-protocol.md` §4.33: replace the conversation with a summary of it.
+        "context.compact",
     }
 )
 

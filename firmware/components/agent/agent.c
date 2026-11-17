@@ -97,6 +97,11 @@ static char *s_system_prompt;
  * more than the buffer they share. Set by `build_system_prompt`, which is the only
  * writer. */
 static size_t s_skills_bytes;
+/* `04` §4.30 `counts`: the two blocks the history does not hold. Both are set by the
+ * builders that own them, so the counter is the length of what was actually built
+ * rather than a second count that could drift from it. */
+static size_t s_skill_count;
+static size_t s_tool_count;
 static char *s_tools_json;
 static char *s_response;
 static agent_reply_t *s_reply;
@@ -208,6 +213,10 @@ static void build_system_prompt(void)
 
     size_t used = strlen(s_system_prompt);
     s_skills_bytes = 0;
+    /* Reset with its byte sibling: the early return below skips the rebuild, and a
+     * count left over from the previous build would report skills the prompt no
+     * longer holds. */
+    s_skill_count = 0;
     if (used >= AGENT_INPUT_BUFFER_MAX - 1) return;
 
     size_t count = 0;
@@ -223,6 +232,10 @@ static void build_system_prompt(void)
                      cap - used, budget,
                      &written, &dropped) == ESP_OK) {
         s_skills_bytes = written;
+        /* The skills the index had room for, not the files on disk: `skills_index`
+         * reports what it left out, and a reader asking "how many skills are in my
+         * context" is asking about the prompt. */
+        s_skill_count = count > dropped ? count - dropped : 0;
         if (dropped > 0) {
             ESP_LOGW(TAG, "skills: %u dropped from the index to fit %u bytes",
                      (unsigned)dropped, (unsigned)budget);
@@ -233,11 +246,16 @@ static void build_system_prompt(void)
 static void build_tools_json(const tools_context_t *ctx)
 {
     s_tools_json[0] = '\0';
+    s_tool_count = 0;
     json_doc_t *doc = json_new_object();
     if (doc == NULL) return;
     json_node_t *array = json_new_array(json_root(doc), "tools");
     if (array != NULL) {
         tools_json_build(ctx, array);
+        /* The length of the array the model is offered: `tools_json_build` applies
+         * `tools_offered`, so a disabled tool and a tool an unconfigured subsystem
+         * removes are already absent and the count cannot include them. */
+        s_tool_count = json_array_len(array);
         size_t written = 0;
         json_doc_t *wrap = json_new_object();
         if (wrap != NULL) {
@@ -1025,6 +1043,9 @@ esp_err_t agent_context_usage(agent_context_usage_t *out)
     out->skills = s_skills_bytes > out->system_prompt ? out->system_prompt : s_skills_bytes;
     out->tools = strlen(s_tools_json);
     out->thinking = 0;
+    out->count_skills = s_skill_count;
+    out->count_tools = s_tool_count;
+    out->count_thinking = 0;
 
     size_t used = out->system_prompt + out->tools + out->user + out->assistant +
                   out->tool_calls + out->tool_output;
@@ -1034,6 +1055,185 @@ esp_err_t agent_context_usage(agent_context_usage_t *out)
     out->used = used;
     out->budget = LLM_BODY_MAX;
     out->free = used < LLM_BODY_MAX ? LLM_BODY_MAX - used : 0;
+    return ESP_OK;
+}
+
+/* `04` §4.32: one block of the next request, as text.
+ *
+ * The three prompt-side blocks are slices of buffers the builders own, so this
+ * copies rather than reading past them; the five history blocks go through the pure
+ * extractor. `system_prompt` carries the skill index because the index was appended
+ * into that same buffer, which `04` §4.30 also says. */
+esp_err_t agent_context_block(const char *block, char *out, size_t cap,
+                              size_t *written, size_t *total)
+{
+    if (block == NULL || out == NULL || cap == 0) return ESP_ERR_INVALID_ARG;
+    if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (written != NULL) *written = 0;
+    if (total != NULL) *total = 0;
+
+    /* The two prompt-side blocks and the tool array are NUL-terminated buffers, so
+     * they share one clip. A `system_prompt` above the cap is a prompt nobody can
+     * read in a modal, and reporting the whole length keeps `truncated` honest. */
+    const char *whole = NULL;
+    if (strcmp(block, "system_prompt") == 0) {
+        whole = s_system_prompt;
+    } else if (strcmp(block, "skills") == 0) {
+        /* The index is a suffix of the prompt: its start is the prompt's end minus its
+         * measured length. An index longer than the prompt cannot happen, but the
+         * clamp is what keeps a stale `s_skills_bytes` from reading before the
+         * buffer. */
+        size_t plen = strlen(s_system_prompt);
+        size_t slen = s_skills_bytes > plen ? plen : s_skills_bytes;
+        whole = s_system_prompt + (plen - slen);
+    } else if (strcmp(block, "tools") == 0) {
+        whole = s_tools_json;
+    }
+
+    if (whole != NULL) {
+        size_t len = strlen(whole);
+        size_t n = len < cap - 1 ? len : cap - 1;
+        if (n > 0) memcpy(out, whole, n);
+        out[n] = '\0';
+        if (written != NULL) *written = n;
+        if (total != NULL) *total = len;
+        return ESP_OK;
+    }
+
+    /* `thinking` is a measured zero (`04` §4.30): the trace never enters the history,
+     * so there is no text to return and an empty block is the truthful answer. */
+    if (strcmp(block, "thinking") == 0) {
+        out[0] = '\0';
+        return ESP_OK;
+    }
+
+    const char *role = NULL;
+    if (strcmp(block, "user") == 0) {
+        role = "user";
+    } else if (strcmp(block, "assistant") == 0) {
+        role = "assistant";
+    } else if (strcmp(block, "tool_calls") == 0) {
+        role = "tool_calls"; /* not a role: the extractor selects assistant turns */
+    } else if (strcmp(block, "tool_output") == 0) {
+        role = "tool";
+    } else {
+        /* `04` §4.32: a mistyped block is `E_CONFIG`, never an empty block. */
+        return ESP_ERR_INVALID_ARG;
+    }
+    return agent_history_block(s_history_used > 0 ? s_history : "[]", role, out, cap,
+                               written, total);
+}
+
+/* `04` §4.33: replace the conversation with a model-written summary of it.
+ *
+ * Board-only, and therefore tested on the target rather than here: it calls
+ * `llm_query`, which needs the network stack and the provider config. The two
+ * selection and rewriting steps it depends on are pure and live in `agent_history.c`,
+ * where the host suite exercises them.
+ *
+ * Nothing is written until a usable summary is in hand, which is what makes the
+ * command safe to send on a marginal radio: a provider failure, a budget refusal or an
+ * empty answer leaves the conversation exactly as it was. */
+esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *kept,
+                                size_t *before_bytes, size_t *after_bytes,
+                                char *summary, size_t summary_cap)
+{
+    if (summarised != NULL) *summarised = 0;
+    if (kept != NULL) *kept = 0;
+    if (before_bytes != NULL) *before_bytes = 0;
+    if (after_bytes != NULL) *after_bytes = 0;
+    if (summary != NULL && summary_cap > 0) summary[0] = '\0';
+    if (summary == NULL || summary_cap == 0) return ESP_ERR_INVALID_ARG;
+    if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (keep > AGENT_COMPACT_KEEP_MAX) return ESP_ERR_INVALID_ARG;
+    /* `E_BUSY`: a run appends to and trims this buffer between rounds, and a rewrite
+     * under it is one whose tool results no longer answer its calls. */
+    if (s_busy) return ESP_ERR_INVALID_STATE;
+
+    size_t count = agent_history_count(s_history);
+    if (count <= (size_t)keep) {
+        /* Nothing would be replaced, so a summary here would be a summary of nothing
+         * and the caller would be told the history shrank when it did not. */
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    size_t before = s_history_used;
+    size_t to_summarise = count - (size_t)keep;
+
+    /* The messages the model reads: every message except the newest `keep`, which are
+     * never both summarised and kept (`04` §4.33). */
+    /* One buffer for both halves: it holds the text sent for summarising, and once
+     * that call has returned nothing reads it again, so the rewrite reuses it as
+     * scratch. Two 8 KiB statics is 16 KiB of DIRAM for a command that runs one at a
+     * time. */
+    static char s_compact_buf[AGENT_HISTORY_MAX];
+    size_t in_written = 0, in_total = 0;
+    esp_err_t err = agent_history_slice(s_history, keep, s_compact_buf,
+                                       sizeof s_compact_buf, &in_written, &in_total);
+    if (err != ESP_OK) return err;
+
+    /* One call, no tools: the model is summarising, not continuing, so the fixed
+     * prompt says so and the tool array is withheld. `s_response` is the run's buffer
+     * and is free here because `s_busy` is false. */
+    llm_request_t request = {
+        .model = NULL,
+        .token_param = NULL,
+        .max_output_tokens = 0,
+        .system_prompt =
+            "You summarise a conversation so another model can continue it. Write "
+            "Markdown under these headings: Goal, Progress, Decisions, Next Steps. "
+            "State facts the conversation established, paths and identifiers it named, "
+            "and what remains unfinished. Do not answer the conversation, do not "
+            "continue it, and do not invent anything it does not say.",
+        .history_json = NULL,
+        .user_prompt = s_compact_buf,
+        .tools_json = NULL,
+    };
+    s_response[0] = '\0';
+    err = llm_query(&request, s_response, LLM_BODY_MAX + 1, NULL);
+    /* `llm_query` answers `ESP_ERR_INVALID_STATE` for an exhausted call budget, and the
+     * busy guard above answers the same code; a caller that mapped the pair together
+     * would tell a reader "a run is in flight" when the budget is what refused. The
+     * distinct code is the whole reason this line exists. */
+    if (err == ESP_ERR_INVALID_STATE) return ESP_ERR_INVALID_RESPONSE;
+    if (err != ESP_OK) return err;
+
+    /* The reply is the model's prose, which `agent_parse_reply` would reject: it is
+     * looking for the `agent.reply` shape. Trim the whitespace and take it whole, and
+     * treat an empty answer as `E_TOOL` rather than storing a blank checkpoint. */
+    char *text = s_response;
+    while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') text++;
+    size_t len = strlen(text);
+    while (len > 0) {
+        char c = text[len - 1];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+        text[--len] = '\0';
+    }
+    if (len == 0) return ESP_ERR_NOT_FOUND;
+    if (len >= summary_cap) {
+        /* A summary cut mid-sentence is a checkpoint that silently lost its ending,
+         * which is worse than having compacted nothing (`04` §4.33). */
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    /* Rewritten only now, into a scratch so a buffer that cannot hold the result is
+     * left alone. The scratch is the block buffer from above, already spent. */
+    size_t new_used = s_history_used;
+    err = agent_history_replace_with_summary(s_history, AGENT_HISTORY_MAX, &new_used,
+                                             text, keep, s_compact_buf,
+                                             sizeof s_compact_buf);
+    if (err != ESP_OK) return err;
+    s_history_used = new_used;
+
+    snprintf(summary, summary_cap, "%s", text);
+    if (summarised != NULL) *summarised = (uint32_t)to_summarise;
+    if (kept != NULL) *kept = (uint32_t)keep;
+    if (before_bytes != NULL) *before_bytes = before;
+    if (after_bytes != NULL) *after_bytes = s_history_used;
     return ESP_OK;
 }
 

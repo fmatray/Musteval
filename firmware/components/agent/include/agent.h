@@ -183,6 +183,19 @@ typedef struct {
     size_t free;          /* `LLM_BODY_MAX` minus `used` */
     size_t budget;        /* `LLM_BODY_MAX`, so a client needs no second source */
     size_t messages;      /* history messages measured */
+
+    /* `04` §4.30 `counts`: how many items each block holds, beside how many bytes.
+     * A reader asking what is in the request wants "18 tools", and a byte count
+     * cannot answer that. The history-derived five are filled by
+     * `agent_history_measure`; `skills` and `tools` are filled by the caller that
+     * built those blocks, because neither lives in the history. */
+    size_t count_skills;     /* skills the index had room for, not the files on disk */
+    size_t count_tools;      /* the array `tools_json` actually built */
+    size_t count_user;       /* `role:"user"` messages */
+    size_t count_assistant;  /* `role:"assistant"` messages */
+    size_t count_thinking;   /* always 0, for the reason `thinking` is */
+    size_t count_tool_calls; /* `tool_calls` entries, not assistant messages */
+    size_t count_tool_output;/* `role:"tool"` messages */
 } agent_context_usage_t;
 
 /* Classify each history message by its `role` into `out`. Pure: the history is text
@@ -207,6 +220,49 @@ esp_err_t agent_history_truncate(char *history, size_t *used, uint32_t keep);
  * uninitialized bytes. Pure, so the pair `clear` then `append` is a host test rather
  * than a claim about the board. */
 esp_err_t agent_history_clear(char *history, size_t *used);
+
+/* Collect the messages whose `role` matches into `out`, one per line, in history
+ * order. `04` §4.32: a block's content is its messages, not the array wrapper and
+ * its commas, so this writes each message's own JSON text separated by `\n`.
+ *
+ * `role` of `NULL` selects every message, which is what the `tool_calls` and
+ * `tool_output` blocks want. `tool_calls` selects the assistant turns that carry
+ * calls, so a reader sees the calls in the turn that made them.
+ *
+ * Writes at most `cap - 1` bytes and always NUL-terminates; `*written` is what was
+ * written and `*total` how long the full text would have been, so a caller can report
+ * `truncated` without a second pass. Returns `ESP_ERR_INVALID_SIZE` when `cap` is 0,
+ * which is the only case where nothing can be reported. Pure. */
+esp_err_t agent_history_block(const char *history, const char *role, char *out,
+                              size_t cap, size_t *written, size_t *total);
+
+/* The serialised conversation for the summarisation call: every message except the
+ * newest `keep`, one per line, in history order. `04` §4.33 applies `keep` before
+ * summarising, so the messages the summary will sit beside are never also summarised.
+ *
+ * Same contract as `agent_history_block`: at most `cap - 1` bytes, NUL-terminated,
+ * with `*written` and `*total` so the caller can report truncation. Pure. */
+esp_err_t agent_history_slice(const char *history, uint32_t keep, char *out,
+                              size_t cap, size_t *written, size_t *total);
+
+/* Replace the whole buffer with a summary message followed by the newest `keep`
+ * messages verbatim. `04` §4.33: the summary is `role:"user"` because a provider
+ * rejects a history opening on `assistant` and a `system` message would be a second
+ * persona beside the prompt, and it carries a trailing sentence so the model reads it
+ * as history rather than as a fresh request.
+ *
+ * Refused with `ESP_ERR_INVALID_SIZE` when the result would not fit `cap`, leaving
+ * `history` untouched: a half-written buffer is a conversation that cannot be sent.
+ * Pure, so the rewrite is a host test rather than a claim about the board. */
+esp_err_t agent_history_replace_with_summary(char *history, size_t cap, size_t *used,
+                                             const char *summary, uint32_t keep,
+                                             char *scratch, size_t scratch_cap);
+
+/* The newest `keep` messages, one per line, in history order: what
+ * `agent_history_replace_with_summary` keeps verbatim beside the summary. Same
+ * contract as its siblings. Pure. */
+esp_err_t agent_history_suffix(const char *history, uint32_t keep, char *out,
+                               size_t cap, size_t *written, size_t *total);
 
 /* --- Provider reply (`llm_assemble_prompt`'s inverse) ---------------------- */
 
@@ -303,6 +359,18 @@ const agent_rejection_t *agent_prompt_rejection(esp_err_t err);
  * `agent.max_input_bytes` still has room to grow and the whole line fits. */
 #define AGENT_INPUT_BUFFER_MAX 8192
 
+/* `04` §4.33: how many of the newest messages `/context compact` may keep verbatim
+ * beside the summary. A ceiling rather than an unbounded `keep`: the point of the
+ * command is to shrink the history, and a caller asking to keep everything has the
+ * answer "then do not compact". */
+#define AGENT_COMPACT_KEEP_MAX 8
+
+/* `04` §4.33: the summary's own cap. Well under `LLM_BODY_MAX`, because the summary
+ * has to fit the history beside the kept messages and be reported whole in one reply;
+ * a summary above it is refused rather than cut, which is the difference between a
+ * checkpoint that lost its ending and a compaction that did not happen. */
+#define AGENT_COMPACT_SUMMARY_MAX 4096
+
 /* What the config said, before the defaults are applied. `has_*` distinguishes an
  * absent key from a configured zero. */
 typedef struct {
@@ -380,6 +448,34 @@ esp_err_t agent_history_reset(size_t *dropped);
  * during a run: the history is one buffer, and a byte count read while the run appends
  * to it is a snapshot of a moment, not a claim about the whole run. */
 esp_err_t agent_context_usage(agent_context_usage_t *out);
+
+/* `04` §4.32: the text of one block of the next request.
+ *
+ * `block` is one of the eight names `agent_context_usage_t` measures. The two
+ * prompt-side blocks (`system_prompt`, `skills`) and the one tool block (`tools`) are
+ * read from the buffers the last build filled. The five history blocks go through
+ * `agent_history_block`, which selects messages by role rather than returning the
+ * array wrapper.
+ *
+ * `cap` bounds `out` and `*written`/`*total` answer "is this the whole block" the way
+ * `sandbox.read` does, so a caller reports `truncated` honestly. Returns
+ * `ESP_ERR_INVALID_ARG` for a name that is not a block. Board-only. */
+esp_err_t agent_context_block(const char *block, char *out, size_t cap,
+                              size_t *written, size_t *total);
+
+/* `04` §4.33: replace the conversation with a model-written summary of it.
+ *
+ * Refused with `ESP_ERR_INVALID_STATE` while a run is in flight — the run appends to
+ * and trims this same buffer between rounds, so a history rewritten under it is one
+ * whose tool results no longer answer its calls. The caller reports `E_BUSY`.
+ *
+ * Nothing is written until a usable summary is in hand, so a provider failure, a
+ * budget refusal or an empty answer leaves the history exactly as it was.
+ * `keep` is clamped to `AGENT_COMPACT_KEEP_MAX`. Board-only: it needs the resolved
+ * API key, which never leaves `llm`. */
+esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *kept,
+                                size_t *before_bytes, size_t *after_bytes,
+                                char *summary, size_t summary_cap);
 
 /* The live todo tree, which is the state the close-out check reads across runs
  * (`02-firmware.md` §4.1). `reload` clears it. */

@@ -77,15 +77,16 @@ def test_error_codes_are_the_frozen_sixteen():
     assert all(code.startswith("E_") for code in ERROR_CODES)
 
 
-def test_command_names_are_the_frozen_thirty_four():
-    """16 frozen names plus the eighteen `04` §4 records as this release's amendment."""
-    assert len(COMMAND_NAMES) == 34
+def test_command_names_are_the_frozen_thirty_six():
+    """The frozen set, with `context.block` and `context.compact` added by `04` §4.32
+    and §4.33 — the two commands the split `/context` box and `/compact` need."""
+    assert len(COMMAND_NAMES) == 36
     assert {
         "sandbox.list", "sandbox.read", "sandbox.delete", "sandbox.write",
         "sandbox.mkdir", "sandbox.move", "sys.reset_counter", "net.ping",
         "wifi.scan", "wifi.status", "wifi.connect", "wifi.disconnect",
         "wifi.reconnect", "todo.apply", "history.clear", "tools.list",
-        "context.budget", "secret.delete",
+        "context.budget", "context.block", "context.compact", "secret.delete",
     } <= COMMAND_NAMES
 
 

@@ -29,6 +29,7 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
 )
 from bridge.ui.modals import (
     ConfirmPrompt,
+    ContextModal,
     InfoModal,
     FilePrompt,
     FilterPrompt,
@@ -563,32 +564,216 @@ async def test_a_refused_clear_keeps_the_pane():
     )
 
 
-async def test_context_opens_one_modal_listing_every_block():
-    """`05` §7.5: `/context` asks the device for the eight blocks of the next request
-    and shows them in one box. Two things are worth pinning: it must reach the wire
-    (a host-side estimate would be a number the device contradicts), and every block
-    must be visible — a table that silently dropped the empty ones would leave the
-    reader unable to tell "no thinking" from "not measured"."""
+async def test_context_opens_the_split_box_with_an_empty_right_pane():
+    """`05` §7.5: `/context` asks the device for the eight blocks and shows them in one
+    split box, with the right pane empty until a row is selected.
+
+    Two things are worth pinning: it must reach the wire (a host-side estimate would be
+    a number the device contradicts), and every block must be listed with its counter —
+    a table that silently dropped the empty ones would leave the reader unable to tell
+    "no thinking" from "not measured". The empty pane is the third: showing a block the
+    reader has not asked for reads as the answer to a question they have not asked.
+    """
 
     async def body(app, pilot):
         app.submit("/context")
-        await _until(pilot, lambda: isinstance(app.screen, InfoModal))
-        assert isinstance(app.screen, InfoModal), f"screen is {app.screen!r}"
+        await _until(pilot, lambda: isinstance(app.screen, ContextModal))
+        assert isinstance(app.screen, ContextModal), f"screen is {app.screen!r}"
         await pilot.pause(0.1)
 
         sent = [f for f in _frames(app) if f.get("name") == "context.budget"]
         assert sent, "the bridge answered from the host instead of asking the device"
 
-        body = app.screen.query_one("#info-body")
-        rendered = "\n".join(str(widget.render()) for widget in body.query("Static"))
-        for label in ("system prompt", "skills", "tools", "user messages",
-                      "assistant messages", "assistant thinking", "tool calls",
-                      "tool outputs"):
-            assert label in rendered, f"{label} missing from the box:\n{rendered}"
-        assert "B free" in rendered
+        view = app.screen.query_one("#context-blocks")
+        rows = [str(item.query_one("Static").render()) for item in view.children]
+        assert len(rows) == 8, rows
+        # The counters are the frame's, beside the block they count.
+        assert any("skills" in row and " 2 " in row for row in rows), rows
+        assert any("tools" in row and " 18 " in row for row in rows), rows
+        assert any("assistant thinking" in row and " 0 " in row for row in rows), rows
+
+        # Nothing is fetched for a block the reader has not selected, and the pane
+        # says nothing rather than showing an arbitrary block.
+        assert not [f for f in _frames(app) if f.get("name") == "context.block"]
+        assert str(app.screen.query_one("#context-text").render()) == ""
 
         app.screen.dismiss(None)
-        await _until(pilot, lambda: not isinstance(app.screen, InfoModal))
+        await _until(pilot, lambda: not isinstance(app.screen, ContextModal))
+
+    await _run(_device(), body)
+
+
+async def test_selecting_a_context_block_fills_the_right_pane():
+    """`05` §7.5: a row is a request for that block's text, not a local lookup.
+
+    Selected twice in a row, the pane must end up showing the second block: the two
+    frames are in flight together and the slower answer may arrive last, which would
+    put one block's text under another block's row.
+    """
+
+    async def body(app, pilot):
+        app.submit("/context")
+        await _until(pilot, lambda: isinstance(app.screen, ContextModal))
+        await pilot.pause(0.1)
+        modal = app.screen
+        view = modal.query_one("#context-blocks")
+
+        view.focus()
+        view.action_cursor_down()
+        await pilot.pause(0.1)
+        view.action_cursor_down()
+        await pilot.press("enter")
+        await _until(
+            pilot,
+            lambda: modal.query_one("#context-text").render() != "",
+        )
+        # Two rows down from the first row is `skills`.
+        await _until(
+            pilot,
+            lambda: "text of" in str(modal.query_one("#context-text").render()),
+        )
+        assert str(modal.query_one("#context-text").render()) == "text of skills"
+
+        sent = [f for f in _frames(app) if f.get("name") == "context.block"]
+        assert [f["args"]["block"] for f in sent] == ["skills"], sent
+
+        # An answer for a block the reader has since left must not overwrite the pane.
+        modal.show_block("tools", "stale", False)
+        assert str(modal.query_one("#context-text").render()) == "text of skills"
+
+        # A truncated block says so: the device's text is a prefix of the block, and a
+        # reader comparing it against a prompt they saw in `/export` needs to know why
+        # the ends differ (`04` §4.32).
+        modal.show_block("skills", "half a prompt", True)
+        assert "[truncated:" in str(modal.query_one("#context-text").render())
+
+        # Escape closes it, like every other box.
+        await pilot.press("escape")
+        await _until(pilot, lambda: not isinstance(app.screen, ContextModal))
+
+    await _run(_device(), body)
+
+
+async def test_compact_asks_before_it_rewrites_the_history():
+    """`05` §7.5: `/compact` names what will be lost, then asks.
+
+    The confirm is the only thing standing between a reader and a discarded
+    transcript, so both halves are asserted: the frame is not sent before the answer,
+    and `n` leaves the history alone.
+    """
+
+    async def body(app, pilot):
+        app.submit("/compact")
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmPrompt))
+        assert isinstance(app.screen, ConfirmPrompt), f"screen is {app.screen!r}"
+        # The question names the count and the bytes, because "are you sure" is not
+        # decidable and "3 messages, 1304 B" is.
+        question = str(app.screen.query_one(".prompt-title").render())
+        assert "3 messages" in question and "1304 B" in question, question
+        assert not [f for f in _frames(app) if f.get("name") == "context.compact"]
+
+        app.screen.action_cancel()
+        await _until(pilot, lambda: not isinstance(app.screen, ConfirmPrompt))
+        await _await_chat(pilot, app, "compact cancelled")
+        assert "compact cancelled" in _text(app)
+        assert not [f for f in _frames(app) if f.get("name") == "context.compact"], (
+            "a cancelled compaction still spent a request"
+        )
+
+    await _run(_device(), body)
+
+
+async def test_compact_reports_what_it_replaced_and_that_the_summary_is_the_copy():
+    """`05` §7.5: the report names the counts and the size change, and says the old
+    messages are gone — the transcript's only other copy is what `/export` wrote."""
+
+    async def body(app, pilot):
+        app.submit("/compact")
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmPrompt))
+        app.screen.action_confirm()
+        await _await_chat(pilot, app, "summarised 3 messages")
+
+        await _await_chat(pilot, app, "the summary is now the only copy")
+        assert "summarised 3 messages, kept 0, 1304 B -> 240 B" in _text(app)
+        assert "the summary is now the only copy" in _text(app)
+        # The summary itself is shown: a reader who must trust the rewrite needs to
+        # see what the device kept.
+        assert "Goal: ship `/compact`." in _text(app)
+
+        sent = [f for f in _frames(app) if f.get("name") == "context.compact"]
+        assert len(sent) == 1
+        # No `keep` argument rather than `keep: 0`: the default is the device's.
+        assert sent[0]["args"] == {}
+
+    await _run(_device(), body)
+
+
+async def test_compact_keep_is_forwarded_and_the_budget_is_read_quietly():
+    """`05` §7.5: `keep` names how many messages survive verbatim, and the budget read
+    must not open the `/context` box under the confirm."""
+
+    async def body(app, pilot):
+        app.submit("/compact 2")
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmPrompt))
+        # A budget read for a count must not have opened the split box.
+        assert isinstance(app.screen, ConfirmPrompt), f"screen is {app.screen!r}"
+        app.screen.action_confirm()
+        await _await_chat(pilot, app, "summarised 3 messages")
+
+        sent = [f for f in _frames(app) if f.get("name") == "context.compact"]
+        assert sent[0]["args"] == {"keep": 2}, sent
+
+    await _run(_device(), body)
+
+
+async def test_compact_refuses_an_empty_history_without_a_confirm():
+    """`05` §7.5: nothing to compact is answered in chat, from the device's own count.
+
+    The count is what refuses it, so a modal over a history the device says is empty
+    would be a question with one answer and a wasted keystroke.
+    """
+
+    async def body(app, pilot):
+        app.submit("/compact")
+        await _await_chat(pilot, app, "compact: the conversation is empty")
+        assert "compact: the conversation is empty" in _text(app)
+        assert not isinstance(app.screen, ConfirmPrompt)
+        assert not [f for f in _frames(app) if f.get("name") == "context.compact"]
+
+    await _run(
+        _device({"context.budget": {"budget": 16384, "used": 40, "free": 16344,
+                                    "messages": 0, "blocks": {}, "counts": {}}}),
+        body,
+    )
+
+
+async def test_compact_names_cancelling_the_run_when_the_device_is_busy():
+    """`05` §7.5: `E_BUSY` comes with the next step, because "busy" alone leaves the
+    reader nowhere to go."""
+
+    async def body(app, pilot):
+        app.submit("/compact")
+        await _until(pilot, lambda: isinstance(app.screen, ConfirmPrompt))
+        app.screen.action_confirm()
+        await _await_chat(pilot, app, "cancel it first")
+        assert "compact: a run is in flight; cancel it first, then compact" in _text(app)
+
+    await _run(
+        _device({"context.compact": {"code": "E_BUSY", "message": "agent run in flight"}}),
+        body,
+    )
+
+
+async def test_compact_refuses_a_keep_outside_the_ceiling():
+    """`04` §4.33 caps `keep` at eight; refusing here spends no request."""
+
+    async def body(app, pilot):
+        app.submit("/compact 9")
+        await _await_chat(pilot, app, "keep must be 0 to 8")
+        assert "/compact [keep]: keep must be 0 to 8" in _text(app)
+        assert not [f for f in _frames(app) if f.get("name") == "context.budget"], (
+            "a malformed keep still read the budget"
+        )
 
     await _run(_device(), body)
 

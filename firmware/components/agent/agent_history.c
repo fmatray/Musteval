@@ -126,6 +126,44 @@ static size_t measure_tool_calls(const char *p, size_t n)
     return 0;
 }
 
+/* How many entries the `tool_calls` array on this assistant message holds.
+ *
+ * Counted rather than measured: `measure_tool_calls` returns the byte span so it can
+ * be billed, which is not the number of calls. The bytes are known-valid JSON built by
+ * `store`, so this is arithmetic over the same span. Returns 0 when the key is absent,
+ * which is every plain assistant turn. */
+static size_t tool_call_count(const char *p, size_t n)
+{
+    /* The key's offset, which is not what `measure_tool_calls` returns: that function
+     * answers the span to bill, and using it as an offset read past the message. */
+    size_t start = 0;
+    for (size_t i = 0; i + 12 <= n; i++) {
+        if (memcmp(p + i, "\"tool_calls\"", 12) == 0) {
+            start = i;
+            break;
+        }
+    }
+    if (start == 0) return 0;
+    const char *q = p + start + 12; /* past `"tool_calls"` */
+    while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+    if (*q != ':') return 0;
+    q++;
+    while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+    if (*q != '[') return 0;
+
+    size_t calls = 0;
+    q++;
+    for (;;) {
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r' || *q == ',') q++;
+        if (*q == ']' || *q == '\0') break;
+        size_t len = value_end(q);
+        if (len == 0) break;
+        calls++;
+        q += len;
+    }
+    return calls;
+}
+
 /* Walk a JSON array of messages and add each message's byte length to the block its
  * `role` names. Pure, so the arithmetic behind `04` §4.30 is a host test rather than
  * a claim about the board (`agent_history.c`).
@@ -158,17 +196,265 @@ esp_err_t agent_history_measure(const char *history, agent_context_usage_t *out)
         size_t calls = measure_tool_calls(p, n);
         if (message_has_role_n(p, n, "tool")) {
             out->tool_output += n;
+            out->count_tool_output += 1;
         } else if (message_has_role_n(p, n, "assistant")) {
             out->assistant += n - calls;
             out->tool_calls += calls;
+            out->count_assistant += 1;
+            /* `count_tool_calls` counts the calls, not the turns that made them: a
+             * reader asking "how many tools ran" is asking about calls, and one
+             * assistant turn can carry several. */
+            out->count_tool_calls += tool_call_count(p, n);
         } else if (message_has_role_n(p, n, "user")) {
             out->user += n;
+            out->count_user += 1;
         }
         out->messages += 1;
 
         p += n;
         while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
     }
+    return ESP_OK;
+}
+
+
+/* `04` §4.32: the messages of one block, one per line. `role` of `NULL` selects
+ * every message; `"tool_calls"` is not a role, so it selects the assistant turns that
+ * carry calls rather than a role no message has. Pure, like the measure beside it. */
+esp_err_t agent_history_block(const char *history, const char *role, char *out,
+                              size_t cap, size_t *written, size_t *total)
+{
+    if (out == NULL || cap == 0) return ESP_ERR_INVALID_SIZE;
+    if (written != NULL) *written = 0;
+    if (total != NULL) *total = 0;
+    if (history == NULL) return ESP_ERR_INVALID_ARG;
+
+    const char *p = first_message(history);
+    if (p == NULL) return ESP_ERR_INVALID_ARG;
+
+    /* Two counters, not one: `at` stops at the cap while `all` keeps counting, which
+     * is how `truncated` is answered without walking the history twice. */
+    size_t at = 0;
+    size_t all = 0;
+    bool first = true;
+    for (;;) {
+        if (*p == '\0') return ESP_ERR_INVALID_ARG;
+        if (*p == ']') break;
+        size_t n = value_end(p);
+        if (n == 0) return ESP_ERR_INVALID_ARG;
+
+        bool want = role == NULL;
+        if (!want && strcmp(role, "tool_calls") == 0) {
+            want = message_has_role_n(p, n, "assistant") && measure_tool_calls(p, n) != 0;
+        } else if (!want) {
+            want = message_has_role_n(p, n, role);
+        }
+
+        if (want) {
+            if (!first) {
+                all += 1;
+                if (at + 1 < cap) out[at++] = '\n';
+            }
+            /* A block larger than the buffer keeps as much of the message as fits
+             * rather than returning nothing: an empty pane reads as "this block is
+             * empty", which is the one thing truncation must not say. */
+            size_t room = cap - 1 - at;
+            size_t take = n < room ? n : room;
+            memcpy(out + at, p, take);
+            at += take;
+            all += n;
+            first = false;
+        }
+
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    }
+    out[at] = '\0';
+    if (written != NULL) *written = at;
+    if (total != NULL) *total = all;
+    return ESP_OK;
+}
+
+
+/* `04` §4.33: the messages to summarise, which is every message except the newest
+ * `keep`. Pure. */
+esp_err_t agent_history_slice(const char *history, uint32_t keep, char *out,
+                              size_t cap, size_t *written, size_t *total)
+{
+    if (out == NULL || cap == 0) return ESP_ERR_INVALID_SIZE;
+    if (written != NULL) *written = 0;
+    if (total != NULL) *total = 0;
+    if (history == NULL) return ESP_ERR_INVALID_ARG;
+
+    const char *p = first_message(history);
+    if (p == NULL) return ESP_ERR_INVALID_ARG;
+
+    size_t count = agent_history_count(history);
+    size_t take = keep < count ? count - keep : 0;
+
+    size_t at = 0;
+    size_t all = 0;
+    bool first = true;
+    for (size_t index = 0; index < take; index++) {
+        if (*p == ']' || *p == '\0') break;
+        size_t n = value_end(p);
+        if (n == 0) return ESP_ERR_INVALID_ARG;
+        if (!first) {
+            all += 1;
+            if (at + 1 < cap) out[at++] = '\n';
+        }
+        if (at + n < cap) {
+            memcpy(out + at, p, n);
+            at += n;
+        }
+        all += n;
+        first = false;
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    }
+    out[at] = '\0';
+    if (written != NULL) *written = at;
+    if (total != NULL) *total = all;
+    return ESP_OK;
+}
+
+/* The newest `keep` messages, in history order. The mirror of `agent_history_suffix`
+ * and `agent_history_slice`, and separate for the same reason `truncate` is: one
+ * selection rule, one function, so the two halves of a compaction cannot disagree
+ * about which messages they took. Pure. */
+esp_err_t agent_history_suffix(const char *history, uint32_t keep, char *out,
+                               size_t cap, size_t *written, size_t *total)
+{
+    if (out == NULL || cap == 0) return ESP_ERR_INVALID_SIZE;
+    if (written != NULL) *written = 0;
+    if (total != NULL) *total = 0;
+    if (history == NULL) return ESP_ERR_INVALID_ARG;
+
+    const char *p = first_message(history);
+    if (p == NULL) return ESP_ERR_INVALID_ARG;
+
+    size_t count = agent_history_count(history);
+    size_t skip = count > keep ? count - keep : 0;
+
+    /* Walk to the first kept message. */
+    for (size_t index = 0; index < skip; index++) {
+        if (*p == ']' || *p == '\0') break;
+        size_t n = value_end(p);
+        if (n == 0) return ESP_ERR_INVALID_ARG;
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    }
+
+    size_t at = 0;
+    size_t all = 0;
+    bool first = true;
+    for (;;) {
+        if (*p == ']' || *p == '\0') break;
+        size_t n = value_end(p);
+        if (n == 0) return ESP_ERR_INVALID_ARG;
+        if (!first) {
+            all += 1;
+            if (at + 1 < cap) out[at++] = '\n';
+        }
+        if (at + n < cap) {
+            memcpy(out + at, p, n);
+            at += n;
+        }
+        all += n;
+        first = false;
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    }
+    out[at] = '\0';
+    if (written != NULL) *written = at;
+    if (total != NULL) *total = all;
+    return ESP_OK;
+}
+
+/* `04` §4.33: the summary opens the history and the kept messages follow it.
+ *
+ * `scratch` is the caller's, not a `static`: a file-static buffer would be shared
+ * state in a file whose whole point is that it is pure. The result is built there
+ * first and copied over `history` only once it is known to fit, so a buffer that
+ * cannot hold the result is left exactly as it was. */
+esp_err_t agent_history_replace_with_summary(char *history, size_t cap, size_t *used,
+                                             const char *summary, uint32_t keep,
+                                             char *scratch, size_t scratch_cap)
+{
+    if (history == NULL || used == NULL || summary == NULL) return ESP_ERR_INVALID_ARG;
+    if (scratch == NULL || scratch_cap == 0) return ESP_ERR_INVALID_SIZE;
+
+    /* The kept suffix is taken from the live history before anything is written, so a
+     * failure here leaves the conversation alone. */
+    size_t kept_written = 0, kept_total = 0;
+    esp_err_t kerr = agent_history_suffix(history, keep, scratch, scratch_cap,
+                                          &kept_written, &kept_total);
+    if (kerr != ESP_OK) return kerr;
+
+    /* The opening message: `04` §4.33's `role:"user"` shape with the summary escaped
+     * and the trailing sentence that stops the model reading it as a fresh request.
+     * Built by hand because `store`'s builders are not reachable from this file. */
+    static const char k_head[] = "{\"role\":\"user\",\"content\":\"";
+    static const char k_tail[] =
+        "\\n\\nThe conversation above was compacted into this summary. "
+        "Continue from it.\"}";
+    size_t head_len = sizeof k_head - 1;
+    size_t tail_len = sizeof k_tail - 1;
+
+    /* Written directly into `history` after the `[`, but only after the size is
+     * proven: `need` is computed with the escaped length, so the write cannot
+     * overrun. */
+    size_t escaped = 0;
+    for (const char *q = summary; *q != '\0'; q++) {
+        unsigned char c = (unsigned char)*q;
+        escaped += (c == '"' || c == '\\') ? 2 : (c == '\n' || c == '\r' || c == '\t') ? 2
+                                                 : (c < 0x20)                ? 6
+                                                                             : 1;
+    }
+
+    size_t need = 1 + head_len + escaped + tail_len +
+                  (kept_written > 0 ? 1 + kept_written : 0) + 1 + 1;
+    if (need > cap) return ESP_ERR_INVALID_SIZE;
+
+    size_t w = 0;
+    history[w++] = '[';
+    memcpy(history + w, k_head, head_len);
+    w += head_len;
+    for (const char *q = summary; *q != '\0'; q++) {
+        unsigned char c = (unsigned char)*q;
+        if (c == '"') {
+            history[w++] = '\\';
+            history[w++] = '"';
+        } else if (c == '\\') {
+            history[w++] = '\\';
+            history[w++] = '\\';
+        } else if (c == '\n') {
+            history[w++] = '\\';
+            history[w++] = 'n';
+        } else if (c == '\r') {
+            history[w++] = '\\';
+            history[w++] = 'r';
+        } else if (c == '\t') {
+            history[w++] = '\\';
+            history[w++] = 't';
+        } else if (c < 0x20) {
+            int n = snprintf(history + w, cap - w, "\\u%04x", c);
+            if (n < 0) return ESP_ERR_INVALID_SIZE;
+            w += (size_t)n;
+        } else {
+            history[w++] = (char)c;
+        }
+    }
+    memcpy(history + w, k_tail, tail_len);
+    w += tail_len;
+    if (kept_written > 0) {
+        history[w++] = ',';
+        memcpy(history + w, scratch, kept_written);
+        w += kept_written;
+    }
+    history[w++] = ']';
+    history[w] = '\0';
+    *used = w;
     return ESP_OK;
 }
 

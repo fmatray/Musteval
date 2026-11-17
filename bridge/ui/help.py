@@ -46,7 +46,7 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
         "tool", "fs", "sandbox",
     ),
     "Chat": ("retry", "ping", "cancel", "clear", "thinking", "model", "export"),
-    "Info": ("tools", "mcp", "usage", "context"),
+    "Info": ("tools", "mcp", "usage", "context", "compact"),
     "Screens": ("onboard", "files", "logs", "help", "quit"),
 }
 
@@ -144,6 +144,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp("mcp", "/mcp", "list MCP servers from the last status", True),
     CommandHelp("usage", "/usage", "token totals for this link session", True),
     CommandHelp("context", "/context", "the next request's blocks, sized", False),
+    CommandHelp("compact", "/compact [keep]", "summarise the conversation", False),
     CommandHelp("todo", "/todo [op] [target]", "read and steer the run's todo list", False),
     CommandHelp("export", "/export", "write the chat log to a markdown file", True),
     CommandHelp("onboard", "/onboard", "set wifi, provider key and model", True),

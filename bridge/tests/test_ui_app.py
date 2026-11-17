@@ -120,7 +120,12 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
             value = overrides[key]
             if isinstance(value, Exception):
                 raise value
-            return [_result(frame, name, value, ok=False)]
+            # A `dict` without a `code` is a result; everything else is a refusal, which
+            # is what an override meant before a successful one was needed. The
+            # distinction is the wire's, not this double's: a refused command answers
+            # `error{code,message}` and a successful one answers `result`.
+            ok = isinstance(value, dict) and "code" not in value
+            return [_result(frame, name, value, ok=ok)]
         if kind == "hello":
             return [encode(Frame(type="hello_ack", id="d-1", ts=0, body=ACK,
                                  reply_to=frame["id"]))]
@@ -180,6 +185,41 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
             if name == "config.set":
                 return [_result(frame, name,
                                 {"path": args.get("path"), "applied": True})]
+            if name == "context.budget":
+                # `04` §4.30: eight blocks with their bytes and their item counts.
+                return [_result(frame, name, {
+                    "budget": 16384,
+                    "used": 1304,
+                    "free": 15080,
+                    "messages": 3,
+                    "blocks": {"system_prompt": 900, "skills": 200, "tools": 160,
+                               "user": 24, "assistant": 20, "thinking": 0,
+                               "tool_calls": 0, "tool_output": 0},
+                    "counts": {"skills": 2, "tools": 18, "user": 2, "assistant": 1,
+                               "thinking": 0, "tool_calls": 0, "tool_output": 0},
+                })]
+            if name == "context.block":
+                # `04` §4.32: the block's own text, and the flag that says the text
+                # is a prefix of it.
+                block = args.get("block")
+                if block not in ("system_prompt", "skills", "tools", "user",
+                                 "assistant", "thinking", "tool_calls",
+                                 "tool_output"):
+                    return [_result(frame, name,
+                                    {"code": "E_CONFIG", "message": "unknown block"},
+                                    ok=False)]
+                text = f"text of {block}"
+                return [_result(frame, name, {"block": block, "bytes": len(text),
+                                              "text": text, "truncated": False})]
+            if name == "context.compact":
+                # `04` §4.33: what it replaced, what it kept, and the summary.
+                return [_result(frame, name, {
+                    "summarised": 3,
+                    "kept": args.get("keep", 0),
+                    "before_bytes": 1304,
+                    "after_bytes": 240,
+                    "summary": "Goal: ship `/compact`.",
+                })]
             if name == "history.clear":
                 # `04` §4.28: the count is the reply's whole content, so the double
                 # reports one the pane can be checked against.

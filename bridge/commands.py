@@ -147,6 +147,23 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         # number the reader might act on and the device would contradict.
         _exact(rest, 0, "/context")
         return [_command("context.budget")]
+    if head == "compact":
+        # `05` §7.5: the summary is written by the device's model, because the API key
+        # is in its NVS and the conversation is its state. `keep` is the one argument
+        # and it is optional.
+        # `keep` is optional, so this is an arity range and not a fixed one: `_exact`
+        # would make `/compact` alone a usage error.
+        if len(rest) > 1:
+            raise CommandError("usage: /compact [keep]")
+        keep = 0
+        if rest:
+            try:
+                keep = int(rest[0])
+            except ValueError:
+                raise CommandError("/compact [keep]: keep must be a number") from None
+            if keep < 0 or keep > 8:
+                raise CommandError("/compact [keep]: keep must be 0 to 8")
+        return [_command("context.compact", {"keep": keep} if keep else {})]
     if head == "templates":
         _exact(rest, 0, "/templates")
         return [_command("templates.list")]

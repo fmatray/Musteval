@@ -205,6 +205,14 @@ key the reader could press and nothing happened.
   the latter wider because help is a two-column command/description list. A fixed
   column width alone would overflow a 60-column terminal; `auto` alone collapses,
   because the scroll view inside is `1fr` wide and takes its parent with it.
+- **A two-pane box names its measure in characters and rows, not as a fraction.**
+  `/context`'s right pane is sized for a 120-column, 40-row read and scrolls past it.
+  The 120/40 figure is the size the text is comfortable at, which is the same rule the
+  single-column boxes follow with their column caps — the difference is that a pane
+  holding a document also needs a row count, because `auto` on a scroll body whose
+  content is a whole prompt would put the box's border off the screen. The box itself
+  keeps `height: auto` under `max-height: 100%`: the pane's 40 rows are its ceiling,
+  the terminal is the box's.
 - **Two columns of side gutter, not one.** A percentage width rounds to an odd column
   count, so `80%` on an 80-column terminal is 64 and the leftover 16 does not split
   into equal margins by itself; the margin is what makes the two sides equal, and one

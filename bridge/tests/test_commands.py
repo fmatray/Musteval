@@ -141,6 +141,35 @@ def test_clear_refuses_an_argument_it_does_not_take():
         parse("/clear all")
 
 
+def test_compact_sends_the_keep_it_was_given():
+    # `04` §4.33: `keep` is how many of the newest messages survive verbatim. Absent
+    # means the device's default, so the frame must not carry `keep: 0` — that is a
+    # value the reader did not choose, and a future default would be overridden by it.
+    assert parse("/compact")[0].body == {"name": "context.compact", "args": {}}
+    assert parse("/compact 2")[0].body == {
+        "name": "context.compact", "args": {"keep": 2}
+    }
+    # Zero is a choice, and the one `/compact` already means.
+    assert parse("/compact 0")[0].body == {"name": "context.compact", "args": {}}
+
+
+@pytest.mark.parametrize(
+    "text,message",
+    [
+        ("/compact 9", r"keep must be 0 to 8"),
+        ("/compact -1", r"keep must be 0 to 8"),
+        ("/compact two", r"keep must be a number"),
+        ("/compact 1 2", r"usage: /compact"),
+    ],
+)
+def test_compact_refuses_a_keep_it_cannot_honour(text, message):
+    # `04` §4.33 caps `keep` at eight. A reader who typed nine is asking for something
+    # the device would refuse, and the bridge is the layer that can say so without
+    # spending a request.
+    with pytest.raises(CommandError, match=message):
+        parse(text)
+
+
 @pytest.mark.parametrize(
     "text,usage_error",
     [
