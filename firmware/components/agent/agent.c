@@ -335,9 +335,12 @@ static int64_t now_s(void)
 /* `link_emit_body` refuses a NULL id, so a frame without one is dropped silently,
  * which reads exactly like a hang. `04` §2 gives the device one counter for the
  * whole link, so this goes through `link_next_id` rather than keeping a second
- * one: `d-1` and `a-1` coexisting would make "never reused" false. The buffer is
- * per call because the next allocation would otherwise overwrite an id that has
- * not been copied into its frame yet. */
+ * one: `d-1` and `a-1` coexisting would make "never reused" false.
+ *
+ * One static buffer, not one per call: the agent task is the only caller and every
+ * emitter passes the result straight to `link_emit_body`, which copies it into the
+ * envelope it builds under the emit lock before this can be called again. A second
+ * caller on another task would need its own buffer. */
 static const char *agent_frame_id(void)
 {
     static char s_id[16];
