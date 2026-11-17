@@ -1721,10 +1721,12 @@ async def test_forgetting_the_last_network_is_refused_before_any_frame():
             {"ssid": "only", "password_ref": "nvs:k"}
         ]}}
 
-        async def picker(_screen):
-            return "forget only"
+        answers = ["only", "forget it", True]
 
-        app.push_screen_wait = picker  # type: ignore[method-assign]
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
         before = len(app.session._transport.written)
         await app._wifi_edit()
         assert "the last network cannot be removed" in _text(app)
@@ -1737,30 +1739,41 @@ async def test_forgetting_the_last_network_is_refused_before_any_frame():
     await _run(_device(), body)
 
 
-async def test_adding_a_network_with_a_dead_radio_says_the_scan_failed():
-    """An off radio is not an empty scan. `wifi.scan` refuses with `E_WIFI`, and the
-    two answers a reader can act on — "turn the radio on" and "there is nothing near
-    you" — are different, so the refusal must not be reported as the second."""
+async def test_adding_a_network_with_a_dead_radio_says_so_in_the_form():
+    """An off radio is not an empty scan, and the answer belongs in the modal: the
+    form is where the list would have been, so it is where the reader learns why it
+    is not there. Nothing about the scan reaches chat (`05` §7.6)."""
 
     async def body(app, pilot):
         app._config_fetched = True
         app._config = {"wifi": {"networks": [
             {"ssid": "home", "password_ref": "nvs:k"}
         ]}}
+        seen: list[object] = []
+        answers = ["add a network", "from the scan", None]
 
-        async def picker(_screen):
-            return "add a network"
+        async def drive(screen):
+            seen.append(screen)
+            return answers.pop(0)
 
-        app.push_screen_wait = picker  # type: ignore[method-assign]
+        app.push_screen_wait = drive  # type: ignore[method-assign]
         before = len(app.session._transport.written)
         await app._wifi_edit()
-        assert "the scan did not answer" in _text(app)
-        assert "heard nothing new" not in _text(app)
+        form = seen[-1]
+        assert type(form).__name__ == "WifiScanForm"
+        # A dropped frame is a timeout, not a refusal: the device said nothing at
+        # all, so the note must not invent an error code.
+        assert "scan unavailable" in form.note
+        assert "Ctrl+R" in form.note
+        assert "heard nothing new" not in form.note
+        assert form.scan == []
         written = [json.loads(line) for line in app.session._transport.written[before:]]
         assert not [
             f for f in written
             if (f.get("args") or {}).get("path") == "wifi.networks"
         ]
+        # The scan is the modal's, not the log's.
+        assert "no networks heard" not in _text(app)
 
     await _run(_device(drop={"wifi.scan"}), body)
 
@@ -1796,18 +1809,12 @@ async def test_adding_a_network_writes_its_secret_before_the_array_that_names_it
             {"ssid": "home", "password_ref": "nvs:k"}
         ]}}
 
-        async def picker(_screen):
-            return "add a network"
+        # Three questions: which network list, scan or by hand, then the form.
+        answers = ["add a network", "from the scan",
+                   {"ssid": "Cafe-FREE", "password": "hunter2"}]
 
-        async def form(_screen):
-            return {"ssid": "Cafe-FREE", "password": "hunter2"}
-
-        # The modal under test is the second question, so the script answers the
-        # gesture picker first and the form second.
-        answers = [picker, form]
-
-        async def drive(screen):
-            return await answers.pop(0)(screen)
+        async def drive(_screen):
+            return answers.pop(0)
 
         app.push_screen_wait = drive  # type: ignore[method-assign]
         before = len(app.session._transport.written)
@@ -1927,7 +1934,8 @@ async def test_the_passphrase_gesture_reuses_the_ref_the_array_already_names():
             {"ssid": "home", "password_ref": "nvs:wifi_psk"}
         ]}}
 
-        answers = ["passphrase for home", {"ssid": "home", "password": "newpass"}]
+        answers = ["home", "change the passphrase",
+                   {"ssid": "home", "password": "newpass"}]
 
         async def drive(_screen):
             return answers.pop(0)
@@ -1959,7 +1967,7 @@ async def test_a_blank_passphrase_writes_nothing():
             {"ssid": "home", "password_ref": "nvs:k"}
         ]}}
 
-        answers = ["passphrase for home", {"ssid": "home", "password": ""}]
+        answers = ["home", "change the passphrase", {"ssid": "home", "password": ""}]
 
         async def drive(_screen):
             return answers.pop(0)
@@ -1985,7 +1993,7 @@ async def test_forgetting_a_network_writes_the_shorter_array_and_keeps_the_secre
             {"ssid": "Cafe", "password_ref": "nvs:k2"},
         ]}}
 
-        answers = ["forget Cafe", True]
+        answers = ["Cafe", "forget it", True]
 
         async def drive(_screen):
             return answers.pop(0)
@@ -2014,7 +2022,7 @@ async def test_cancelling_the_forget_confirmation_sends_nothing():
             {"ssid": "Cafe", "password_ref": "nvs:k2"},
         ]}}
 
-        answers = ["forget Cafe", False]
+        answers = ["Cafe", "forget it", False]
 
         async def drive(_screen):
             return answers.pop(0)
@@ -2028,6 +2036,211 @@ async def test_cancelling_the_forget_confirmation_sends_nothing():
             if (f.get("args") or {}).get("path") == "wifi.networks"
         ]
         assert "wifi forget cancelled" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_refresh_rescans_and_reopens_the_form_with_the_new_list():
+    """`05` §7.6: `Ctrl+R` answers a refresh marker rather than a network, and the
+    handler loops. The second form must be built from the second scan — both its
+    list and its note — or the network that just appeared never shows up and the
+    form keeps apologising for a scan that has since succeeded."""
+    from bridge.ui.modals import WifiScanForm
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [{"ssid": "home"}]}}
+        forms: list[object] = []
+        answers = ["add a network", "from the scan", {"refresh": True},
+                   {"ssid": "Cafe-FREE", "password": "pw"}]
+        # First scan hears only the known network, so the form has nothing to
+        # offer; the refresh hears a new one.
+        scans = iter([
+            ([{"ssid": "home", "rssi": -40}], None, None),
+            ([{"ssid": "home", "rssi": -40}, {"ssid": "Cafe-FREE", "rssi": -70}],
+             None, None),
+        ])
+
+        async def quiet():
+            return next(scans)
+
+        app._wifi_scan_quiet = quiet  # type: ignore[method-assign]
+
+        async def drive(screen):
+            if isinstance(screen, WifiScanForm):
+                forms.append(screen)
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        assert len(forms) == 2
+        assert forms[0].scan == []
+        assert "heard nothing new" in forms[0].note
+        # The second form carries the second scan, note and all.
+        assert [n["ssid"] for n in forms[1].scan] == ["Cafe-FREE"]
+        assert forms[1].note == ""
+        # The scan's rows are the modal's, never the log's.
+        assert "no networks heard" not in _text(app)
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "wifi.networks"]
+        assert [e["ssid"] for e in arrays[0]["args"]["value"]] == ["home", "Cafe-FREE"]
+
+    await _run(_device(), body)
+
+
+async def test_a_truncated_scan_is_named_in_the_form_rather_than_looking_whole():
+    """`04` §4.24: a truncated list is a partial one. The form is the only place the
+    scan is shown, so a note that said nothing would let a reader conclude the
+    network they want is not in range when the list simply stopped early."""
+    from bridge.ui.modals import WifiScanForm
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [{"ssid": "home"}]}}
+        forms: list[object] = []
+        answers = ["add a network", "from the scan", None]
+
+        async def quiet():
+            return ([{"ssid": "Cafe-FREE", "rssi": -70}], None,
+                    "1 networks shown; the list was truncated")
+
+        app._wifi_scan_quiet = quiet  # type: ignore[method-assign]
+
+        async def drive(screen):
+            if isinstance(screen, WifiScanForm):
+                forms.append(screen)
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        await app._wifi_edit()
+        assert "truncated" in forms[0].note
+        assert [n["ssid"] for n in forms[0].scan] == ["Cafe-FREE"]
+
+    await _run(_device(), body)
+
+
+async def test_adding_by_hand_writes_the_typed_network_and_needs_no_scan():
+    """`05` §7.6: a hidden network is named by hand, so the gesture must not depend
+    on the scan at all — a station off the air still has a network worth adding."""
+    from bridge.ui.modals import WifiCustomForm
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [{"ssid": "home", "password_ref": "nvs:k"}]}}
+        seen: list[object] = []
+        answers = ["add a network", "by hand",
+                   {"ssid": "hidden-net", "password": "hunter2"}]
+
+        async def drive(screen):
+            seen.append(screen)
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        assert isinstance(seen[-1], WifiCustomForm)
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("name") == "wifi.scan"]
+        secrets_ = [f for f in written if f.get("type") == "secret.set"]
+        assert secrets_[0]["key"] == "wifi_hidden_net"
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "wifi.networks"]
+        assert arrays[0]["args"]["value"][-1] == {
+            "ssid": "hidden-net", "priority": 1, "password_ref": "nvs:wifi_hidden_net"
+        }
+        assert "wifi add hidden-net" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_dismissing_each_picker_writes_nothing_and_says_which_step_stopped():
+    """Three pickers sit in the chain and each can be dismissed. A dismissal is a
+    cancel at every one of them: the reader pressed escape, so nothing is written and
+    the message names the step they abandoned rather than a generic failure."""
+    async def run_chain(answers, expect, before_arrays):
+        async def body(app, pilot):
+            app._config_fetched = True
+            app._config = {"wifi": {"networks": [
+                {"ssid": "home", "password_ref": "nvs:k"},
+                {"ssid": "Cafe", "password_ref": "nvs:j"}]}}
+            queue = list(answers)
+
+            async def drive(screen):
+                return queue.pop(0)
+
+            app.push_screen_wait = drive  # type: ignore[method-assign]
+            before = len(app.session._transport.written)
+            await app._wifi_edit()
+            assert expect in _text(app)
+            written = [json.loads(line)
+                       for line in app.session._transport.written[before:]]
+            arrays = [f for f in written
+                      if (f.get("args") or {}).get("path") == "wifi.networks"]
+            assert len(arrays) == before_arrays
+
+        await _run(_device(), body)
+
+    # The network picker, the add picker, and the by-hand form.
+    await run_chain([None], "wifi edit cancelled", 0)
+    await run_chain(["add a network", None], "wifi add cancelled", 0)
+    await run_chain(["add a network", "by hand", None], "wifi add cancelled", 0)
+
+
+async def test_a_network_named_like_the_add_row_can_still_be_edited():
+    """The first picker's `add a network` row is a label, not an ssid, and an ssid may
+    be any string. Without the collision check that network could never be selected:
+    its row would answer the same string as the add row and be read as a request to
+    add a second one, so a configured network became unreachable and uneditable."""
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [
+            {"ssid": "add a network", "password_ref": "nvs:k"},
+            {"ssid": "home", "password_ref": "nvs:j"}]}}
+        # The network's own row still answers its ssid; only the add row moved.
+        answers = ["add a network", "forget it", True]
+        before = len(app.session._transport.written)
+
+        async def drive(screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        arrays = [f for f in written
+                  if (f.get("args") or {}).get("path") == "wifi.networks"]
+        assert [n["ssid"] for n in arrays[-1]["args"]["value"]] == ["home"]
+        assert "wifi forget add a network: 1 networks configured" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_by_hand_ssid_that_is_already_configured_is_refused_before_a_write():
+    """The scan filters known networks out, but a typed ssid is not filtered by
+    anything: without this the array would gain a second entry for a network that is
+    already in it, and the first one's secret would be the one the station uses."""
+    from bridge.ui.modals import WifiCustomForm
+
+    async def body(app, pilot):
+        app._config_fetched = True
+        app._config = {"wifi": {"networks": [{"ssid": "home", "password_ref": "nvs:k"}]}}
+        answers = ["add a network", "by hand",
+                   {"ssid": "home", "password": "hunter2"}]
+
+        async def drive(_screen):
+            return answers.pop(0)
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._wifi_edit()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "wifi.networks"
+        ]
+        assert "already configured" in _text(app)
 
     await _run(_device(), body)
 
@@ -2202,11 +2415,10 @@ async def test_a_refused_secret_on_add_and_passphrase_is_reported_not_swallowed(
         app._config = {"wifi": {"networks": [{"ssid": "home",
                                               "password_ref": "nvs:k"}]}}
 
-        for gesture, answer in (
-            ("add a network", {"ssid": "Cafe", "password": "pw"}),
-            ("passphrase for home", {"ssid": "home", "password": "pw"}),
+        for replies in (
+            ["add a network", "from the scan", {"ssid": "Cafe", "password": "pw"}],
+            ["home", "change the passphrase", {"ssid": "home", "password": "pw"}],
         ):
-            replies = [gesture, answer]
 
             async def drive(_screen, _r=replies):
                 return _r.pop(0)
@@ -2220,7 +2432,7 @@ async def test_a_refused_secret_on_add_and_passphrase_is_reported_not_swallowed(
             assert not [
                 f for f in written
                 if (f.get("args") or {}).get("path") == "wifi.networks"
-            ], gesture
+            ], replies
 
         text = _text(app)
         assert "wifi add: secret refused" in text
@@ -2240,11 +2452,10 @@ async def test_a_refused_array_write_is_reported_for_add_and_forget():
             {"ssid": "Cafe", "password_ref": "nvs:k2"},
         ]}}
 
-        for gesture, answer in (
-            ("add a network", {"ssid": "New", "password": ""}),
-            ("forget Cafe", True),
+        for replies in (
+            ["add a network", "from the scan", {"ssid": "New", "password": ""}],
+            ["Cafe", "forget it", True],
         ):
-            replies = [gesture, answer]
 
             async def drive(_screen, _r=replies):
                 return _r.pop(0)
@@ -2447,7 +2658,7 @@ async def test_each_editor_fetches_the_document_when_it_has_none():
         assert app._config_fetched is True
         # Both read the fetched document, so each picker names the configured entry.
         labels = [[label for label, _hint in box.rows] for box in seen]
-        assert any("forget home" in row for row in labels[0])
+        assert "home" in labels[0]
         assert any("disconnect openai" in row for row in labels[1])
         assert isinstance(seen[0], _PickBox)
 
@@ -2464,8 +2675,10 @@ async def test_cancelling_the_add_form_and_the_passphrase_form_writes_nothing():
             {"ssid": "Cafe", "password_ref": "nvs:k2"},
         ]}}
 
-        for gesture in ("add a network", "passphrase for home"):
-            replies = [gesture, None]
+        for replies in (
+            ["add a network", "from the scan", None],
+            ["home", "change the passphrase", None],
+        ):
 
             async def drive(_screen, _r=replies):
                 return _r.pop(0)
@@ -2476,11 +2689,11 @@ async def test_cancelling_the_add_form_and_the_passphrase_form_writes_nothing():
             written = [
                 json.loads(line) for line in app.session._transport.written[before:]
             ]
-            assert not [f for f in written if f.get("type") == "secret.set"], gesture
+            assert not [f for f in written if f.get("type") == "secret.set"], replies
             assert not [
                 f for f in written
                 if (f.get("args") or {}).get("path") == "wifi.networks"
-            ], gesture
+            ], replies
 
         text = _text(app)
         assert "wifi add cancelled" in text

@@ -90,7 +90,7 @@ Column meanings:
 | `/usage` | none | (Local) | Token totals for this link session |
 | `/wifi connect` | `connect` | `wifi.connect` | Joins the best configured network |
 | `/wifi disconnect` | `disconnect` | `wifi.disconnect` | Leaves the network and stays down |
-| `/wifi edit` | none | `secret.set`, `config.set` | Opens the network form: add from the scan, change a passphrase, forget a network |
+| `/wifi edit` | none | `config.get`, `wifi.scan`, `secret.set`, `config.set` | Opens the network editor: pick a known network to change its passphrase or forget it, or add one from the scan (`Ctrl+R` rescans) or by hand (`05-bridge.md` §7.6) |
 | `/wifi list` | none | `wifi.status`, `wifi.scan` | One row per configured network with its priority, whether it is joined, and its RSSI when audible; `unknown` when the scan was refused |
 | `/wifi reconnect` | `reconnect` | `wifi.reconnect` | Leaves and rejoins, moving to the best AP |
 | `/wifi scan` | `scan` | `wifi.scan` | Lists audible access points, strongest first |

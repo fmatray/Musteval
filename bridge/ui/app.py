@@ -41,7 +41,8 @@ from .modals import (
     FilePrompt,
     FilterPrompt,
     ModelPicker,
-    WifiForm,
+    WifiCustomForm,
+    WifiScanForm,
     _PickBox,
     ModelStep,
     NetworkStep,
@@ -2594,28 +2595,13 @@ class BridgeApp(App):
     async def _onboard_scan(self) -> tuple[list[dict], list[str]]:
         """The `wifi.scan` result and the lines worth showing about it.
 
-        The frame comes from `parse` rather than being assembled here, so the
-        wizard cannot name a command the parser would refuse — which is how
-        `wifi.scan` stayed unreachable after the firmware shipped it.
+        The wizard has a text field, so a refused scan still leaves the reader a way
+        forward and the note says so.
         """
-        try:
-            async with self._working(
-                "scanning for networks", "wifi.scan; a few seconds, longer in a busy band"
-            ):
-                reply = await self.session.request(parse("/wifi scan")[0])
-        except (SessionError, asyncio.TimeoutError):
-            return [], ["scan unavailable; type the ssid"]
-        if reply.type != "command.result" or not reply.body.get("ok"):
-            error = reply.body.get("error") or {}
-            return [], [
-                f"scan refused ({error.get('code') or 'no answer'}); type the ssid"
-            ]
-        result = reply.body.get("result") or {}
-        networks = result.get("networks") or []
-        notes: list[str] = []
-        if result.get("truncated"):
-            notes.append(f"{len(networks)} networks shown; the list was truncated")
-        return [n for n in networks if isinstance(n, dict)], notes
+        networks, refused, truncated = await self._wifi_scan_quiet()
+        if refused:
+            return [], [f"{refused}; type the ssid"]
+        return networks, [truncated] if truncated else []
 
     async def _thinking(self, rest: list[str]) -> None:
         """`05` §7.2: read, or read-modify-write, the provider's thinking level.
@@ -2743,7 +2729,12 @@ class BridgeApp(App):
             self._chat().write(line)
 
     async def _wifi_edit(self) -> None:
-        """`05` §7.6: add a network, change a passphrase, or forget one.
+        """`05` §7.6: pick a known network to rekey or forget, or add one.
+
+        Two questions, both in a modal: which network, then what to do with it. The
+        row per action that this used to draw made the list grow by two every time a
+        network was added, and a reader with eight networks scrolled past sixteen rows
+        to find the one they meant.
 
         Every gesture writes the whole `wifi.networks` array, because `config.set`
         replaces a value and `04` §4.9 will not create an array index. A passphrase is
@@ -2755,71 +2746,169 @@ class BridgeApp(App):
         stored = self._existing("wifi.networks")
         networks = [n for n in stored if isinstance(n, dict)] if isinstance(stored, list) else []
 
-        rows: list[tuple[str, str]] = [("add a network", "pick an ssid from the scan")]
+        # `add` is a row of its own even when the array is empty: it is the gesture
+        # that makes the list non-empty, and the alternative — no rows at all — is a
+        # modal that cannot be acted on.
+        # An ssid may be anything, including this row's own label, so the label is
+        # grown until it names no configured network: a collision would make one of
+        # the two rows unreachable whichever way the answer is read.
+        add_label = "add a network"
+        while any(str(n.get("ssid") or "") == add_label for n in networks):
+            add_label += " (new)"
+        rows: list[tuple[str, str]] = [(add_label, "from the scan, or by hand")]
         for entry in networks:
             ssid = str(entry.get("ssid") or "")
-            rows.append((f"passphrase for {ssid}", "replace the stored nvs secret"))
-            rows.append((f"forget {ssid}", "remove it from the list"))
-        choice = await self.push_screen_wait(_PickBox(rows))
+            rows.append((ssid, f"priority {entry.get('priority', 0)} — change or forget"))
+        choice = await self.push_screen_wait(_PickBox(rows, title="Wi-Fi networks"))
         if choice is None:
             self._chat().write("wifi edit cancelled")
             return
+        if choice != add_label:
+            await self._wifi_edit_one(choice, networks)
+            return
 
-        if choice == "add a network":
-            scan = await self._request("wifi.scan")
-            if scan is None:
+        rows = [
+            ("from the scan", "pick a network the radio can hear"),
+            ("by hand", "type an ssid the scan cannot see"),
+        ]
+        choice = await self.push_screen_wait(
+            _PickBox(rows, title="Add a network")
+        )
+        if choice is None:
+            self._chat().write("wifi add cancelled")
+            return
+        if choice == "by hand":
+            answer = await self.push_screen_wait(WifiCustomForm("Add a network"))
+            if answer is None:
+                self._chat().write("wifi add cancelled")
+                return
+            await self._wifi_add(answer, networks)
+            return
+        await self._wifi_add_scanned(networks)
+
+    async def _wifi_scan_quiet(
+        self,
+    ) -> tuple[list[dict[str, Any]], str | None, str | None]:
+        """One `wifi.scan`, its rows going nowhere, and the two things to say.
+
+        `_request` hands its reply to `_on_command_result`, which prints the scan as
+        chat lines — right for `/wifi scan`, wrong for a modal that is already showing
+        the same list. The frame comes from `parse` for the same reason the wizard
+        does it: the app cannot name a command the parser refuses.
+
+        Returns `(networks, refused, truncated)`. The two notes are separate because a
+        scan can succeed *and* be partial, and a caller that treated the truncation as
+        a refusal would throw away the rows it did return.
+        """
+        try:
+            async with self._working(
+                "scanning for networks",
+                "wifi.scan; a few seconds, longer in a busy band",
+            ):
+                reply = await self.session.request(parse("/wifi scan")[0])
+        except (SessionError, asyncio.TimeoutError):
+            return [], "scan unavailable", None
+        if reply.type != "command.result" or not reply.body.get("ok"):
+            error = reply.body.get("error") or {}
+            return [], f"scan refused ({error.get('code') or 'no answer'})", None
+        result = reply.body.get("result") or {}
+        networks = [n for n in result.get("networks") or [] if isinstance(n, dict)]
+        truncated = None
+        if result.get("truncated"):
+            # A truncated list is a partial one: saying nothing would read as "these
+            # are all the networks in range", which the device did not claim.
+            truncated = f"{len(networks)} networks shown; the list was truncated"
+        return networks, None, truncated
+
+    async def _wifi_add_scanned(self, networks: list[dict[str, Any]]) -> None:
+        """`add from the scan`: the scan's own list, rescannable, with no chat output.
+
+        The scan's rows are the only place its answer is shown. Printing them and then
+        asking which one would make the modal a caption for a list already scrolled
+        past, and `Ctrl+R` would have to redraw a pane it does not own.
+        """
+        known = {str(n.get("ssid") or "") for n in networks}
+        note = ""
+        while True:
+            heard_all, refused, truncated = await self._wifi_scan_quiet()
+            if refused:
                 # Not the same as a scan that heard nothing: the radio is off, so
-                # there is no list to add from and saying "nothing new" would blame
-                # the access points for a station that cannot hear any.
-                self._chat().write(
-                    "wifi add: the scan did not answer, so there is no list to pick "
-                    "from"
+                # there is no list to add from, and "nothing new" would blame the
+                # access points for a station that cannot hear any.
+                heard: list[dict[str, Any]] = []
+                note = f"{refused}; check the radio, then Ctrl+R"
+            else:
+                heard = [
+                    n for n in heard_all
+                    if str(n.get("ssid") or "") not in known
+                ]
+                # Cleared, not overwritten: a refresh that works after one that did
+                # not must stop showing the first one's reason. A truncation note
+                # outlives the emptiness check, because a short list explains it.
+                note = truncated or (
+                    "" if heard else "heard nothing new; Ctrl+R scans again"
                 )
-                return
-            heard = [n for n in scan.get("networks") or [] if isinstance(n, dict)]
-            known = {str(n.get("ssid") or "") for n in networks}
-            heard = [n for n in heard if str(n.get("ssid") or "") not in known]
-            if not heard:
-                self._chat().write(
-                    "wifi add: the scan heard nothing new (a joined network cannot be "
-                    "added twice)"
-                )
-                return
             answer = await self.push_screen_wait(
-                WifiForm("Add a network", scan=heard)
+                WifiScanForm("Add a network", scan=heard, note=note)
             )
             if answer is None:
                 self._chat().write("wifi add cancelled")
                 return
-            ssid = str(answer["ssid"])
-            password = str(answer.get("password") or "")
-            entry = {"ssid": ssid, "priority": len(networks)}
-            if password:
-                key = wifi_secret_key(ssid)
-                ok, refused = await self._send_body(
-                    "secret", {"key": key, "value": password}
-                )
-                if not ok:
-                    self._chat().write(f"wifi add: secret refused ({refused})", kind="error")
-                    return
-                entry["password_ref"] = f"nvs:{key}"
-            async with self._working(f"add {ssid}", "config.set wifi.networks"):
-                ok, refused = await self._send_body(
-                    "config", {"wifi.networks": networks + [entry]}
-                )
-            if not ok:
-                self._chat().write(f"wifi add: refused ({refused})", kind="error")
-                return
-            await self._fetch_config()
-            self._chat().write(
-                f"wifi add {ssid}: {len(networks) + 1} networks configured"
-            )
+            if answer.get("refresh"):
+                continue
+            await self._wifi_add(answer, networks)
             return
 
-        if choice.startswith("passphrase for "):
-            ssid = choice[len("passphrase for "):]
+    async def _wifi_add(
+        self, answer: dict[str, Any], networks: list[dict[str, Any]]
+    ) -> None:
+        """Write one network: its secret first, then the array that names it."""
+        ssid = str(answer["ssid"])
+        password = str(answer.get("password") or "")
+        if any(str(n.get("ssid") or "") == ssid for n in networks):
+            self._chat().write(
+                f"wifi add: {ssid} is already configured (change its passphrase instead)",
+                kind="error",
+            )
+            return
+        entry: dict[str, Any] = {"ssid": ssid, "priority": len(networks)}
+        if password:
+            key = wifi_secret_key(ssid)
+            ok, refused = await self._send_body(
+                "secret", {"key": key, "value": password}
+            )
+            if not ok:
+                self._chat().write(f"wifi add: secret refused ({refused})", kind="error")
+                return
+            entry["password_ref"] = f"nvs:{key}"
+        async with self._working(f"add {ssid}", "config.set wifi.networks"):
+            ok, refused = await self._send_body(
+                "config", {"wifi.networks": networks + [entry]}
+            )
+        if not ok:
+            self._chat().write(f"wifi add: refused ({refused})", kind="error")
+            return
+        await self._fetch_config()
+        self._chat().write(f"wifi add {ssid}: {len(networks) + 1} networks configured")
+
+    async def _wifi_edit_one(
+        self, ssid: str, networks: list[dict[str, Any]]
+    ) -> None:
+        """The second question: what to do with the chosen network."""
+        rows = [
+            ("change the passphrase", "replace the stored nvs secret"),
+            ("forget it", "remove it from the list"),
+        ]
+        choice = await self.push_screen_wait(
+            _PickBox(rows, title=ssid)
+        )
+        if choice is None:
+            self._chat().write("wifi edit cancelled")
+            return
+
+        if choice == "change the passphrase":
             answer = await self.push_screen_wait(
-                WifiForm(f"New passphrase for {ssid}", ssid=ssid)
+                WifiCustomForm(f"New passphrase for {ssid}", ssid=ssid)
             )
             if answer is None:
                 self._chat().write("wifi passphrase: cancelled")
@@ -2830,10 +2919,10 @@ class BridgeApp(App):
                 self._chat().write("wifi passphrase: nothing entered, nothing written")
                 return
             # The row was built from `networks` and `_PickBox` answers only a label it
-            # was handed, so the entry exists; `next(..., None)` would be a guard no
-            # gesture can enter. The ref is used when there is one, because a network
-            # `/onboard` seeded names `wifi_psk` and deriving a new key would leave the
-            # array pointing at a secret the passphrase never reaches.
+            # was handed, so the entry exists. The ref is used when there is one,
+            # because a network `/onboard` seeded names `wifi_psk` and deriving a new
+            # key would leave the array pointing at a secret the passphrase never
+            # reaches.
             entry = next(n for n in networks if str(n.get("ssid") or "") == ssid)
             ref = str(entry.get("password_ref") or "")
             key = ref[4:] if ref.startswith("nvs:") else wifi_secret_key(ssid)
@@ -2847,7 +2936,6 @@ class BridgeApp(App):
             self._chat().write(f"wifi passphrase for {ssid}: stored as nvs:{key}")
             return
 
-        ssid = choice[len("forget "):]
         if len(networks) <= 1:
             # `wifi.networks` is 1..8: the empty list is a document the device
             # refuses, so this answers here rather than sending a doomed write.

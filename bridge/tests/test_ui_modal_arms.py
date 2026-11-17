@@ -751,45 +751,81 @@ async def test_a_pick_box_with_no_rows_refuses_rather_than_answering_none():
         assert "value" not in pilot.app.dismissed
 
 
-async def test_the_wifi_form_offers_the_scan_and_answers_the_typed_ssid():
-    """`05` §7.6: the `Select` is the scan, the text field is a hidden network, and
-    the typed one wins — a reader who typed an ssid did not mean the highlighted one.
-    """
-    from bridge.ui.modals import WifiForm
+async def test_the_scan_form_answers_the_picked_network_and_its_passphrase():
+    """`05` §7.6: the `Select` is the whole ssid input — a typed one here would be a
+    second way to name a network, and the one the radio cannot hear is the kind a
+    typo invents."""
+    from bridge.ui.modals import WifiScanForm
 
-    form = WifiForm("Add a network", scan=[{"ssid": "Cafe"}, {"ssid": "home"}])
+    form = WifiScanForm("Add a network", scan=[{"ssid": "Cafe"}, {"ssid": "home"}])
     async with _host(form).run_test(size=(80, 24)) as pilot:
         await pilot.pause(0.05)
         screen = pilot.app.screen
-        # The picker exists because the scan heard more than one.
-        assert screen.query_one("#wifi-pick") is not None
-        screen.query_one("#wifi-ssid").focus()
-        screen.query_one("#wifi-ssid").value = "hidden-net"
+        screen.query_one("#wifi-pick").value = "home"
         screen.query_one("#wifi-password").value = "hunter2"
         screen.action_submit()
         await pilot.pause(0.05)
         assert pilot.app.dismissed["value"] == {
-            "ssid": "hidden-net", "password": "hunter2"
+            "ssid": "home", "password": "hunter2"
         }
 
 
-async def test_a_wifi_form_with_one_heard_network_draws_no_picker():
-    """A one-row `Select` is a choice that is not one; the text field already says
-    which network it would be."""
-    from bridge.ui.modals import WifiForm
+async def test_the_scan_form_draws_no_picker_when_it_heard_nothing():
+    """A scan that heard nothing new still opens the form: the passphrase field is
+    useless, but Ctrl+R is the gesture that fixes it, and it is named on the form."""
+    from bridge.ui.modals import WifiScanForm
 
-    form = WifiForm("Add a network", scan=[{"ssid": "Cafe"}])
+    form = WifiScanForm("Add a network", scan=[], note="heard nothing new; Ctrl+R")
     async with _host(form).run_test(size=(80, 24)) as pilot:
         await pilot.pause(0.05)
-        assert not pilot.app.screen.query("#wifi-pick")
+        screen = pilot.app.screen
+        assert not screen.query("#wifi-pick")
+        assert "heard nothing new" in str(screen.query(".prompt-hint").first().content)
+        screen.action_submit()
+        await pilot.pause(0.05)
+        # Nothing to name, so Enter cannot answer a network nobody chose.
+        assert pilot.app.screen is form
+        assert "value" not in pilot.app.dismissed
 
 
-async def test_a_wifi_form_refuses_a_blank_ssid_and_keeps_the_prompt_open():
+async def test_the_scan_form_answers_a_refresh_request_rather_than_a_network():
+    """`Ctrl+R` cannot rescan here — the form has no device — so it answers a marker
+    the handler loops on. Answering a network instead would add whatever happened to
+    be highlighted when the reader asked for a fresh list."""
+    from bridge.ui.modals import WifiScanForm
+
+    form = WifiScanForm("Add a network", scan=[{"ssid": "Cafe"}])
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        pilot.app.screen.action_refresh()
+        await pilot.pause(0.05)
+        assert pilot.app.dismissed["value"] == {"refresh": True}
+
+
+async def test_the_custom_form_answers_a_typed_ssid_and_its_passphrase():
+    """`05` §7.6: a hidden network is named by hand, and a space at either end of the
+    ssid is a typo while one inside the passphrase is not."""
+    from bridge.ui.modals import WifiCustomForm
+
+    form = WifiCustomForm("Add a network")
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        screen = pilot.app.screen
+        screen.query_one("#wifi-ssid").value = "  hidden-net  "
+        screen.query_one("#wifi-password").value = " spaced "
+        screen.action_submit()
+        await pilot.pause(0.05)
+        assert pilot.app.dismissed["value"] == {
+            "ssid": "hidden-net", "password": " spaced "
+        }
+
+
+async def test_a_custom_form_refuses_a_blank_ssid_and_keeps_the_prompt_open():
     """An ssid-less entry would replace a working list with a network the station
     cannot join, so Enter on a blank field must not answer."""
-    from bridge.ui.modals import WifiForm
+    from bridge.ui.modals import WifiCustomForm
 
-    form = WifiForm("Add a network", scan=[{"ssid": "Cafe"}])
+    form = WifiCustomForm("Add a network")
     async with _host(form).run_test(size=(80, 24)) as pilot:
         await pilot.pause(0.05)
         screen = pilot.app.screen
@@ -800,16 +836,18 @@ async def test_a_wifi_form_refuses_a_blank_ssid_and_keeps_the_prompt_open():
         assert "value" not in pilot.app.dismissed
 
 
-async def test_a_rekey_form_seeds_the_ssid_and_can_skip_the_password():
+async def test_a_rekey_form_names_the_ssid_and_does_not_ask_for_it():
     """`/wifi edit`'s passphrase gesture knows the network; asking for it again would
     let a typo re-key the wrong one."""
-    from bridge.ui.modals import WifiForm
+    from bridge.ui.modals import WifiCustomForm
 
-    form = WifiForm("New passphrase for home", ssid="home", ask_password=False)
+    form = WifiCustomForm("New passphrase for home", ssid="home")
     async with _host(form).run_test(size=(80, 24)) as pilot:
         await pilot.pause(0.05)
         screen = pilot.app.screen
-        assert screen.query_one("#wifi-ssid").value == "home"
+        assert not screen.query("#wifi-ssid")
+        screen.query_one("#wifi-password").value = "newpass"
         screen.action_submit()
         await pilot.pause(0.05)
-        assert pilot.app.dismissed["value"] == {"ssid": "home", "password": ""}
+        assert pilot.app.dismissed["value"] == {"ssid": "home", "password": "newpass"}
+

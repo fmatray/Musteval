@@ -681,7 +681,8 @@ editors have to say what each row will do before it is chosen. It takes an optio
 and key reference have to be visible before a row is chosen, and none of them is the
 row's answer, so none of them may ride a label.
 
-`WifiForm` and the wizard's steps it resembles are detailed in `§7.6` and `§7.1`.
+`WifiScanForm`, `WifiCustomForm` and the wizard's steps they resemble are
+detailed in `§7.6` and `§7.1`.
 
 ## 6. Keybindings
 
@@ -805,7 +806,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/wifi disconnect` | `command {name:"wifi.disconnect"}` | none | Leaves the network and stays down: the connection does not come back on its own (`04-protocol.md` §4.26) |
 | `/wifi reconnect` | `command {name:"wifi.reconnect"}` | none | Leaves and rejoins, so a link that is up but on the wrong AP is moved to the best one |
 | `/wifi list` | `command {name:"wifi.status"}`, `command {name:"wifi.scan"}` | none | One row per configured network: priority, whether it is the joined one, and its RSSI when audible (§7.6) |
-| `/wifi edit` | `command {name:"config.set"}`, `command {name:"secret.set"}` | none | Opens the network form: add from the scan, change a passphrase, forget a network. Writes the whole `wifi.networks` array (§7.6) |
+| `/wifi edit` | `command {name:"config.get"}`, `command {name:"wifi.scan"}`, `command {name:"config.set"}`, `command {name:"secret.set"}` | none | Opens the network editor: pick a known network to change its passphrase or forget it, or add one from the scan (`Ctrl+R` rescans) or by hand. Writes the whole `wifi.networks` array (§7.6) |
 | `/providers` | `command {name:"config.get"}`, `command {name:"config.set"}`, `command {name:"secret.set"}`, `command {name:"secret.delete"}` | none | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (§7.7) |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
@@ -1291,20 +1292,46 @@ rather than `not in range`. An absent scan cannot report that a network is silen
 `not in range` is the kind of claim a reader acts on by moving an AP that was working.
 Only the network actually joined keeps a real state, because `wifi.status` reported it.
 
-**`/wifi edit`** opens one modal with three gestures, each writing the whole array:
+**`/wifi edit`** asks two questions, both in a modal. The first lists the configured
+networks plus an `add a network` row; choosing a network asks what to do with it, and
+`add` asks whether the network comes from the scan or from a typed ssid.
 
 | Gesture | Writes |
 |---|---|
-| add | `wifi.networks[]` plus its passphrase secret, then the array naming it |
+| add, from the scan | `wifi.networks[]` plus its passphrase secret, then the array naming it |
+| add, by hand | the same, for an ssid the scan cannot report |
 | password | the passphrase secret alone, for the network whose ref it already holds |
 | forget | `wifi.networks[]` with that entry removed |
 
-The modal offers the scan-backed SSID picker and a masked passphrase field, the same
-pairing §7.1's `NetworkStep` uses, minus the timezone and the "First run" chrome,
-which are not part of this gesture. It is its own screen because those two are the
-whole of what it asks. The order inside each gesture follows `onboard.writes_network`:
-the secret first, then the array that names it, because `03-config.md` rule 9 refuses a
-reference whose key is missing.
+Two questions rather than one row per action, because a row per action grew the list by
+two entries every time a network was added: a reader with eight networks scrolled past
+sixteen rows to reach the one they meant.
+
+The `add a network` row is a label, not an ssid, and an ssid is any string. The label
+therefore grows (`add a network (new)`, and so on) until it names no configured
+network: a network that happens to be called `add a network` would otherwise answer
+the same string as the row above it and be read as a request to add a second one,
+leaving that network selectable by no gesture at all.
+
+**Add from the scan writes nothing to chat.** The scan's rows are the form's list —
+they are not printed and then asked about, which would make the modal a caption for a
+list already scrolled past. `Ctrl+R` on that form dismisses it with a refresh marker
+and the handler scans again, so the network that appeared while the reader was looking
+is in the next list. A refused scan and a scan that heard only known networks are
+different answers and the form says which: `unknown` in `/wifi list` has the same
+reasoning, one screen over. A scan the device marks `truncated` is a third answer: it
+succeeded, so its rows are offered, and the note says the list stopped early rather
+than letting a reader conclude the network they want is out of range.
+
+**Add by hand** takes an ssid and a passphrase, for a hidden network. The ssid is
+stripped at both ends and the passphrase is not: a space is part of a passphrase, and
+nobody means one at either end of an ssid. A typed ssid already in the array is
+refused here — the scan filters known networks out, and a typed one is filtered by
+nothing.
+
+Every gesture writes the whole array. The order inside each follows
+`onboard.writes_network`: the secret first, then the array that names it, because
+`03-config.md` rule 9 refuses a reference whose key is missing.
 
 - **The last network cannot be forgotten.** `wifi.networks[]` is 1..8, so removing the
   only entry is a document the device refuses; the gesture answers in chat and writes

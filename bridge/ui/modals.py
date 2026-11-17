@@ -1470,13 +1470,20 @@ class _PickBox(PromptBox[str | None]):
     TITLE = ""
 
     def __init__(
-        self, rows: list[tuple[str, str]], header: list[str] | None = None
+        self,
+        rows: list[tuple[str, str]],
+        header: list[str] | None = None,
+        title: str = "",
     ) -> None:
         super().__init__()
         #: `(label, what the row does)`. The label is the answer; the hint is never
         #: parsed, because a hint that is also a value is one rename away from being a
         #: value the app misreads.
         self.rows = rows
+        #: What the reader is choosing between, drawn as the box's heading. `/wifi
+        #: edit` asks twice — which network, then what to do with it — and the second
+        #: question is unreadable without the first one's answer on screen.
+        self.title_text = title
         #: What the list is a list *of*, drawn above it. `05` §7.7 needs a provider's
         #: model, url and key ref visible before one is chosen, and those are not the
         #: answer, so they cannot ride a row label.
@@ -1485,7 +1492,8 @@ class _PickBox(PromptBox[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="pick-box"):
-            yield Static(self.TITLE, classes="prompt-title", markup=False)
+            yield Static(self.title_text or self.TITLE, classes="prompt-title",
+                         markup=False)
             for line in self.header:
                 yield Static(line, classes="pick-hint", markup=False)
             for i, (label, hint) in enumerate(self.rows):
@@ -1513,73 +1521,125 @@ class _PickBox(PromptBox[str | None]):
             self.dismiss(self.rows[self.index][0])
 
 
-class WifiForm(PromptBox[dict[str, Any] | None]):
-    """`05` §7.6: one network's fields. The app decides what the answer means.
+class WifiScanForm(PromptBox[dict[str, Any] | None]):
+    """`05` §7.6: pick a heard network, type its passphrase.
 
-    The SSID is a `Select` over the scan so an added network is one the radio can hear,
-    with a free-text field beside it for a hidden one — the same pairing
-    `NetworkStep` uses, minus the timezone, which is not part of this gesture.
+    The SSID is only ever the `Select`, which is the scan: a typed ssid here would be
+    a second way to name a network, and the one the radio cannot hear is exactly the
+    kind a typo invents. A hidden network is `WifiCustomForm`'s job, where the reader
+    is told the ssid is theirs to spell.
+
+    `Ctrl+R` dismisses with `{"refresh": True}` rather than rescanning in place: the
+    form cannot reach the device, and a refresh that closed the list would hide the
+    network that appeared while the reader was looking at it.
     """
+
+    BINDINGS = [
+        Binding("enter", "submit", "Apply", show=False),
+        Binding("ctrl+r", "refresh", "Refresh", show=False),
+    ]
+    CSS = _CSS
+    AUTO_FOCUS = "#wifi-pick"
+
+    def __init__(
+        self, title: str, scan: list[dict[str, Any]] | None = None, note: str = ""
+    ) -> None:
+        super().__init__()
+        self.title = title
+        self.scan = scan or []
+        #: Why the list is short, drawn above it. A refused scan and a scan that
+        #: heard only known networks are different answers, and the reader's next
+        #: move — turn the radio on, or move closer — depends on which one it is.
+        self.note = note
+
+    def heard(self) -> list[str]:
+        return [str(n.get("ssid") or "") for n in self.scan if n.get("ssid")]
+
+    def compose(self) -> ComposeResult:
+        heard = self.heard()
+        with Vertical(classes="prompt-box"):
+            yield Static(self.title, classes="prompt-title", markup=False)
+            if self.note:
+                yield Static(self.note, classes="prompt-hint", markup=False)
+            if heard:
+                yield Static("in range", classes="prompt-hint", markup=False)
+                yield Select(
+                    [(s, s) for s in heard],
+                    value=heard[0],
+                    allow_blank=False,
+                    id="wifi-pick",
+                )
+            yield Static(
+                "passphrase (stored as an nvs secret)", classes="prompt-hint",
+                markup=False,
+            )
+            yield Input(password=True, id="wifi-password")
+            yield Static(
+                "Enter: apply | Ctrl+R: scan again | Esc: cancel",
+                classes="prompt-hint",
+            )
+
+    def action_submit(self) -> None:
+        selects = self.query("#wifi-pick")
+        ssid = str(selects.first().value) if selects else ""
+        if not ssid:
+            # Only reachable with no picker, which means the scan heard nothing to
+            # add: Enter cannot answer a network nobody chose, and the hint names
+            # Ctrl+R, the gesture that helps. The picker is `allow_blank=False`, so a
+            # present one always holds a value and there is nothing to refocus.
+            return
+        self.dismiss(
+            {"ssid": ssid, "password": self.query_one("#wifi-password", Input).value}
+        )
+
+    def action_refresh(self) -> None:
+        self.dismiss({"refresh": True})
+
+
+class WifiCustomForm(PromptBox[dict[str, Any] | None]):
+    """`05` §7.6: a network the scan cannot see, named and keyed by hand."""
 
     BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
     CSS = _CSS
     AUTO_FOCUS = "#wifi-ssid"
 
-    def __init__(
-        self,
-        title: str,
-        ssid: str = "",
-        scan: list[dict[str, Any]] | None = None,
-        *,
-        ask_password: bool = True,
-    ) -> None:
+    def __init__(self, title: str, ssid: str = "") -> None:
         super().__init__()
         self.title = title
+        #: A known network's rekey: the ssid is already decided, so asking for it
+        #: again would let a typo re-key the wrong entry.
         self.ssid = ssid
-        self.scan = scan or []
-        self.ask_password = ask_password
 
     def compose(self) -> ComposeResult:
-        heard = [str(n.get("ssid") or "") for n in self.scan if n.get("ssid")]
-        if self.ssid and self.ssid not in heard:
-            heard.insert(0, self.ssid)
         with Vertical(classes="prompt-box"):
             yield Static(self.title, classes="prompt-title", markup=False)
-            if len(heard) > 1:
-                yield Static("in range", classes="prompt-hint", markup=False)
-                yield Select(
-                    [(s, s) for s in heard],
-                    value=self.ssid or heard[0],
-                    allow_blank=False,
-                    id="wifi-pick",
-                )
-            yield Static("ssid", classes="prompt-hint", markup=False)
-            yield Input(value=self.ssid, placeholder="ssid", id="wifi-ssid")
-            if self.ask_password:
-                yield Static(
-                    "passphrase (stored as an nvs secret)", classes="prompt-hint",
-                    markup=False,
-                )
-                yield Input(password=True, id="wifi-password")
+            if self.ssid:
+                yield Static(f"ssid: {self.ssid}", classes="prompt-hint", markup=False)
+            else:
+                yield Static("ssid (a hidden network the scan cannot report)",
+                             classes="prompt-hint", markup=False)
+                yield Input(placeholder="ssid", id="wifi-ssid")
+            yield Static(
+                "passphrase (stored as an nvs secret)", classes="prompt-hint",
+                markup=False,
+            )
+            yield Input(password=True, id="wifi-password")
             yield Static(
                 "Enter: apply | Esc: cancel | a blank passphrase changes nothing",
                 classes="prompt-hint",
             )
 
     def action_submit(self) -> None:
-        picked = ""
-        selects = self.query("#wifi-pick")
-        if selects:
-            value = selects.first().value
-            picked = "" if value is Select.BLANK else str(value)
-        typed = self.query_one("#wifi-ssid", Input).value.strip()
-        ssid = typed or picked
+        ssid = self.ssid
         if not ssid:
-            # A blank SSID names no network, and writing one would replace a working
-            # list with an entry the station cannot join.
-            self.query_one("#wifi-ssid", Input).focus()
-            return
-        password = ""
-        if self.ask_password:
-            password = self.query_one("#wifi-password", Input).value
-        self.dismiss({"ssid": ssid, "password": password})
+            ssid = self.query_one("#wifi-ssid", Input).value.strip()
+            if not ssid:
+                # An ssid-less entry would replace a working list with a network
+                # the station cannot join.
+                self.query_one("#wifi-ssid", Input).focus()
+                return
+        # The ssid is stripped and the passphrase is not: a space is part of a
+        # passphrase and nobody means one at either end of an ssid.
+        self.dismiss(
+            {"ssid": ssid, "password": self.query_one("#wifi-password", Input).value}
+        )
