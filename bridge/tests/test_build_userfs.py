@@ -160,6 +160,46 @@ def test_the_seed_system_prompt_requires_a_todo_list():
     assert "done" in prompt.lower()
     assert "drop" in prompt.lower()
 
+
+def test_the_seed_system_prompt_is_short_enough_to_carry_in_every_request():
+    """`03-config.md` §prompts: `system.md` fits in at most 50 lines of at most 80
+    columns. The persona is prepended to every request and shares
+    `agent.max_input_bytes` with the conversation, so its length is a budget rather
+    than a taste: a prompt over it crowds out the history it exists to frame."""
+    lines = Path("firmware/userfs/prompts/system.md").read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 50
+    over = [(number, len(line)) for number, line in enumerate(lines, 1) if len(line) > 80]
+    assert over == []
+
+
+def test_the_seed_system_prompt_only_recommends_mermaid_kinds_that_render():
+    """`05` §5.1: `bridge/mermaid.rewrite` draws `flowchart`, `graph` and
+    `stateDiagram-v2` and returns the fence untouched for anything else. A prompt
+    that names a kind the pane will not draw produces a directive the device cannot
+    follow, so every kind it mentions is fed to the renderer.
+
+    The probe is the header as the prompt writes it, direction included: `_HEAD`
+    requires one, so a prompt naming a bare `flowchart` would send the model to a
+    fence the pane leaves as code even though the kind is supported."""
+    import re
+
+    from bridge.mermaid import rewrite
+
+    prompt = Path("firmware/userfs/prompts/system.md").read_text(encoding="utf-8")
+    headers = re.findall(
+        r"\b(flowchart(?: (?:TD|TB|BT|LR|RL))?|graph(?: (?:TD|TB|BT|LR|RL))?"
+        r"|stateDiagram(?:-v2)?|sequenceDiagram|classDiagram|erDiagram|journey"
+        r"|gantt|pie|mindmap)\b",
+        prompt,
+    )
+    assert headers, "the prompt names no mermaid kind"
+    for header in set(headers):
+        fence = f"```mermaid\n{header}\n  A --> B: go\n```"
+        assert rewrite(fence) != fence, (
+            f"the prompt names {header!r}, which the chat pane leaves as code"
+        )
+
+
 def test_the_seed_skill_satisfies_the_frontmatter_schema():
     import re
     skill_file = Path("firmware/userfs/skills/led-control.md")

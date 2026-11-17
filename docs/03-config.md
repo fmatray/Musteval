@@ -851,6 +851,12 @@ open-a-list half is not: a multi-round run that skips `todo` entirely is re-prom
 by the untracked-work check, but a prompt that never mentions the tool will produce
 models that rarely reach for it, and the loop can only nudge, not teach.
 
+`system.md` fits in **at most 50 lines of at most 80 columns**, and this is a budget
+rather than taste: the persona is prepended to every request and shares
+`agent.max_input_bytes` (default 3072) with the history it frames, so a longer prompt
+crowds out the conversation it exists to explain. The cap is checked by
+`test_build_userfs.py`, because a limit stated only here would be a suggestion.
+
 ### Template schema
 
 Templates take optional frontmatter `[ASSUMPTION]` and use `{{var}}` placeholders.
