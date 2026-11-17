@@ -137,6 +137,39 @@ TEST_CASE("the ask timeout is refused outside its documented bounds", "[cfg][ask
     TEST_ASSERT_NOT_NULL(strstr(why, "ask_timeout_s"));
 }
 
+TEST_CASE("the autocompact share is refused off its range or off its step", "[cfg][agent]")
+{
+    /* `03-config.md` §Full schema: 10..100 by 5. The range is the schema row; the step
+     * is a cross-field rule, because the table carries one range and no step. The
+     * accept cases sit on both ends of the step so a rule that only checked the
+     * range would fail them. */
+    char why[128] = "";
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK,
+                              validate_root("\"agent\":{\"autocompact_pct\":10}", why,
+                                            sizeof why),
+                              why);
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK,
+                              validate_root("\"agent\":{\"autocompact_pct\":95}", why,
+                                            sizeof why),
+                              why);
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK,
+                              validate_root("\"agent\":{\"autocompact_pct\":100}", why,
+                                            sizeof why),
+                              why);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"agent\":{\"autocompact_pct\":9}", why,
+                                    sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "autocompact_pct"));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"agent\":{\"autocompact_pct\":101}", why,
+                                    sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "autocompact_pct"));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"agent\":{\"autocompact_pct\":82}", why,
+                                    sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "multiple of 5"));
+}
+
 
 static esp_err_t validate_refusal(const char *members, char *why, size_t cap)
 {

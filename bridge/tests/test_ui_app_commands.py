@@ -52,6 +52,16 @@ def _frames(app) -> list[dict]:
     return [json.loads(line) for line in app.session._transport.written]
 
 
+def _mounted(screen, selector: str) -> bool:
+    """True once a widget is in the DOM. `query_one` raises before the compose pass,
+    so a predicate that used it would fail the moment it is evaluated, not retry."""
+    try:
+        screen.query_one(selector)
+    except Exception:
+        return False
+    return True
+
+
 async def _until(pilot, predicate, rounds: int = 160) -> None:
     for _ in range(rounds):
         if predicate():
@@ -906,7 +916,11 @@ async def test_sys_prompt_writes_the_edit_back_and_says_the_next_run_uses_it():
 
     async def body(app, pilot):
         app.submit("/sys prompt")
+        # The screen exists the moment it is pushed; `#file-body` exists once it has
+        # been composed. Waiting on the screen alone is a race that only loses under
+        # a loaded run — it cost one coverage sweep, at 63 %.
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         app.screen.query_one("#file-body").text = "persona v2"
         app.screen.action_save()
         await _await_chat(pilot, app, "the next prompt uses it")

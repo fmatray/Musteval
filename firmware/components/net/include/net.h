@@ -19,8 +19,14 @@
 
 /* Largest response body the transport will hold. A provider reply that exceeds it is
  * refused, not truncated, so `llm` never parses half a document and reports it as a
- * malformed reply. */
-#define NET_BODY_MAX 16384
+ * malformed reply.
+ *
+ * Equal to `llm.h`'s `LLM_BODY_MAX` on purpose, and a host test holds the pair: the
+ * transport is what carries both directions of the same exchange. The buffer is a
+ * per-exchange `malloc` of this size, and `CONFIG_SPIRAM_USE_MALLOC` with
+ * `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 16384` routes it to PSRAM, so doubling it costs
+ * no internal DRAM. */
+#define NET_BODY_MAX 32768
 
 typedef enum {
     NET_STATE_OFF = 0,  /* radio never started, or safe mode (`02` §3.2) */

@@ -1508,8 +1508,9 @@ next `tools.list` while the run continues with the array it started with.
 ### 4.30 `context.budget`
 
 The eight blocks of the next request, measured in bytes against `LLM_BODY_MAX`
-(16384), so `/context` (`05-bridge.md` §7.5) can show where the budget went without
-a second frame and without the host guessing.
+(32768), so `/context` (`05-bridge.md` §7.5) can show where the budget went without
+a second frame and without the host guessing. The same figure is what
+`agent.autocompact_pct` is a percentage of (`03-config.md` §Full schema).
 
 ```json
 {"v":1,"type":"command","id":"b-45","ts":1730572630,"name":"context.budget","args":{}}
@@ -1727,6 +1728,13 @@ while the flash cache is off, for the reason `02-firmware.md` §4.3 gives.
 summary is the only record of them on the device, so a caller that wants the
 transcript must have exported it first. `05-bridge.md` §7.5's `/compact` says so in
 chat before it sends.
+
+**The device also compacts without being asked.** When a run ends with the body at
+or above `agent.autocompact_pct` percent of `LLM_BODY_MAX`, the firmware makes this
+same call with `keep: 0`, between runs rather than inside one, and reports it on its
+own `log` line (`02-firmware.md` §Request body). No `command.result` is emitted
+for it — nothing asked — so a bridge sees it in the Logs screen and in the next
+`context.budget`, not as a reply. `100` disables it.
 
 ## 5. Error codes
 

@@ -1118,6 +1118,58 @@ TEST_CASE("a configured input bound is clamped to the buffer", "[m4]")
     TEST_ASSERT_EQUAL_INT32(0, out.max_history_messages);
 }
 
+/* `03-config.md` §agent.autocompact_pct: 80 is the documented default, and a value
+ * outside 10..100 is clamped rather than disabling the check by being nonsense. The
+ * resolver is asserted, not the macro, so the table and the code cannot drift. */
+TEST_CASE("autocompact defaults to 80 and is clamped to its range", "[m4]")
+{
+    agent_raw_settings_t raw = {0};
+    agent_run_settings_t out;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(80, out.autocompact_pct);
+
+    raw.has_autocompact = true;
+    raw.autocompact_pct = 45;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(45, out.autocompact_pct);
+
+    raw.autocompact_pct = 0;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(AGENT_AUTOCOMPACT_MIN, out.autocompact_pct);
+
+    raw.autocompact_pct = 1000;
+    agent_run_settings_resolve(&raw, &out);
+    TEST_ASSERT_EQUAL_INT32(AGENT_AUTOCOMPACT_MAX, out.autocompact_pct);
+}
+
+/* The threshold itself, which is the rule a reader configures. Every case is a
+ * boundary, because the interesting behaviour is exactly where `used` meets a
+ * percentage of a capacity that does not divide evenly: 80% of 32768 is 26214.4, and
+ * compating at 26214 would fire one byte early. */
+TEST_CASE("autocompact fires at the configured share of the budget", "[m4]")
+{
+    /* 80% of 1000 is 800 exactly. */
+    TEST_ASSERT_FALSE(agent_autocompact_due(799, 1000, 80));
+    TEST_ASSERT_TRUE(agent_autocompact_due(800, 1000, 80));
+
+    /* 80% of 32768 is 26214.4: rounded up, so 26214 does not fire and 26215 does. */
+    TEST_ASSERT_FALSE(agent_autocompact_due(26214, 32768, 80));
+    TEST_ASSERT_TRUE(agent_autocompact_due(26215, 32768, 80));
+
+    /* 100 is off: a body is never above its cap, so nothing is ever due. */
+    TEST_ASSERT_FALSE(agent_autocompact_due(32768, 32768, 100));
+    TEST_ASSERT_FALSE(agent_autocompact_due(32767, 32768, 100));
+
+    /* The floor is 10%, and a lower value is treated as the floor rather than as
+     * "off" — a mistyped 0 must not silently disable the feature. */
+    TEST_ASSERT_TRUE(agent_autocompact_due(100, 1000, 10));
+    TEST_ASSERT_FALSE(agent_autocompact_due(99, 1000, 10));
+    TEST_ASSERT_TRUE(agent_autocompact_due(100, 1000, 0));
+
+    /* A zero capacity is not a full one. */
+    TEST_ASSERT_FALSE(agent_autocompact_due(10, 0, 80));
+}
+
 /* --- declarative tool files ------------------------------------------------ */
 
 static bool secret_yes(const char *key, void *ctx)

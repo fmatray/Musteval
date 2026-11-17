@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -68,6 +69,10 @@ static void budget_restore(void)
     if (store_nvs_get_int(NVS_DAY_BUCKET, &value) == ESP_OK) s_budget.day.bucket = value;
 }
 
+/* The assembled request body, allocated by `llm_init` and kept for the life of the
+ * process. `llm_query` runs from one task at a time. */
+static char *s_body;
+
 esp_err_t llm_init(void)
 {
     s_provider_count = 0;
@@ -81,6 +86,35 @@ esp_err_t llm_init(void)
      * values are already the honest "no call yet" state. */
     llm_budget_reset(&s_budget);
     budget_restore();
+
+    /* The request body is 32 KiB, and as a `static` that would be DIRAM: the board had
+     * 40 705 B of it free with a 26 515 B internal heap, so a `.bss` body left the TLS
+     * handshake about 10 KiB and the first request after boot failed.
+     *
+     * PSRAM is allowed here under `02-firmware.md` §4.3's rule — "only a buffer no
+     * flash operation touches may live in PSRAM" — and that is the ordering to keep:
+     * `llm_assemble_prompt` fills this buffer, then `budget_persist` writes NVS, then
+     * `net_post` reads it. NVS is a flash write, so the middle step runs with the
+     * cache off, and this buffer is neither written nor read inside that window. Move
+     * either the fill or the read across the persist and the board faults instead of
+     * failing a test.
+     *
+     * One allocation, idempotent: `config.set` on an `llm.*` path re-runs this. A
+     * failure is not fatal to boot — the caller logs it and provider commands answer
+     * `E_LLM_UNAVAILABLE`, which is the honest answer for a device with no room to
+     * build a request. */
+    if (s_body == NULL) {
+        /* PSRAM only. There is no internal-RAM fallback on purpose: 32 KiB of DIRAM is
+         * what the static had, and it does not fit beside the TLS handshake. A board
+         * whose PSRAM is missing reports the failure at boot instead of failing later
+         * inside a request. */
+        s_body = heap_caps_malloc(LLM_BODY_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_body == NULL) {
+            ESP_LOGE(TAG, "llm: no memory for the %u-byte request body",
+                     (unsigned)LLM_BODY_MAX);
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     json_node_t *llm = cfg_get("llm");
     if (llm == NULL) return ESP_ERR_NOT_FOUND;
@@ -173,7 +207,12 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
     }
 
     s_last_error[0] = '\0';
-    static char s_body[LLM_BODY_MAX];
+    /* `llm_init` owns the buffer; a `llm_query` before it is a programming error, and
+     * answering `NO_MEM` here would blame the heap for it. */
+    if (s_body == NULL) {
+        snprintf(s_last_error, sizeof s_last_error, "llm not initialised");
+        return ESP_ERR_INVALID_STATE;
+    }
     static char s_endpoint[192];
     static char s_auth[CFG_SECRET_MAX + 16];
 
@@ -202,7 +241,7 @@ esp_err_t llm_query(const llm_request_t *request, char *response_buf, size_t res
             continue;
         }
         if (llm_assemble_prompt(&attempt, p->extra_body[0] != '\0' ? p->extra_body : NULL,
-                           s_body, sizeof s_body) == 0) {
+                           s_body, LLM_BODY_MAX) == 0) {
             /* Every provider shares `s_body` and its cap, so a body that does not fit
              * fits nowhere: walking the chain only spends budget. The caller trims
              * history to fit and retries (`02-firmware.md` §llm). */

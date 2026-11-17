@@ -91,6 +91,7 @@ static const cfg_rule_t k_rules[] = {
     { "agent.system_prompt",    CFG_PATH, NONE, false, NULL, NULL },
     { "agent.max_input_bytes",  CFG_INT, 256, 4096, false, NULL, NULL },
     { "agent.ask_timeout_s",    CFG_INT, 10, 600, false, NULL, NULL },
+    { "agent.autocompact_pct",  CFG_INT, 10, 100, false, NULL, NULL },
 
     { "tools",                  CFG_OBJECT, NONE, false, NULL, NULL },
     { "tools.allow_dangerous",  CFG_BOOL, NONE, false, NULL, NULL },
@@ -415,6 +416,16 @@ static esp_err_t check_cross(json_doc_t *doc, char *why, size_t cap)
         if (json_int(in_max, &a) && json_int(line_max, &b) && a > b) {
             return fail(why, cap, "agent.max_input_bytes exceeds serial.max_line_bytes", NULL);
         }
+    }
+
+    /* `agent.autocompact_pct` is a percentage of the request budget, and the bridge
+     * offers it in 5% steps; a value off the step is one the two ends would show
+     * differently, so it is refused here rather than rounded. A cross-field rule
+     * because the generic row carries a range only. */
+    json_node_t *pct_node = json_path_get(doc, "agent.autocompact_pct");
+    int64_t pct = 0;
+    if (pct_node != NULL && json_int(pct_node, &pct) && pct % 5 != 0) {
+        return fail(why, cap, "agent.autocompact_pct must be a multiple of 5", NULL);
     }
 
     /* Ids are unique and dot-free (note 4): the id becomes a namespace on the wire. */

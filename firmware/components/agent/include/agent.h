@@ -371,6 +371,17 @@ const agent_rejection_t *agent_prompt_rejection(esp_err_t err);
  * checkpoint that lost its ending and a compaction that did not happen. */
 #define AGENT_COMPACT_SUMMARY_MAX 4096
 
+/* Autocompact (`03-config.md` §`agent.autocompact_pct`): after a run ends, a history
+ * that fills this share of `LLM_BODY_MAX` is compacted with the same call `/compact`
+ * makes, so the next run does not begin by refusing to fit. The floor and the step
+ * are here rather than in the validator alone because the bridge offers the same
+ * range and the two must not drift. `100` disables it: a history is only ever exactly
+ * full at the cap, never above it. */
+#define AGENT_AUTOCOMPACT_MIN 10
+#define AGENT_AUTOCOMPACT_MAX 100
+#define AGENT_AUTOCOMPACT_STEP 5
+#define AGENT_DEFAULT_AUTOCOMPACT 80
+
 /* What the config said, before the defaults are applied. `has_*` distinguishes an
  * absent key from a configured zero. */
 typedef struct {
@@ -380,18 +391,30 @@ typedef struct {
     int32_t max_history;
     bool has_max_input;
     int32_t max_input;
+    bool has_autocompact;
+    int32_t autocompact_pct;
 } agent_raw_settings_t;
 
 typedef struct {
     int32_t max_tool_rounds;
     int32_t max_history_messages;
     size_t max_input_bytes;
+    int32_t autocompact_pct;
 } agent_run_settings_t;
 
 /* Apply `03-config.md`'s defaults and clamp the input bound to the buffer. Pure, so a
  * documented default the code does not apply fails a host test (`agent_settings.c`). */
 void agent_run_settings_resolve(const agent_raw_settings_t *raw,
                                 agent_run_settings_t *out);
+
+/* True when a history of `used` bytes has reached `pct` percent of `cap` and should
+ * therefore be compacted before the next run. Pure, so the threshold is a host-tested
+ * rule rather than a comparison buried in the board-only loop.
+ *
+ * `used >= threshold` rounds the threshold *up*, so a percentage of a capacity that
+ * does not divide evenly never compacts one byte early; `pct >= 100` is always false,
+ * which is what makes 100 the documented "off". */
+bool agent_autocompact_due(size_t used, size_t cap, int32_t pct);
 
 /* Hand a prompt to the loop. Returns ESP_OK when accepted, ESP_ERR_INVALID_STATE
  * when the queue is full (`E_BUSY`), ESP_ERR_INVALID_SIZE when the prompt exceeds

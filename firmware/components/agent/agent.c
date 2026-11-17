@@ -157,6 +157,15 @@ static char *agent_alloc(size_t bytes)
 static int32_t s_rounds_max;
 static int32_t s_history_max;
 static size_t s_input_max;
+static int32_t s_autocompact_pct;
+static char *s_autocompact_summary;
+
+/* `04` §4.33's body without its busy check, defined under `agent_context_compact`.
+ * `run_once` compacts itself at the end of a run, where `s_busy` is still set, so it
+ * calls this rather than the public entry. */
+static esp_err_t compact_impl(uint32_t keep, uint32_t *summarised, uint32_t *kept,
+                              size_t *before_bytes, size_t *after_bytes,
+                              char *summary, size_t summary_cap);
 
 const char *agent_source_name(agent_source_t source)
 {
@@ -202,11 +211,17 @@ static void load_run_settings(void)
     raw.has_max_input = node != NULL && json_int(node, &value);
     raw.max_input = (int32_t)value;
 
+    value = 0;
+    node = cfg_get("agent.autocompact_pct");
+    raw.has_autocompact = node != NULL && json_int(node, &value);
+    raw.autocompact_pct = (int32_t)value;
+
     agent_run_settings_t resolved;
     agent_run_settings_resolve(&raw, &resolved);
     s_rounds_max = resolved.max_tool_rounds;
     s_history_max = resolved.max_history_messages;
     s_input_max = resolved.max_input_bytes;
+    s_autocompact_pct = resolved.autocompact_pct;
 }
 
 /* The system prompt with the skill index appended. A skill that does not fit is
@@ -1052,6 +1067,49 @@ done:
      * `tool` message whose matching call was dropped is refused by the provider, and
      * a question with no answer would poison every later run. */
     if (!finalized) agent_history_truncate(s_history, &s_history_used, history_floor);
+    /* Autocompact runs here, before `s_busy` is cleared, so a `/compact` that arrives
+     * now is still refused rather than rewriting the three buffers this call is
+     * using. `compact_impl` is the body of `/compact` without its busy check, which is
+     * what makes this the same operation instead of a second one that could drift.
+     *
+     * The history is rewritten only between runs: a compaction inside one would
+     * replace the `assistant` tool-call turn and its `tool` results, and a provider
+     * refuses a history whose results no longer answer a call.
+     *
+     * A failed compaction is logged and the answer stands: the run succeeded, and
+     * turning a full history into an error would blame the question for it.
+     *
+     * The measure is `agent_context_usage`'s, not the history's own length: the prompt
+     * and the tool array are in every body too, and they are 8.4 KiB of a 32 KiB
+     * budget. A history-only figure would fire at 26 KiB of history, by which point
+     * the body was already over. It is also the number `/context` shows, so the
+     * threshold a reader sets is the percentage of the figure they can see. */
+    if (s_autocompact_pct < AGENT_AUTOCOMPACT_MAX) {
+        agent_context_usage_t usage;
+        if (agent_context_usage(&usage) == ESP_OK &&
+            agent_autocompact_due(usage.used, usage.budget, s_autocompact_pct)) {
+            uint32_t summarised = 0, kept = 0;
+            size_t before = 0, after = 0;
+            esp_err_t cerr = compact_impl(0, &summarised, &kept, &before, &after,
+                                          s_autocompact_summary,
+                                          AGENT_COMPACT_SUMMARY_MAX + 1);
+            if (cerr == ESP_OK) {
+                /* Two figures, both named: the share that fired the check, and the
+                 * history bytes it replaced. Unlabelled, "88 -> 1870 bytes" beside
+                 * "26% used" reads as a contradiction — the 88 is the history and the
+                 * 26% is the whole body, and a summary can honestly be longer than a
+                 * two-word exchange. */
+                ESP_LOGI(TAG, "autocompact at %d%%: body at %u%%; history %u -> %u bytes, "
+                              "%u messages summarised", (int)s_autocompact_pct,
+                         (int)((usage.used * 100u) / usage.budget), (unsigned)before,
+                         (unsigned)after, (unsigned)summarised);
+            } else if (cerr != ESP_ERR_NOT_SUPPORTED) {
+                /* `NOT_SUPPORTED` is "one message or fewer": nothing to replace, the
+                 * ordinary case for a short history. Anything else is news. */
+                ESP_LOGW(TAG, "autocompact: %s", esp_err_to_name(cerr));
+            }
+        }
+    }
     s_busy = false;
     s_cancel = false;
 }
@@ -1083,9 +1141,13 @@ esp_err_t agent_start(void)
     s_final_text = agent_alloc(AGENT_TEXT_MAX + 1);
     s_reply = (agent_reply_t *)agent_alloc(sizeof(agent_reply_t));
     s_compact_buf = agent_alloc(AGENT_HISTORY_MAX);
+    /* Autocompact's summary only needs somewhere to land: the counts are what the log
+     * line reports. It is a buffer rather than a local because 4 KiB more on the 8 KiB
+     * agent task stack is an overflow, not a cost. */
+    s_autocompact_summary = agent_alloc(AGENT_COMPACT_SUMMARY_MAX + 1);
     if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL ||
         s_response == NULL || s_final_text == NULL || s_reply == NULL ||
-        s_compact_buf == NULL) {
+        s_compact_buf == NULL || s_autocompact_summary == NULL) {
         heap_caps_free(s_history);
         heap_caps_free(s_system_prompt);
         heap_caps_free(s_tools_json);
@@ -1093,7 +1155,9 @@ esp_err_t agent_start(void)
         heap_caps_free(s_final_text);
         heap_caps_free(s_reply);
         heap_caps_free(s_compact_buf);
+        heap_caps_free(s_autocompact_summary);
         s_compact_buf = NULL;
+        s_autocompact_summary = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -1314,9 +1378,9 @@ esp_err_t agent_context_block(const char *block, char *out, size_t cap,
  * Nothing is written until a usable summary is in hand, which is what makes the
  * command safe to send on a marginal radio: a provider failure, a budget refusal or an
  * empty answer leaves the conversation exactly as it was. */
-esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *kept,
-                                size_t *before_bytes, size_t *after_bytes,
-                                char *summary, size_t summary_cap)
+static esp_err_t compact_impl(uint32_t keep, uint32_t *summarised, uint32_t *kept,
+                             size_t *before_bytes, size_t *after_bytes,
+                             char *summary, size_t summary_cap)
 {
     if (summarised != NULL) *summarised = 0;
     if (kept != NULL) *kept = 0;
@@ -1329,9 +1393,6 @@ esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *k
         return ESP_ERR_INVALID_STATE;
     }
     if (keep > AGENT_COMPACT_KEEP_MAX) return ESP_ERR_INVALID_ARG;
-    /* `E_BUSY`: a run appends to and trims this buffer between rounds, and a rewrite
-     * under it is one whose tool results no longer answer its calls. */
-    if (s_busy) return ESP_ERR_INVALID_STATE;
 
     size_t count = agent_history_count(s_history);
     if (count <= (size_t)keep) {
@@ -1415,6 +1476,31 @@ esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *k
     if (before_bytes != NULL) *before_bytes = before;
     if (after_bytes != NULL) *after_bytes = s_history_used;
     return ESP_OK;
+}
+
+/* `04` §4.33's public entry. The busy check is the whole of it, and it lives here
+ * rather than inside `compact_impl` because the loop compacts itself at the end of a
+ * run, where `s_busy` is still set. Sharing the body is what makes autocompact the
+ * same operation `/compact` performs rather than a second implementation of it; the
+ * refusal is what keeps a `/compact` from rewriting `s_history`, `s_response` and
+ * `s_compact_buf` while the loop owns all three.
+ *
+ * `E_BUSY`: a run appends to and trims this buffer between rounds, and a rewrite
+ * under it is one whose tool results no longer answer its calls. */
+esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *kept,
+                                size_t *before_bytes, size_t *after_bytes,
+                                char *summary, size_t summary_cap)
+{
+    if (s_busy) {
+        if (summarised != NULL) *summarised = 0;
+        if (kept != NULL) *kept = 0;
+        if (before_bytes != NULL) *before_bytes = 0;
+        if (after_bytes != NULL) *after_bytes = 0;
+        if (summary != NULL && summary_cap > 0) summary[0] = '\0';
+        return ESP_ERR_INVALID_STATE;
+    }
+    return compact_impl(keep, summarised, kept, before_bytes, after_bytes, summary,
+                         summary_cap);
 }
 
 /* `04` §4.28: the one writer from outside a run. Refused while one is live, because

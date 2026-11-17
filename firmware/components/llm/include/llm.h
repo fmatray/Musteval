@@ -23,13 +23,18 @@
  * rule is the frozen contract, so this is the same shape with the provider chosen by
  * the module rather than the caller.
  *
- * It must exceed the parts that are always present: the 25-entry tool array is
- * ~5.1 KiB and the system prompt may be up to 8 KiB (`03-config.md`
+ * It must exceed the parts that are always present: the 27-entry tool array is
+ * ~6.1 KiB and the system prompt may be up to 8 KiB (`03-config.md`
  * §`agent.system_prompt`), so an 8 KiB body could not carry a request even with an
  * empty history — every run failed `request body too large` and, because history is
- * never reset, stayed failed until reboot. Matched to `net.h`'s `NET_BODY_MAX`, the
- * largest reply this transport holds. */
-#define LLM_BODY_MAX 16384
+ * never reset, stayed failed until reboot.
+ *
+ * Matched to `net.h`'s `NET_BODY_MAX`, the largest reply this transport holds, and
+ * kept equal to it by a host test: a request budget larger than the largest reply is
+ * one that can ask for more than it can read back. The buffer itself is not a
+ * `static` — see `llm_query`'s comment — because 32 KiB of DIRAM for a transient body
+ * would leave the boot heap below the TLS handshake's appetite. */
+#define LLM_BODY_MAX 32768
 
 /* How much of a provider's rejection body `llm_last_error()` keeps. The status alone
  * never names the offending member; the provider's own words do, and the first 192

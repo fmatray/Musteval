@@ -232,8 +232,11 @@ second `net.ping` while one is in flight is `E_BUSY` (`04-protocol.md` §4.25).
   `POST <url>` over TLS. Verifies the chain against the bundled roots and never falls
   back to plaintext (`06-security.md` T11); a URL that fails verification returns
   `ESP_ERR_ESP_TLS_CERTIFICATE_VERIFY_FAILED`, which `llm` maps to
-  `E_LLM_UNAVAILABLE`. Follows no redirect. A body over 16 KiB is refused with
+  `E_LLM_UNAVAILABLE`. Follows no redirect. A body over 32 KiB is refused with
   `ESP_ERR_INVALID_SIZE` rather than truncated, so `llm` never parses half a reply.
+  The buffer is a per-exchange `malloc` of `NET_BODY_MAX + 1`; above
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (16 KiB) the allocator serves it from PSRAM,
+  so the size costs no internal DRAM.
 - `resp.body` / `resp.body_len` carry the reply for **every** status, 4xx and 5xx
   included. The body is collected by the HTTP event handler while the request is
   performed, not by a read afterwards: `esp_http_client_perform` consumes the body
@@ -405,12 +408,39 @@ per-tool schemas are in §7.1 and `docs/tools/`.
 
 **Capacity.** The assembled body — system prompt, tool array and history — must fit
 one fixed buffer. The tool array alone is about 6 KiB for the frozen 27-tool
-registry and the system prompt may be up to 8 KiB, so the body buffer is 16 KiB
-(`NET_BODY_MAX`, the largest reply the transport holds). The history has its own
-smaller cap, because a history allowed to fill the body would leave no room for the
-tools and fail every later request. When the assembler still refuses, the run is
-`E_LLM_UNAVAILABLE` and the loop drops history until the body fits, rather than
-retrying a body that can never be built.
+registry and the system prompt may be up to 8 KiB, so the body buffer is 32 KiB
+(`LLM_BODY_MAX`, equal to `NET_BODY_MAX`, the largest reply the transport holds).
+The history has its own smaller cap, because a history allowed to fill the body
+would leave no room for the tools and fail every later request. When the assembler
+still refuses, the run is `E_LLM_UNAVAILABLE` and the loop drops history until the
+body fits, rather than retrying a body that can never be built.
+
+The buffer itself is a PSRAM allocation made once by `llm_init`, not a `static`:
+32 KiB of `.bss` here would be DIRAM, and the board had 40 705 B of it free with a
+26 515 B internal heap, so a static body would have left the TLS handshake about
+10 KiB. `llm_query` is entered only from one task at a time, for the same reason
+`net` serialises its exchanges, so one buffer serves the whole provider chain.
+
+**Autocompact.** A run that ends with the request body at or above
+`agent.autocompact_pct` percent of `LLM_BODY_MAX` compacts the conversation with the
+same call `context.compact` makes (`04-protocol.md` §4.33), so the next prompt does
+not begin by being trimmed. The measure is `agent_context_usage`'s `used` — prompt,
+tool array and history — because that is the figure `context.budget` shows, so the
+percentage a reader sets is the percentage of the number they can see; a history-only
+figure would fire long after the body had already overflowed.
+
+It runs between runs, never inside one. A compaction mid-run would replace the
+`assistant` turn that carries a `tool_call` together with the `tool` message that
+answers it, and a provider refuses a history whose results no longer answer a call.
+The trigger is therefore placed after the run's answer is emitted and *before*
+`s_busy` is cleared, and it calls `compact_impl` — the body of
+`agent_context_compact` minus its busy check. That shared body is what makes
+autocompact the same operation `/compact` performs rather than a second one that
+could drift; the public entry's refusal is in turn what keeps a `/compact` from
+rewriting `s_history`, `s_response` and `s_compact_buf` while the loop owns them.
+`keep` is 0, since there is no in-flight exchange whose tail must survive. A refused
+or empty summary leaves the history untouched and only logs, because the run itself
+succeeded: turning a full history into an `agent.error` would blame the question.
 
 The tool array is the budget that fails first, not the history. `TOOLS_MAX_TOTAL` is
 64, so the M5 surface — MCP servers plus declarative tools — can push the array past

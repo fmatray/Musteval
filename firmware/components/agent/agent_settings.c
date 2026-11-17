@@ -27,4 +27,24 @@ void agent_run_settings_resolve(const agent_raw_settings_t *raw,
      * and silently writing past it is worse than clamping. */
     if (input > AGENT_INPUT_BUFFER_MAX) input = AGENT_INPUT_BUFFER_MAX;
     out->max_input_bytes = (size_t)input;
+
+    /* The validator bounds this, but the resolver is what a run is held to, and a
+     * config the validator never saw (a default, or a value from before the key
+     * existed) must land somewhere sane rather than disabling the check by being
+     * out of range. Clamped to the endpoints, not snapped to the step: a value the
+     * validator accepted is already on the step, and rounding one it did not would
+     * hide the drift instead of failing it. */
+    int32_t pct = raw->has_autocompact ? raw->autocompact_pct : AGENT_DEFAULT_AUTOCOMPACT;
+    if (pct < AGENT_AUTOCOMPACT_MIN) pct = AGENT_AUTOCOMPACT_MIN;
+    if (pct > AGENT_AUTOCOMPACT_MAX) pct = AGENT_AUTOCOMPACT_MAX;
+    out->autocompact_pct = pct;
+}
+
+bool agent_autocompact_due(size_t used, size_t cap, int32_t pct)
+{
+    if (cap == 0) return false;
+    if (pct >= AGENT_AUTOCOMPACT_MAX) return false;
+    if (pct < AGENT_AUTOCOMPACT_MIN) pct = AGENT_AUTOCOMPACT_MIN;
+    size_t threshold = (size_t)(((uint64_t)cap * (uint64_t)pct + 99u) / 100u);
+    return used >= threshold;
 }

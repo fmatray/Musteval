@@ -69,6 +69,13 @@ ROWS: tuple[ConfigRow, ...] = (
     _row("agent.max_input_bytes", "int", 3072, "256..`serial.max_line_bytes`"),
     _row("agent.ask_timeout_s", "int", 120, "10..600; how long the `ask` tool waits for a human"),
     _row(
+        "agent.autocompact_pct",
+        "int",
+        80,
+        "10..100, a multiple of 5; a run that ends at or above this share of "
+        "`LLM_BODY_MAX` is compacted between runs. `100` turns it off",
+    ),
+    _row(
         "tools.allow_dangerous",
         "bool",
         False,
