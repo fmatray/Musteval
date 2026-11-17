@@ -893,8 +893,21 @@ The agent process is **serialized**. Only one run is active at a time.
 
 ### 4.3 Concurrency, frames and reload
 
-Three rules here are load-bearing and each had a defect found by running the loop
+Four rules here are load-bearing and each had a defect found by running the loop
 on a board rather than in the host suite.
+
+**A task that needs 8 KiB of stack gets it from PSRAM.** `xTaskCreate` takes its
+stack from internal RAM, and once WiFi and a TLS session are up the device reports
+about 13 KiB of internal RAM free in fragments of 8 KiB or smaller — enough by the
+free total, not enough contiguously, so `xTaskCreate` returns `-1` and the command
+that needed the task answers `E_INTERNAL` on a board with megabytes of PSRAM spare.
+`context.compact` (`04-protocol.md` §4.33) is such a task: one provider round trip
+with a TLS handshake under it, created with `xTaskCreateWithCaps(…,
+MALLOC_CAP_SPIRAM)` and deleted with `vTaskDeleteWithCaps`. Its argument struct
+carries the summary buffer for the same reason: a `static` one took 4 KiB of the
+internal RAM the stack then could not have. The same defect appeared one level up in
+`agent_start`, whose `s_compact_buf` was a `static` array until the agent task could
+no longer be created.
 
 **A frame with no `id` is not emitted.** `link_emit_body` rejects a NULL id, and the
 rejection is silent, so a caller that forgets one produces a run that starts and

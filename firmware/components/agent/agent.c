@@ -108,6 +108,10 @@ static agent_reply_t *s_reply;
 /* `json_add_string` copies out of this immediately, so it may sit in PSRAM with the
  * rest; keeping it static in DRAM cost 16 KiB of a 36 KiB margin. */
 static char *s_final_text;
+/* `04` §4.33: the summarising text and then the rewrite's scratch, one 8 KiB buffer
+ * for both. PSRAM for the reason above: a `static` here dropped the internal heap
+ * below the agent task's 8 KiB stack and `agent_start` refused to boot the agent. */
+static char *s_compact_buf;
 
 #define AGENT_PSRAM_CAP (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
@@ -910,14 +914,18 @@ esp_err_t agent_start(void)
     s_response = agent_alloc(LLM_BODY_MAX + 1);
     s_final_text = agent_alloc(AGENT_TEXT_MAX + 1);
     s_reply = (agent_reply_t *)agent_alloc(sizeof(agent_reply_t));
+    s_compact_buf = agent_alloc(AGENT_HISTORY_MAX);
     if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL ||
-        s_response == NULL || s_final_text == NULL || s_reply == NULL) {
+        s_response == NULL || s_final_text == NULL || s_reply == NULL ||
+        s_compact_buf == NULL) {
         heap_caps_free(s_history);
         heap_caps_free(s_system_prompt);
         heap_caps_free(s_tools_json);
         heap_caps_free(s_response);
         heap_caps_free(s_final_text);
         heap_caps_free(s_reply);
+        heap_caps_free(s_compact_buf);
+        s_compact_buf = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -1146,7 +1154,8 @@ esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *k
     if (after_bytes != NULL) *after_bytes = 0;
     if (summary != NULL && summary_cap > 0) summary[0] = '\0';
     if (summary == NULL || summary_cap == 0) return ESP_ERR_INVALID_ARG;
-    if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL) {
+    if (s_history == NULL || s_system_prompt == NULL || s_tools_json == NULL ||
+        s_compact_buf == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     if (keep > AGENT_COMPACT_KEEP_MAX) return ESP_ERR_INVALID_ARG;
@@ -1168,12 +1177,14 @@ esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *k
      * never both summarised and kept (`04` §4.33). */
     /* One buffer for both halves: it holds the text sent for summarising, and once
      * that call has returned nothing reads it again, so the rewrite reuses it as
-     * scratch. Two 8 KiB statics is 16 KiB of DIRAM for a command that runs one at a
-     * time. */
-    static char s_compact_buf[AGENT_HISTORY_MAX];
+     * scratch. It sits in PSRAM with the other agent buffers rather than being a
+     * `static`: 8 KiB of DIRAM here left the internal heap below the 8 KiB the agent
+     * task's stack needs, so `xTaskCreate` failed and every `context.*` command
+     * answered `E_INTERNAL` on a board that had booted. */
+    char *buf = s_compact_buf;
     size_t in_written = 0, in_total = 0;
-    esp_err_t err = agent_history_slice(s_history, keep, s_compact_buf,
-                                       sizeof s_compact_buf, &in_written, &in_total);
+    esp_err_t err = agent_history_slice(s_history, keep, buf, AGENT_HISTORY_MAX,
+                                        &in_written, &in_total);
     if (err != ESP_OK) return err;
 
     /* One call, no tools: the model is summarising, not continuing, so the fixed
@@ -1190,7 +1201,7 @@ esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *k
             "and what remains unfinished. Do not answer the conversation, do not "
             "continue it, and do not invent anything it does not say.",
         .history_json = NULL,
-        .user_prompt = s_compact_buf,
+        .user_prompt = buf,
         .tools_json = NULL,
     };
     s_response[0] = '\0';
@@ -1224,8 +1235,7 @@ esp_err_t agent_context_compact(uint32_t keep, uint32_t *summarised, uint32_t *k
      * left alone. The scratch is the block buffer from above, already spent. */
     size_t new_used = s_history_used;
     err = agent_history_replace_with_summary(s_history, AGENT_HISTORY_MAX, &new_used,
-                                             text, keep, s_compact_buf,
-                                             sizeof s_compact_buf);
+                                             text, keep, buf, AGENT_HISTORY_MAX);
     if (err != ESP_OK) return err;
     s_history_used = new_used;
 

@@ -1658,6 +1658,10 @@ summary is in hand, so a provider failure, a budget refusal or an empty answer l
 the conversation exactly as it was and the error names the cause. This is why the
 command is safe to send on a device whose radio is marginal.
 
+**The summarisation call runs on its own task**, so the provider's timeout does not
+hold the command loop; that task's stack comes from PSRAM for the reason
+`02-firmware.md` §4.3 gives.
+
 **On success the buffer is replaced, not appended.** The old messages are gone: the
 summary is the only record of them on the device, so a caller that wants the
 transcript must have exported it first. `05-bridge.md` §7.5's `/compact` says so in

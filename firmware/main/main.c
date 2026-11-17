@@ -19,6 +19,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 
 #include <stdlib.h>
 
@@ -684,6 +685,11 @@ typedef struct {
     char reply_to[LINK_ID_MAX + 1];
     uint32_t keep;
     int64_t start_us;
+    /* The summary, in the struct the task already owns: a `static` here held 4 KiB of
+     * internal RAM for a command that runs one at a time, and the task's own 8 KiB
+     * stack is internal RAM it then could not get. This is the same trade the agent
+     * buffers make below. */
+    char summary[AGENT_COMPACT_SUMMARY_MAX + 1];
 } compact_args_t;
 
 static void compact_task(void *arg)
@@ -691,12 +697,11 @@ static void compact_task(void *arg)
     compact_args_t *ca = arg;
     uint32_t summarised = 0, kept = 0;
     size_t before_bytes = 0, after_bytes = 0;
-    static char s_summary[AGENT_COMPACT_SUMMARY_MAX + 1];
     esp_err_t err = agent_context_compact(ca->keep, &summarised, &kept, &before_bytes,
-                                          &after_bytes, s_summary, sizeof s_summary);
+                                          &after_bytes, ca->summary, sizeof ca->summary);
 
     json_doc_t *doc = json_new_object();
-    if (doc == NULL) { free(ca); vTaskDelete(NULL); return; }
+    if (doc == NULL) { free(ca); vTaskDeleteWithCaps(NULL); return; }
     json_node_t *root = json_root(doc);
     /* `d-<counter>` per frame: `frame_id`'s buffer is shared with `link_task`. */
     char id[16];
@@ -710,7 +715,7 @@ static void compact_task(void *arg)
             json_add_int(result, "kept", (int64_t)kept);
             json_add_int(result, "before_bytes", (int64_t)before_bytes);
             json_add_int(result, "after_bytes", (int64_t)after_bytes);
-            json_add_string(result, "summary", s_summary);
+            json_add_string(result, "summary", ca->summary);
         }
     } else {
         json_add_bool(root, "ok", false);
@@ -741,7 +746,7 @@ static void compact_task(void *arg)
     link_emit_body("command.result", id, 0, ca->reply_to, doc);
     json_free(doc);
     free(ca);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
@@ -1308,7 +1313,7 @@ static void answer_command(const json_node_t *frame)
             emit_failure(name, reply_to, "E_CONFIG", "invalid keep");
             json_free(body); return;
         }
-        compact_args_t *ca = calloc(1, sizeof *ca);
+        compact_args_t *ca = heap_caps_calloc(1, sizeof *ca, MALLOC_CAP_SPIRAM);
         if (ca == NULL) {
             emit_failure(name, reply_to, "E_INTERNAL", "compaction task not started");
             json_free(body); return;
@@ -1316,9 +1321,14 @@ static void answer_command(const json_node_t *frame)
         snprintf(ca->reply_to, sizeof ca->reply_to, "%s", reply_to);
         ca->keep = (uint32_t)keep;
         ca->start_us = esp_timer_get_time();
-        /* 8192 words: the summarisation buffer is static, but the provider's TLS
-         * handshake runs on this task's stack. */
-        if (xTaskCreate(compact_task, "ctx_compact", 8192, ca, 4, NULL) != pdPASS) {
+        /* 8192 **bytes**: `xTaskCreate` takes a byte count, and the provider's TLS
+         * handshake runs on this task's stack. The stack comes from PSRAM
+         * (`xTaskCreateWithCaps`) because internal RAM has no contiguous 8 KiB left to
+         * give: on an idle board it reports 13.7 KiB free with a largest block of
+         * 7.7 KiB, so a plain `xTaskCreate` failed and `/compact` answered
+         * `E_INTERNAL` on a device with megabytes of PSRAM spare. `04` §4.33. */
+        if (xTaskCreateWithCaps(compact_task, "ctx_compact", 8192, ca, 4, NULL,
+                                MALLOC_CAP_SPIRAM) != pdPASS) {
             free(ca);
             emit_failure(name, reply_to, "E_INTERNAL", "compaction task not started");
             json_free(body); return;
