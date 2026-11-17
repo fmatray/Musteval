@@ -1123,7 +1123,7 @@ by re-sending the old body; delete is not, so it is the one place the bridge blo
 on input.
 
 `/tools` asks the device for `tools.list` (`04-protocol.md` §4.29), which carries
-every tool the build holds — the 26 built-ins, the declarative tools loaded from
+every tool the build holds — the 27 built-ins, the declarative tools loaded from
 `/tools/*.json`, and the MCP tool names — with its description and whether the model
 may call it now. A name the model cannot call is still a row, because that row is how
 a reader discovers the name to type after `/tool enable`. What stays unavailable is the
@@ -1503,7 +1503,7 @@ Every device `→` bridge frame maps to exactly one UI surface. A frame with no
 surface is a protocol bug, not a silently dropped message.
 
 The `Frame` column is not a second catalogue: `04-protocol.md` §2.1 owns the type
-list, and this table must contain exactly the 15 types whose device `→` bridge cell
+list, and this table must contain exactly the 16 types whose device `→` bridge cell
 is populated there — no more, no fewer. A type added to `04` without a row here is
 caught mechanically (§7 of `09-bridge-architecture.md`), so the two cannot drift.
 
@@ -1514,6 +1514,7 @@ caught mechanically (§7 of `09-bridge-architecture.md`), so the two cannot drif
 | `log` | Logs screen (F5) | Filterable, follow mode |
 | `agent.start` | Chat screen | Starts a run block |
 | `agent.tool` | Chat screen | Tool call line under the run |
+| `agent.ask` | Chat screen | Opens the question dialog; the answer goes back as `ask.reply` (§10.1) |
 | `agent.tool_result` | Chat screen | Result line, truncated with indicator |
 | `agent.thinking` | Chat screen | The model's reasoning trace, dim, above the answer |
 | `agent.final` | Chat screen | Closes the run block |
@@ -1529,6 +1530,31 @@ Commands map to surfaces the same way: `geo.locate` updates the Status screen
 GEO row and reports in chat, `mqtt.status` refreshes F6, and `mqtt.publish`
 reports its result in chat.
 
+### 10.1 The question dialog (`agent.ask`)
+
+`agent.ask` is the one device `→` bridge frame that expects an answer, so it is the
+one with a modal rather than a log line. The dialog is built from two existing
+widgets and adds none:
+
+- With `options` present the dialog is a `_PickBox`: one row per option, plus a
+  free-text row.
+- Without `options` it is a `ValuePrompt`, asking for typed text directly.
+
+The free-text row is always present even when four options were offered: the
+question that needed a fifth answer is the case the tool exists for. Esc dismisses
+the dialog and sends `ask.reply` with `cancelled: true`.
+
+The chat log carries one line when the question opens — `? <question>` — because a
+modal that appears with no trace leaves a transcript in which a run appears to pause
+for no reason. The answer is then written as `↳ <answer>` before the run's next line.
+Both are the `info` kind: a question is neither a warning nor an error, and §5.1's
+seven kinds are closed, so a new one would be a contract change for a prefix.
+
+The device's `timeout_s` is not enforced by the bridge. A dialog left open past it is
+answered into a call that already failed `E_TIMEOUT`, and the reply is ignored exactly
+as §3.23 says. Drawing a countdown would make the reader responsible for a clock the
+device already owns, and a countdown that disagreed with the device by a few seconds
+would be a lie the reader could see.
 
 ## 11. Maintenance Tooling
 

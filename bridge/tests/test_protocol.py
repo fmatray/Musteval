@@ -48,6 +48,7 @@ def test_catalog_matches_the_frozen_split():
         "secret.set",
         "ping",
         "ack",
+        "ask.reply",
     }
     # Named, not counted: a count alone cannot tell a renamed type from a new one,
     # and the direction of a frame is the half of the contract a typo breaks silently.
@@ -58,6 +59,7 @@ def test_catalog_matches_the_frozen_split():
         "agent.start",
         "agent.tool",
         "agent.tool_result",
+        "agent.ask",
         "agent.thinking",
         "agent.final",
         "agent.error",
@@ -69,7 +71,7 @@ def test_catalog_matches_the_frozen_split():
         "pong",
     }
     assert not BRIDGE_TO_DEVICE & DEVICE_TO_BRIDGE
-    assert len(ALL_TYPES) == 22
+    assert len(ALL_TYPES) == 24
 
 
 def test_error_codes_are_the_frozen_sixteen():

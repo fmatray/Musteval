@@ -90,6 +90,7 @@ static const cfg_rule_t k_rules[] = {
     { "agent",                  CFG_OBJECT, NONE, false, NULL, NULL },
     { "agent.system_prompt",    CFG_PATH, NONE, false, NULL, NULL },
     { "agent.max_input_bytes",  CFG_INT, 256, 4096, false, NULL, NULL },
+    { "agent.ask_timeout_s",    CFG_INT, 10, 600, false, NULL, NULL },
 
     { "tools",                  CFG_OBJECT, NONE, false, NULL, NULL },
     { "tools.allow_dangerous",  CFG_BOOL, NONE, false, NULL, NULL },

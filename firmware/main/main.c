@@ -1925,6 +1925,18 @@ static void on_link_frame(const json_node_t *frame)
         return;
     }
 
+    if (strcmp(type, "ask.reply") == 0) {
+        /* §3.23: the answer to a blocked `ask`. The run task owns the terminal frame,
+         * so this only releases the wait; a reply naming no waiting question is
+         * ignored here and needs no reply frame of its own, for the same reason `ack`
+         * does not send one. */
+        bool cancelled = false;
+        json_bool(json_get(frame, "cancelled"), &cancelled);
+        (void)agent_ask_reply(json_string(json_get(frame, "ask_id")),
+                              json_string(json_get(frame, "answer")), cancelled);
+        return;
+    }
+
     if (strcmp(type, "cancel") == 0) {
         /* §3.5: a live run answers with `agent.error{E_CANCELLED}` — which the run
          * task emits, because it owns the terminal frame — and nothing in flight is

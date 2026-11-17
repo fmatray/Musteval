@@ -67,6 +67,7 @@ ROWS: tuple[ConfigRow, ...] = (
     _row("llm.max_calls_per_day", "int", 1000, "0..1000000; `0` disables the window. Bounds attempts per UTC day"),
     _row("agent.system_prompt", "string", "/prompts/system.md", "path starting `/`"),
     _row("agent.max_input_bytes", "int", 3072, "256..`serial.max_line_bytes`"),
+    _row("agent.ask_timeout_s", "int", 120, "10..600; how long the `ask` tool waits for a human"),
     _row(
         "tools.allow_dangerous",
         "bool",

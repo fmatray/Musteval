@@ -1587,6 +1587,7 @@ class BridgeApp(App):
             "agent.start": self._on_agent_start,
             "agent.tool": self._on_agent_tool,
             "agent.tool_result": self._on_agent_tool_result,
+            "agent.ask": self._on_agent_ask,
             "agent.thinking": self._on_agent_thinking,
             "agent.final": self._on_agent_final,
             "agent.error": self._on_agent_error,
@@ -1679,6 +1680,49 @@ class BridgeApp(App):
         self._chat().write(
             render_tool_result(frame.body),
             kind="tool" if frame.body.get("ok") else "error",
+        )
+
+    def _on_agent_ask(self, frame: Frame) -> None:
+        # `05` §10.1: the one device frame that expects an answer, so it opens a modal
+        # rather than writing a log line. The log line is still written first — a
+        # modal with no trace leaves a transcript in which the run appears to pause
+        # for no reason, and a reader who answers in a hurry cannot tell why.
+        question = str(frame.body.get("question", ""))
+        self._chat().write(f"? {question}", kind="info")
+        self.run_worker(self._answer_ask(frame.body))
+
+    async def _answer_ask(self, body: dict[str, Any]) -> None:
+        question = str(body.get("question", ""))
+        options = [str(o) for o in (body.get("options") or [])]
+        if not options:
+            answer = await self.push_screen_wait(ValuePrompt(question, ""))
+        else:
+            # The free-text row is always there: the question that needed a fifth
+            # answer is the case `ask` exists for (`docs/tools/ask.md` §ask).
+            rows = [(option, "answer with this") for option in options]
+            rows.append(("type an answer…", "write your own"))
+            choice = await self.push_screen_wait(_PickBox(rows, title=question))
+            answer = choice
+            if choice == "type an answer…":
+                answer = await self.push_screen_wait(ValuePrompt(question, ""))
+        # `None` is the modal's dismissal; `ValuePrompt` also answers `None` for an
+        # emptied field, so a cancelled reply and an empty answer are one case here.
+        # The field exists because the device cannot infer a dismissal from an empty
+        # answer it chose itself (`04` §3.23).
+        cancelled = answer is None
+        if not cancelled:
+            self._chat().write(f"↳ {answer}", kind="info")
+        await self.session.send(
+            Frame(
+                type="ask.reply",
+                id=new_id("b"),
+                ts=0,
+                body={
+                    "ask_id": str(body.get("ask_id", "")),
+                    "answer": "" if cancelled else str(answer),
+                    "cancelled": cancelled,
+                },
+            )
         )
 
     def _on_agent_thinking(self, frame: Frame) -> None:

@@ -154,7 +154,8 @@ static bool type_known(const char *type)
         "secret.set", "ping",  "pong",     "ack",        "status",
         "log",    "agent.start", "agent.tool", "agent.tool_result",
         "agent.thinking", "agent.final", "agent.error", "task.fired",
-        "gpio.edge", "mqtt.message", "event", "command.result",
+        "gpio.edge", "mqtt.message", "event", "command.result", "agent.ask",
+        "ask.reply",
     };
     for (size_t i = 0; i < sizeof(k_types) / sizeof(k_types[0]); i++) {
         if (strcmp(type, k_types[i]) == 0) return true;
@@ -170,6 +171,7 @@ bool link_type_inbound(const char *type)
 {
     static const char *const k_inbound[] = {
         "hello", "prompt", "cancel", "command", "secret.set", "ping", "ack",
+        "ask.reply",
     };
     for (size_t i = 0; i < sizeof(k_inbound) / sizeof(k_inbound[0]); i++) {
         if (strcmp(type, k_inbound[i]) == 0) return true;

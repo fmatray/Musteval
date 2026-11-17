@@ -404,7 +404,7 @@ Tool definitions are assembled at run start; the assembly rules and the
 per-tool schemas are in §7.1 and `docs/tools/`.
 
 **Capacity.** The assembled body — system prompt, tool array and history — must fit
-one fixed buffer. The tool array alone is about 5 KiB for the frozen 26-tool
+one fixed buffer. The tool array alone is about 6 KiB for the frozen 27-tool
 registry and the system prompt may be up to 8 KiB, so the body buffer is 16 KiB
 (`NET_BODY_MAX`, the largest reply the transport holds). The history has its own
 smaller cap, because a history allowed to fill the body would leave no room for the

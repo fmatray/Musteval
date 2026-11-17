@@ -117,6 +117,7 @@ Single JSON object, UTF-8, no comments, no trailing commas.
 | `mcp.servers[].timeout_ms` | int | no | `15000` | 1000..60000 |
 | `agent.system_prompt` | string | no | `"/prompts/system.md"` | path starting `/` |
 | `agent.max_input_bytes` | int | no | `3072` | 256..`serial.max_line_bytes` |
+| `agent.ask_timeout_s` | int | no | `120` | 10..600; how long the `ask` tool waits for a human before the call fails `E_TIMEOUT` (`tools/ask.md`) |
 | `tools.allow_dangerous` | bool | no | `false` | switch read by the write tools; the list is `06-security.md` §6, not restated here |
 | `tools.disabled[]` | string[] | no | `[]` | 0..8 tool names the model is neither shown nor allowed to call; a name outside the registry is accepted and stays inert, so a tool that later returns needs no config edit. The **seed** `config.json` ships `["geo.locate"]`, so a fresh device has no locator; an absent key disables nothing, because the array is read straight from the document and has no compiled-in default |
 | `tools.http_allow_hosts[]` | string[] | no | `[]` | 0..8 hostnames; exact match, no wildcards |

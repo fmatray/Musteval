@@ -325,7 +325,7 @@ in `src/domains/`, which is the entire modularity claim made concrete.
 
 The shared work — argument validation, the gate check, the result envelope, the
 `agent.tool` / `agent.tool_result` frames, the `sys.tool_calls` counter, error
-mapping — lives in `tools` and is written once for all 26 built-ins.
+mapping — lives in `tools` and is written once for all 27 built-ins.
 
 ### 4.2 Adding a declarative tool
 

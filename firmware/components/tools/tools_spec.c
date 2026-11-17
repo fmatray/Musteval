@@ -60,6 +60,9 @@
     "\"repeat\":{\"type\":\"object\"},\"missed\":{\"type\":\"string\"}}," \
     "\"required\":[\"id\",\"trigger\",\"action\"]}},\"required\":[\"task\"]}"
 
+/* `tools/ask.md` §Schema: `question` is required and `options` is absent or a
+ * list; the 512/64-byte bounds are the tool's own, not expressible here. */
+#define S_ASK "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"question\"]}"
 #define S_NET_PING "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"enum\":[\"router\",\"llm\",\"ntp\"]}},\"required\":[\"target\"]}" /* tools/net.md */
 
 /* `00-overview.md` §7 order, and the gate per tool from `06-security.md` §6. */
@@ -90,10 +93,11 @@ static const tools_builtin_t BUILTINS[TOOLS_MAX_BUILTINS] = {
     {"memory.delete", "Delete one durable memory entry.", TOOLS_GATE_NONE, S_MEM_DELETE},
     {"sys.diagnostics", "Read a projected subset of device health counters.", TOOLS_GATE_NONE, S_SYS_DIAG},
     {"net.ping", "Probe the router, the LLM provider or the NTP server with ICMP echo from the device.", TOOLS_GATE_NONE, S_NET_PING},
+    {"ask", "Ask the person at the bridge one question and wait for the answer.", TOOLS_GATE_NONE, S_ASK},
 };
 
 _Static_assert(sizeof BUILTINS / sizeof BUILTINS[0] == TOOLS_MAX_BUILTINS,
-               "the frozen surface is twenty-six built-ins (`00-overview.md` §7)");
+               "the frozen surface is twenty-seven built-ins (`00-overview.md` §7)");
 
 const tools_builtin_t *tools_builtins(size_t *count)
 {
@@ -265,6 +269,17 @@ esp_err_t tools_validate(const char *tool, const json_node_t *args, char *why,
         }
     }
 
+    /* `tools/ask.md` §Limits: a question is a sentence and an option is a label,
+     * and neither length is expressible in the schema subset, so the tool is the
+     * only place the rule can live. Pure, so it is a host test rather than a
+     * flashing session. */
+    if (strcmp(tool, "ask") == 0 &&
+        !tools_ask_args_ok(json_get(args, "question"), json_get(args, "options"),
+                           why, why_cap)) {
+        json_free(doc);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     /* `tools/web.md` §Declarative tools: an argument not declared in
      * `parameters.properties` is `E_TOOL`. The same rule keeps a model from stuffing
      * extra members into `todo`'s nested objects. */
@@ -279,6 +294,42 @@ esp_err_t tools_validate(const char *tool, const json_node_t *args, char *why,
 
     json_free(doc);
     return ESP_OK;
+}
+
+/* --- `ask` bounds (`tools/ask.md` §Limits) -------------------------------- */
+
+bool tools_ask_args_ok(const json_node_t *question, const json_node_t *options,
+                       char *why, size_t why_cap)
+{
+    const char *text = json_string(question);
+    size_t n = text != NULL ? strlen(text) : 0;
+    if (n < 1 || n > TOOLS_ASK_QUESTION_MAX) {
+        if (why != NULL && why_cap > 0) {
+            snprintf(why, why_cap, "ask: question must be 1..%u bytes",
+                     (unsigned)TOOLS_ASK_QUESTION_MAX);
+        }
+        return false;
+    }
+    size_t count = json_array_len(options);
+    if (count > TOOLS_ASK_OPTIONS_MAX) {
+        if (why != NULL && why_cap > 0) {
+            snprintf(why, why_cap, "ask: at most %u options",
+                     (unsigned)TOOLS_ASK_OPTIONS_MAX);
+        }
+        return false;
+    }
+    for (size_t i = 0; i < count; i++) {
+        const char *option = json_string(json_array_at(options, i));
+        size_t len = option != NULL ? strlen(option) : 0;
+        if (len < 1 || len > TOOLS_ASK_OPTION_MAX) {
+            if (why != NULL && why_cap > 0) {
+                snprintf(why, why_cap, "ask: every option must be 1..%u bytes",
+                         (unsigned)TOOLS_ASK_OPTION_MAX);
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 /* --- Memory keys (`tools/memory.md` §Limits) ------------------------------ */

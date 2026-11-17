@@ -175,6 +175,7 @@ BOUNDS: dict[str, tuple[float, float]] = {
     "mcp.servers[]": (0, 4),
     "mcp.servers[].timeout_ms": (1000, 60000),
     "agent.max_input_bytes": (256, 4096),
+    "agent.ask_timeout_s": (10, 600),
     "tools.disabled[]": (0, 8),
     "tools.http_allow_hosts[]": (0, 8),
     "tools.memory_max_bytes": (256, 4096),

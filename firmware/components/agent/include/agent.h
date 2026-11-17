@@ -413,6 +413,12 @@ void agent_run_settings_resolve(const agent_raw_settings_t *raw,
 esp_err_t agent_submit(const char *prompt, size_t len, agent_source_t source,
                        const char *reply_to, char *run_id_out, size_t run_id_cap);
 
+/* `04-protocol.md` §3.23: the bridge's answer to `agent.ask`. Called on the link
+ * task. Returns false when the id names no question currently waiting, which is the
+ * late-reply case the protocol says to ignore — a reply that lost the race with the
+ * timeout is late, not malformed. */
+bool agent_ask_reply(const char *ask_id, const char *answer, bool cancelled);
+
 /* `cancel` (`04` §3.5, §4.14). Returns true when a run was live and has been
  * signalled, false when nothing was running (`cancel.noop`, `04` §3.19). */
 bool agent_cancel(void);

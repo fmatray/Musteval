@@ -93,11 +93,13 @@ Rules:
 | `ping` | request | — |
 | `pong` | — | reply |
 | `ack` | optional receipt | — |
+| `ask.reply` | reply to `agent.ask` | — |
 | `status` | — | unsolicited periodic |
 | `log` | — | unsolicited |
 | `agent.start` | — | unsolicited, correlated |
 | `agent.tool` | — | unsolicited |
 | `agent.tool_result` | — | unsolicited |
+| `agent.ask` | — | unsolicited, awaits reply |
 | `agent.thinking` | — | unsolicited |
 | `agent.final` | — | terminal |
 | `agent.error` | — | terminal or rejection |
@@ -155,7 +157,7 @@ and retries (`05-bridge.md` §4.1).
 | `capabilities` | object | yes | `tools` (every tool the model can call right now), `mcp` (namespaced tool names), `dangerous_tools`, `streaming` (`false`). |
 
 ```json
-{"v":1,"type":"hello_ack","id":"d-1","ts":1730563201,"reply_to":"b-1","device":"xiao-s3-01","fw_version":"1.0.0","protocol":1,"boot_id":"9f2c1a7e","time_synced":true,"limits":{"rx_max":4096,"tx_max":16384},"capabilities":{"tools":["gpio.read","gpio.write","adc.read","i2c.scan","i2c.read","i2c.write","time.now","fs.list","fs.read","fs.write","fs.delete","http.get","skill.read","task.list","task.set","event.emit","todo","geo.locate","mqtt.list","mqtt.publish","memory.get","memory.set","memory.list","memory.delete","sys.diagnostics","weather_now","web_search"],"mcp":["mcp.home.home_status"],"dangerous_tools":false,"streaming":false}}
+{"v":1,"type":"hello_ack","id":"d-1","ts":1730563201,"reply_to":"b-1","device":"xiao-s3-01","fw_version":"1.0.0","protocol":1,"boot_id":"9f2c1a7e","time_synced":true,"limits":{"rx_max":4096,"tx_max":16384},"capabilities":{"tools":["gpio.read","gpio.write","adc.read","i2c.scan","i2c.read","i2c.write","time.now","fs.list","fs.read","fs.write","fs.delete","http.get","skill.read","task.list","task.set","event.emit","todo","geo.locate","mqtt.list","mqtt.publish","memory.get","memory.set","memory.list","memory.delete","sys.diagnostics","net.ping","ask","weather_now","web_search"],"mcp":["mcp.home.home_status"],"dangerous_tools":false,"streaming":false}}
 ```
 
 A rejected `hello` produces no `hello_ack`; the device sends `event` with
@@ -165,7 +167,7 @@ the bridge shows a version mismatch banner and refuses to send `prompt`.
 `capabilities.streaming` is always `false` in v1 (overview D8).
 
 `capabilities.tools` is the set the model can call **at this moment**, not a
-compile-time constant. It is built from the 26 built-ins
+compile-time constant. It is built from the 27 built-ins
 (`00-overview.md` §7) plus the declarative tools loaded from `/tools/*.json` and the
 MCP tools discovered at run start, then subtracted by two runtime conditions: the name
 is in `tools.disabled` (`03-config.md` §Full schema), or it is one of
@@ -229,7 +231,7 @@ seconds rather than minutes. Cancellation is not a failure and is never retried.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | One of the thirty-four names in §4. |
+| `name` | string | yes | One of the thirty-six names in §4. |
 | `args` | object | no | Command arguments; defaults to `{}`. |
 
 ```json
@@ -612,9 +614,68 @@ all — an empty frame would be indistinguishable from a model that thinks nothi
 The frame is advisory. It is never terminal, the bridge may discard it, and a run
 whose trace is dropped is still a correct run.
 
+### 3.22 `agent.ask` (device → bridge)
+
+The `ask` tool's request to the human. The device sends it and **blocks the agent
+task** until `ask.reply` arrives, `cancel` arrives, or `agent.ask_timeout_s` elapses.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `run_id` | string | yes | Owning run |
+| `round` | integer | yes | Tool round, 1-based |
+| `call_id` | string | yes | Provider tool-call id, echoed in `agent.tool_result` |
+| `ask_id` | string | yes | Correlates the reply; unique per run |
+| `question` | string | yes | What to ask, plain text, 1..`TOOLS_ASK_QUESTION_MAX` bytes |
+| `options` | array of string | no | Preselected answers, 0..8 entries; absent or empty means free text |
+| `timeout_s` | integer | yes | Seconds the device will wait, `AGENT_ASK_TIMEOUT_MIN`..`AGENT_ASK_TIMEOUT_MAX` (10..600) |
+
+```json
+{"v":1,"type":"agent.ask","id":"d-9","ts":1730563220,"run_id":"r-7","round":1,"call_id":"call_a3","ask_id":"q-1","question":"Which branch should the reboot land on?","options":["main","release"],"timeout_s":120}
+```
+
+`ask` is the one tool whose answer cannot come from the device: it exists to put a
+question to the person at the bridge. The device therefore cannot finish the call
+synchronously, which is why this is a request/response pair rather than a single
+`agent.tool_result`. The answer travels back as `ask.reply` (§3.23) and the call then
+completes with the ordinary `agent.tool_result`.
+
+The wait has three endings and every one of them produces an `agent.tool_result`, so
+a model never waits on a result that will not arrive: an answer, a dismissal (§3.23,
+`ok:false` `E_CANCELLED`), or `agent.ask_timeout_s` elapsing (`03-config.md` §Full
+schema, default 120, `ok:false` `E_TIMEOUT`). `cancel` (§3.5) ends the wait early
+with `ok:false` `E_CANCELLED` and the run then stops. A bridge that does not implement
+this frame simply never replies and the model reads the timeout — an older bridge
+remains correct, only less useful. A device that cannot put the frame on the link at
+all does not wait out the timeout: the call fails at once with `ok:false` `E_TOOL`,
+because a question the bridge never saw cannot be answered.
+
+### 3.23 `ask.reply` (bridge → device)
+
+The human's answer to `agent.ask`.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `ask_id` | string | yes | `ask_id` from the request being answered |
+| `answer` | string | no | The chosen option or typed text, 0..`TOOLS_ASK_ANSWER_MAX` bytes |
+| `cancelled` | boolean | no | `true` means the human dismissed the question; the call fails `E_CANCELLED` |
+
+```json
+{"v":1,"type":"ask.reply","id":"b-8","ts":1730563230,"ask_id":"q-1","answer":"release"}
+```
+
+```json
+{"v":1,"type":"ask.reply","id":"b-9","ts":1730563234,"ask_id":"q-1","cancelled":true}
+```
+
+Exactly one of `answer` and `cancelled:true` is meaningful: an empty `answer` with
+`cancelled` absent is a valid free-text answer (the human pressed Enter on nothing),
+which is why the two are separate fields rather than an empty string standing for a
+cancel. An `ask_id` the device is not waiting on is ignored, the same rule `ack` uses,
+because a reply that lost a race with the timeout is late, not malformed.
+
 ## 4. Command catalog
 
-All thirty-four names, their arguments and their `result` shapes. Unknown names are
+All thirty-six names, their arguments and their `result` shapes. Unknown names are
 `E_PROTOCOL`. Missing required arguments are `E_PROTOCOL`. Invalid values are
 `E_CONFIG`. All commands are refused with `E_BUSY` only where the table says so;
 reads are never refused.
@@ -1785,7 +1846,7 @@ a retry loop.
 
 ```json
 {"v":1,"type":"hello","id":"b-1","ts":1730563200,"client":"musteval-tui","client_version":"1.0.0","protocol":1}
-{"v":1,"type":"hello_ack","id":"d-1","ts":1730563201,"reply_to":"b-1","device":"xiao-s3-01","fw_version":"1.0.0","protocol":1,"boot_id":"9f2c1a7e","time_synced":true,"limits":{"rx_max":4096,"tx_max":16384},"capabilities":{"tools":["gpio.read","gpio.write","adc.read","i2c.scan","i2c.read","i2c.write","time.now","fs.list","fs.read","fs.write","fs.delete","http.get","skill.read","task.list","task.set","event.emit","todo","geo.locate","mqtt.list","mqtt.publish","memory.get","memory.set","memory.list","memory.delete","sys.diagnostics","weather_now","web_search"],"mcp":[],"dangerous_tools":false,"streaming":false}}
+{"v":1,"type":"hello_ack","id":"d-1","ts":1730563201,"reply_to":"b-1","device":"xiao-s3-01","fw_version":"1.0.0","protocol":1,"boot_id":"9f2c1a7e","time_synced":true,"limits":{"rx_max":4096,"tx_max":16384},"capabilities":{"tools":["gpio.read","gpio.write","adc.read","i2c.scan","i2c.read","i2c.write","time.now","fs.list","fs.read","fs.write","fs.delete","http.get","skill.read","task.list","task.set","event.emit","todo","geo.locate","mqtt.list","mqtt.publish","memory.get","memory.set","memory.list","memory.delete","sys.diagnostics","net.ping","ask","weather_now","web_search"],"mcp":[],"dangerous_tools":false,"streaming":false}}
 {"v":1,"type":"ping","id":"b-2","ts":1730563215}
 {"v":1,"type":"pong","id":"d-2","ts":1730563215,"reply_to":"b-2"}
 {"v":1,"type":"prompt","id":"b-3","ts":1730563220,"text":"What time is it on the device?"}

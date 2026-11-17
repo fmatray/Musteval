@@ -740,3 +740,110 @@ TEST_CASE("the catalogue refuses a node that is not an array", "[tools]")
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, tools_catalogue(&ctx, NULL));
     json_free(doc);
 }
+
+/* --- `ask` bounds (`tools/ask.md` §Limits) ---------------------------------
+ *
+ * The port itself is board-only: it waits on a semaphore the link task gives, and a
+ * host build has neither. What is pure is the argument rule, and it is pure on
+ * purpose — the question and option bounds are not expressible in the schema subset,
+ * so `tools_validate` is the only place they can be enforced. */
+
+static json_doc_t *ask_args(const char *question, const char *options_json)
+{
+    char body[1024];
+    snprintf(body, sizeof body, "{\"question\":\"%s\"%s%s%s",
+             question,
+             options_json != NULL ? ",\"options\":" : "",
+             options_json != NULL ? options_json : "",
+             "}");
+    json_doc_t *doc = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, json_parse(body, strlen(body), &doc));
+    return doc;
+}
+
+TEST_CASE("an ask question must be a sentence the bridge can show", "[tools][ask]")
+{
+    char why[128] = "";
+
+    json_doc_t *doc = ask_args("which branch?", NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK,
+                              tools_validate("ask", json_root(doc), why, sizeof why),
+                              why);
+    json_free(doc);
+
+    /* The documented bound, not a literal that happens to fit: 512 bytes passes and
+     * 513 does not, which is the only pair that proves the check is the constant. */
+    char question[TOOLS_ASK_QUESTION_MAX + 2];
+    memset(question, 'q', sizeof question - 1);
+    question[TOOLS_ASK_QUESTION_MAX] = '\0';
+    doc = ask_args(question, NULL);
+    TEST_ASSERT_EQUAL(ESP_OK, tools_validate("ask", json_root(doc), why, sizeof why));
+    json_free(doc);
+
+    question[TOOLS_ASK_QUESTION_MAX] = 'q';
+    question[TOOLS_ASK_QUESTION_MAX + 1] = '\0';
+    doc = ask_args(question, NULL);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      tools_validate("ask", json_root(doc), why, sizeof why));
+    TEST_ASSERT_NOT_EQUAL('\0', why[0]);
+    json_free(doc);
+}
+
+TEST_CASE("an empty question and an oversized option are both refused", "[tools][ask]")
+{
+    char why[128] = "";
+    json_doc_t *doc = ask_args("", NULL);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      tools_validate("ask", json_root(doc), why, sizeof why));
+    json_free(doc);
+
+    char option[TOOLS_ASK_OPTION_MAX + 2];
+    memset(option, 'o', sizeof option - 1);
+    option[TOOLS_ASK_OPTION_MAX] = '\0';
+    char opts[TOOLS_ASK_OPTION_MAX + 8];
+    snprintf(opts, sizeof opts, "[\"%s\"]", option);
+    doc = ask_args("q", opts);
+    TEST_ASSERT_EQUAL(ESP_OK, tools_validate("ask", json_root(doc), why, sizeof why));
+    json_free(doc);
+
+    option[TOOLS_ASK_OPTION_MAX] = 'o';
+    option[TOOLS_ASK_OPTION_MAX + 1] = '\0';
+    snprintf(opts, sizeof opts, "[\"%s\"]", option);
+    doc = ask_args("q", opts);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      tools_validate("ask", json_root(doc), why, sizeof why));
+    json_free(doc);
+}
+
+TEST_CASE("ask takes at most the documented number of options", "[tools][ask]")
+{
+    char why[128] = "";
+    char opts[64];
+    opts[0] = '[';
+    size_t at = 1;
+    for (int i = 0; i < TOOLS_ASK_OPTIONS_MAX; i++) {
+        at += (size_t)snprintf(opts + at, sizeof opts - at, "%s\"o\"", i ? "," : "");
+    }
+    snprintf(opts + at, sizeof opts - at, "]");
+
+    json_doc_t *doc = ask_args("q", opts);
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK,
+                              tools_validate("ask", json_root(doc), why, sizeof why),
+                              why);
+    json_free(doc);
+
+    /* One past the bound, built the same way, so the refusal is about the count and
+     * not about an option's text. */
+    char more[80];
+    at = 1;
+    more[0] = '[';
+    for (int i = 0; i <= TOOLS_ASK_OPTIONS_MAX; i++) {
+        at += (size_t)snprintf(more + at, sizeof more - at, "%s\"o\"", i ? "," : "");
+    }
+    snprintf(more + at, sizeof more - at, "]");
+    doc = ask_args("q", more);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      tools_validate("ask", json_root(doc), why, sizeof why));
+    TEST_ASSERT_NOT_EQUAL('\0', why[0]);
+    json_free(doc);
+}

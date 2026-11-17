@@ -40,6 +40,12 @@ static const char *TAG = "agent";
 #define AGENT_TASK_STACK 8192
 #define AGENT_TASK_PRIORITY 5
 
+/* `tools/ask.md` §Limits and `03-config.md` `agent.ask_timeout_s`: the bounds a
+ * config file cannot push past, because an unbounded wait would hang a run and an
+ * instant one would make the tool useless. */
+#define AGENT_ASK_TIMEOUT_MIN 10
+#define AGENT_ASK_TIMEOUT_MAX 600
+
 /* The history buffer's own cap. It stays below `LLM_BODY_MAX` because the body also
  * carries the tool array and the system prompt; a history that could fill the body
  * alone would make every later request fail. */
@@ -70,6 +76,29 @@ typedef struct {
 static QueueHandle_t s_queue;
 static TaskHandle_t s_task;
 static volatile bool s_cancel;
+
+/* --- `ask` round trip (`tools/ask.md`, `04-protocol.md` §3.22) ----------------
+ *
+ * The agent task is the only waiter. `ask.reply` arrives on the link task, so the
+ * handoff is a binary semaphore plus buffers the reply is copied into before the
+ * waiter is released. No allocation happens on the link task: a reply that arrives
+ * while nothing is waiting is dropped rather than queued (`04` §3.23 makes a late
+ * reply ignorable), and that is why there is exactly one slot rather than a queue.
+ *
+ * `s_ask_cap` is the answer capacity the waiter asked for; a longer answer is
+ * truncated rather than refused, because the human already typed it and dropping
+ * the whole reply would fail a call the bridge answered correctly. */
+static SemaphoreHandle_t s_ask_done;
+static char s_ask_id[40];
+static char s_ask_answer[TOOLS_ASK_ANSWER_MAX + 1];
+static bool s_ask_cancelled;
+static volatile bool s_ask_waiting;
+static volatile bool s_ask_pending;
+/* Per-call context, set by `run_one_tool` before the port is entered, so the frame
+ * carries the call it belongs to without `tools` having to know about runs. */
+static unsigned s_ask_seq;
+static const char *s_ask_call_id = "";
+static int s_ask_round;
 
 /* Run identity. `run_id` is reported in every frame of the run and in `status`. */
 static char s_run_id[24];
@@ -361,6 +390,137 @@ static void emit_agent_tool_result(const char *run_id, int round,
     json_free(body);
 }
 
+/* --- `ask` port (`tools/ask.md`) -------------------------------------------- */
+
+/* Bounded by `agent.ask_timeout_s`, and the wait is a poll rather than a single
+ * blocking take because three different events end it and only one of them gives the
+ * semaphore. `s_cancel` is checked between wakeups so an Esc key is honoured within
+ * one tick instead of after the full timeout (`04-protocol.md` §3.5 makes `cancel`
+ * the reader's interrupt). */
+static esp_err_t agent_ask_call(const char *question, const json_node_t *options,
+                                char *answer, size_t answer_cap, const char **code,
+                                char *why, size_t why_cap, void *ctx)
+{
+    (void)ctx;
+    if (question == NULL || answer == NULL || answer_cap == 0) {
+        if (why != NULL && why_cap > 0) snprintf(why, why_cap, "ask: no question");
+        if (code != NULL) *code = "E_TOOL";
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_ask_done == NULL) {
+        if (why != NULL && why_cap > 0) snprintf(why, why_cap, "ask is unavailable");
+        if (code != NULL) *code = "E_TOOL";
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    int64_t raw_timeout = 0;
+    json_node_t *node = cfg_get("agent.ask_timeout_s");
+    int timeout_s = (node != NULL && json_int(node, &raw_timeout)) ? (int)raw_timeout
+                                                                   : 120;
+    if (timeout_s < AGENT_ASK_TIMEOUT_MIN) timeout_s = AGENT_ASK_TIMEOUT_MIN;
+    if (timeout_s > AGENT_ASK_TIMEOUT_MAX) timeout_s = AGENT_ASK_TIMEOUT_MAX;
+
+    /* One waiter at a time is guaranteed by the serialized loop, so the id needs no
+     * lock: it is written before the frame is emitted and read after the waiter
+     * wakes. It has to be unique per call rather than per run, because a run may ask
+     * twice and the second reply must not be taken by the first call. */
+    snprintf(s_ask_id, sizeof s_ask_id, "q-%u", (unsigned)++s_ask_seq);
+    s_ask_answer[0] = '\0';
+    s_ask_cancelled = false;
+    xSemaphoreTake(s_ask_done, 0); /* a stale give from an abandoned wait */
+    s_ask_pending = true;
+    s_ask_waiting = true;
+
+    json_doc_t *body = json_new_object();
+    if (body == NULL) {
+        s_ask_pending = false;
+        s_ask_waiting = false;
+        if (code != NULL) *code = "E_TOOL";
+        return ESP_ERR_NO_MEM;
+    }
+    json_node_t *root = json_root(body);
+    json_add_string(root, "run_id", s_run_id);
+    json_add_int(root, "round", s_ask_round);
+    json_add_string(root, "call_id", s_ask_call_id);
+    json_add_string(root, "ask_id", s_ask_id);
+    json_add_string(root, "question", question);
+    if (options != NULL && json_is_array(options)) {
+        json_node_t *list = json_new_array(root, "options");
+        for (size_t i = 0; i < json_array_len(options); i++) {
+            json_array_push_string(list, json_string(json_array_at(options, i)));
+        }
+    }
+    json_add_int(root, "timeout_s", timeout_s);
+    esp_err_t emitted = link_emit_body("agent.ask", agent_frame_id(), now_s(), NULL, body);
+    json_free(body);
+    if (emitted != ESP_OK) {
+        /* The question never left the device, so no reply can arrive and waiting the
+         * full timeout would burn `agent.ask_timeout_s` on a frame the bridge never
+         * saw. Fail the call with the cause instead. */
+        s_ask_waiting = false;
+        s_ask_pending = false;
+        if (code != NULL) *code = "E_TOOL";
+        snprintf(why, why_cap, "ask: the question could not be sent");
+        return emitted;
+    }
+
+    esp_err_t err = ESP_OK;
+    bool answered = false;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_s * 1000ULL);
+    while (xTaskGetTickCount() < deadline) {
+        if (xSemaphoreTake(s_ask_done, pdMS_TO_TICKS(100)) == pdTRUE) {
+            answered = true;
+            break;
+        }
+        if (s_cancel) break;
+    }
+    s_ask_waiting = false;
+    s_ask_pending = false;
+
+    if (answered && !s_ask_cancelled) {
+        size_t n = strlen(s_ask_answer);
+        if (n >= answer_cap) n = answer_cap - 1;
+        memcpy(answer, s_ask_answer, n);
+        answer[n] = '\0';
+        return ESP_OK;
+    }
+    if (answered) {
+        err = ESP_ERR_INVALID_STATE;
+        if (code != NULL) *code = "E_CANCELLED";
+        snprintf(why, why_cap, "ask: the question was dismissed");
+        return err;
+    }
+    if (s_cancel) {
+        if (code != NULL) *code = "E_CANCELLED";
+        snprintf(why, why_cap, "ask: run cancelled while waiting");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (code != NULL) *code = "E_TIMEOUT";
+    snprintf(why, why_cap, "ask: no answer within %d s", timeout_s);
+    return ESP_ERR_TIMEOUT;
+}
+
+/* Called on the link task by `agent_ask_reply`. Returns false when the reply names a
+ * question nobody is waiting on, which is the ignored case in `04` §3.23. */
+bool agent_ask_reply(const char *ask_id, const char *answer, bool cancelled)
+{
+    if (!s_ask_waiting || !s_ask_pending || ask_id == NULL) return false;
+    if (strcmp(ask_id, s_ask_id) != 0) return false;
+    s_ask_pending = false;
+    s_ask_cancelled = cancelled;
+    s_ask_answer[0] = '\0';
+    if (!cancelled && answer != NULL) {
+        /* Truncated here, not by the answer buffer's owner: the capacity is known
+         * before the waiter wakes, so both sides agree on the bound. */
+        size_t n = strlen(answer);
+        if (n > TOOLS_ASK_ANSWER_MAX) n = TOOLS_ASK_ANSWER_MAX;
+        memcpy(s_ask_answer, answer, n);
+        s_ask_answer[n] = '\0';
+    }
+    if (s_ask_done != NULL) xSemaphoreGive(s_ask_done);
+    return true;
+}
+
 static void emit_agent_start(const char *run_id, const char *reply_to,
                              agent_source_t source, size_t input_bytes,
                              int32_t queue_depth)
@@ -581,6 +741,13 @@ static bool run_one_tool(const tools_context_t *ctx, const char *run_id, int rou
     }
     const json_node_t *args = args_doc != NULL ? json_root(args_doc) : NULL;
 
+    /* The `ask` port cannot see the run it belongs to, and the frame needs `run_id`,
+     * `round` and `call_id` (`04` §3.22). Publishing them here is safe because the
+     * loop is serialized: exactly one call is in flight, and the port is entered
+     * below in the same iteration. */
+    s_ask_round = round;
+    s_ask_call_id = call->id;
+
     /* `tools_offered` is the same predicate `tools_json` used, so a call to a tool
      * the model was not given is refused rather than executed. */
     if (!tools_offered(call->name, ctx)) {
@@ -701,6 +868,7 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
     tools_context_t ctx;
     tools_context_from_config(&ctx);
     ctx.todo.apply = todo_port_apply;
+    ctx.ask.ask = agent_ask_call;
     build_tools_json(&ctx);
 
     snprintf(s_run_id, sizeof s_run_id, "%s", job->run_id);
@@ -947,6 +1115,8 @@ esp_err_t agent_start(void)
     tools_context_t boot_ctx;
     tools_context_from_config(&boot_ctx);
     boot_ctx.todo.apply = todo_port_apply;
+    if (s_ask_done == NULL) s_ask_done = xSemaphoreCreateBinary();
+    boot_ctx.ask.ask = agent_ask_call;
     build_tools_json(&boot_ctx);
 
     BaseType_t ok = xTaskCreate(agent_task, "agent", AGENT_TASK_STACK, NULL,

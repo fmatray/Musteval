@@ -321,6 +321,120 @@ async def test_a_frame_type_the_bridge_does_not_route_is_ignored():
     await _run(_device(), body)
 
 
+async def test_an_agent_ask_offers_its_options_and_returns_the_answer():
+    """`05` §10.1: `agent.ask` is the one device frame that expects an answer. The
+    dialog is built from the frame's `options`, and the chosen row travels back as
+    `ask.reply` correlated by `ask_id` — a reply carrying the wrong id is ignored by
+    the device (§3.23), so the round trip would silently time out."""
+    from bridge.ui.modals import _PickBox
+
+    async def body(app, pilot):
+        _feed(app, type="agent.ask", ask_id="q-1", run_id="r-7", round=1,
+              call_id="call_a3", question="Which branch?", options=["main", "release"],
+              timeout_s=120)
+        await _await_chat(pilot, app, "? Which branch?")
+        for _ in range(120):
+            if isinstance(app.screen, _PickBox):
+                await pilot.pause(0.05)
+                break
+            await pilot.pause(0.02)
+        else:
+            raise AssertionError(f"_PickBox never opened; screen is {app.screen!r}")
+        # The device's options first, then the free-text escape: the question that
+        # needed one more answer is the case the tool exists for.
+        assert [label for label, _hint in app.screen.rows] == [
+            "main", "release", "type an answer…"
+        ]
+        await pilot.press("down", "enter")
+        for _ in range(120):
+            replies = [f for f in _frames(app) if f.get("type") == "ask.reply"]
+            if replies:
+                break
+            await pilot.pause(0.02)
+        assert replies, "no ask.reply was sent"
+        assert replies[0]["ask_id"] == "q-1"
+        assert replies[0]["answer"] == "release"
+        assert replies[0]["cancelled"] is False
+        await _await_chat(pilot, app, "\u21b3 release")
+
+    await _run(_device(), body)
+
+
+async def test_dismissing_an_ask_replies_cancelled_rather_than_with_an_empty_answer():
+    """`04` §3.23: `cancelled` is its own field rather than a sentinel answer. This
+    bridge's text prompt returns `None` for both Esc and an emptied field, so an Esc
+    that sent `answer: ""` would be indistinguishable from a reader who typed
+    nothing — and the device could not tell a dismissal from an answer it chose
+    itself. The field is what makes the two cases separable on the wire."""
+    from bridge.ui.modals import ValuePrompt
+
+    async def body(app, pilot):
+        _feed(app, type="agent.ask", ask_id="q-2", run_id="r-7", round=1,
+              call_id="call_a4", question="Name the port?", timeout_s=120)
+        for _ in range(120):
+            if isinstance(app.screen, ValuePrompt):
+                await pilot.pause(0.05)
+                break
+            await pilot.pause(0.02)
+        else:
+            raise AssertionError(f"ValuePrompt never opened; screen is {app.screen!r}")
+        # The question is the modal's title, so a reader answering a second ask in
+        # the same run can tell which one is on screen.
+        assert "Name the port?" in _text(app)
+        await pilot.press("escape")
+        for _ in range(120):
+            replies = [f for f in _frames(app) if f.get("type") == "ask.reply"]
+            if replies:
+                break
+            await pilot.pause(0.02)
+        assert replies, "no ask.reply was sent"
+        assert replies[0]["ask_id"] == "q-2"
+        assert replies[0]["cancelled"] is True
+        assert replies[0]["answer"] == ""
+
+    await _run(_device(), body)
+
+
+async def test_choosing_the_free_text_row_then_escaping_still_replies_cancelled():
+    """`05` §10.1 lists two widgets, and the second one is a whole dismissal path of
+    its own: a reader who picks "type an answer…" and then changes their mind must
+    still produce an `ask.reply`. Without it the device waits the full timeout on a
+    question the reader already walked away from."""
+    from bridge.ui.modals import _PickBox, ValuePrompt
+
+    async def body(app, pilot):
+        _feed(app, type="agent.ask", ask_id="q-3", run_id="r-7", round=1,
+              call_id="call_a5", question="Which branch?", options=["main"],
+              timeout_s=120)
+        for _ in range(120):
+            if isinstance(app.screen, _PickBox):
+                await pilot.pause(0.05)
+                break
+            await pilot.pause(0.02)
+        else:
+            raise AssertionError(f"_PickBox never opened; screen is {app.screen!r}")
+        # Row 0 is the only option, so Down lands on the free-text row.
+        await pilot.press("down", "enter")
+        for _ in range(120):
+            if isinstance(app.screen, ValuePrompt):
+                await pilot.pause(0.05)
+                break
+            await pilot.pause(0.02)
+        else:
+            raise AssertionError(f"ValuePrompt never opened; screen is {app.screen!r}")
+        await pilot.press("escape")
+        for _ in range(120):
+            replies = [f for f in _frames(app) if f.get("type") == "ask.reply"]
+            if replies:
+                break
+            await pilot.pause(0.02)
+        assert replies, "no ask.reply was sent"
+        assert replies[0]["ask_id"] == "q-3"
+        assert replies[0]["cancelled"] is True
+
+    await _run(_device(), body)
+
+
 async def test_a_geo_result_updates_the_geo_row_and_reports_in_chat():
     """`05` §10: `geo.locate` updates the Status screen GEO row and reports in chat.
     The branch that did the second was missing, so a fix fell through to the raw JSON

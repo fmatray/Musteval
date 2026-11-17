@@ -1108,6 +1108,28 @@ esp_err_t tools_call(const tools_context_t *ctx, const char *name,
             return ESP_ERR_NOT_SUPPORTED;
         }
         err = ctx->todo.apply(args, out, why, why_cap, ctx->todo.ctx);
+    } else if (strcmp(name, "ask") == 0) {
+        /* Blocking, so it goes through the port for the same layering reason `todo`
+         * does and for one more: only `agent` knows the run id, the round and how to
+         * end a wait that the bridge or a cancel interrupted (`tools/ask.md`).
+         * The answer is one buffer, so the result object is built here. */
+        if (ctx->ask.ask == NULL) {
+            set_why(why, why_cap, "ask is unavailable in this build");
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        const char *question = json_string(json_get(args, "question"));
+        char answer[TOOLS_ASK_ANSWER_MAX + 1] = "";
+        const char *code = "E_TOOL";
+        err = ctx->ask.ask(question, json_get(args, "options"), answer, sizeof answer,
+                           &code, why, why_cap, ctx->ask.ctx);
+        if (err != ESP_OK) {
+            if (wire_code != NULL) *wire_code = code;
+            return err;
+        }
+        *out = json_new_object();
+        if (*out == NULL) return ESP_ERR_NO_MEM;
+        json_add_string(json_root(*out), "question", question != NULL ? question : "");
+        json_add_string(json_root(*out), "answer", answer);
     } else {
         set_why(why, why_cap, "unknown tool");
         if (wire_code != NULL) *wire_code = "E_TOOL";

@@ -24,7 +24,7 @@
 
 /* `03-config.md` §tools: the built-in names are frozen (`00-overview.md` §7) and a
  * declarative file cannot redefine one. */
-#define TOOLS_MAX_BUILTINS 26
+#define TOOLS_MAX_BUILTINS 27
 /* `03-config.md` §tools: `/tools/` `.json` is capped at 16 entries. */
 #define TOOLS_MAX_DECLARED 16
 /* `02-firmware.md` §7.1: `tools_json` carries built-ins, declarative and MCP
@@ -134,6 +134,36 @@ typedef struct {
     void *ctx;
 } tools_todo_port_t;
 
+/* `tools/ask.md` §Limits: the question is one sentence a person can read on a
+ * 20-row terminal, and the answer is the same size so a typed reply cannot outgrow
+ * the result slot. Both bounds are enforced here rather than in `agent`, because
+ * `tools` is the layer that may not call upward. */
+#define TOOLS_ASK_QUESTION_MAX 512
+#define TOOLS_ASK_OPTION_MAX 64
+#define TOOLS_ASK_OPTIONS_MAX 8
+#define TOOLS_ASK_ANSWER_MAX 512
+
+/* `tools/ask.md` §Limits: the two bounds no schema can state. Pure, so the host
+ * suite proves them instead of a board. */
+bool tools_ask_args_ok(const json_node_t *question, const json_node_t *options,
+                       char *why, size_t why_cap);
+
+/* The `ask` port. A question goes to the person at the bridge and the call blocks
+ * until they answer, so the wait cannot live in `tools` — that layer may not own a
+ * task, a timer or a link frame. `ask` calls this and gets either an answer or the
+ * reason there was none; installing it is what makes `ask` callable at all
+ * (`tools/ask.md` §Why it is not a local call).
+ *
+ * `answer` is written only on ESP_OK. `code` receives the `04` §5 wire code for a
+ * failure — `E_TIMEOUT`, `E_CANCELLED`, or `E_TOOL` when the question could not be
+ * sent at all — because only the installer knows which ending occurred. */
+typedef struct {
+    esp_err_t (*ask)(const char *question, const json_node_t *options,
+                     char *answer, size_t answer_cap, const char **code,
+                     char *why, size_t why_cap, void *ctx);
+    void *ctx;
+} tools_ask_port_t;
+
 /* `MCP_NAME_MAX`, `MCP_DESC_MAX` and `MCP_SCHEMA_MAX` bound one discovered tool;
  * `tools_context_t` carries `mcp_tool_t` arrays from `mcp.h` rather than a second
  * copy of the same three fields. */
@@ -143,6 +173,8 @@ typedef struct {
     tools_policy_t policy;
     /* Installed by `agent`; NULL means `todo` is refused as unavailable. */
     tools_todo_port_t todo;
+    /* Installed by `agent`; NULL means `ask` is refused as unavailable. */
+    tools_ask_port_t ask;
     /* `tools.memory_max_bytes`; the memory tools enforce it. */
     size_t memory_max_bytes;
     /* `tools.i2c_sda` / `tools.i2c_scl`, or < 0 when the bus is not configured:

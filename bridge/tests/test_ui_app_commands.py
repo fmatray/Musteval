@@ -803,8 +803,12 @@ async def test_wifi_list_and_edit_and_providers_reach_their_editors():
         # `/wifi list` answers in chat: it reads two frames and writes rows, so it
         # has no picker to answer.
         app.submit("/wifi list")
-        await _await_chat(pilot, app, "home")
-        assert "joined" in _text(app)
+        # Wait on the table row, not the SSID: `wifi up (home)` is drawn from the
+        # status frame and arrives before `/wifi list` has fetched and written any
+        # row, so waiting on "home" raced the render and the assertion below read a
+        # chat that held the status line only.
+        await _await_chat(pilot, app, "joined")
+        assert "home" in _text(app)
         for command in ("/wifi edit", "/providers"):
             seen.clear()
             app.submit(command)

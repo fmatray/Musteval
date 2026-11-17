@@ -117,6 +117,27 @@ static esp_err_t validate_root(const char *members, char *why, size_t cap)
     return validate(src, why, cap);
 }
 
+TEST_CASE("the ask timeout is refused outside its documented bounds", "[cfg][ask]")
+{
+    /* `03-config.md` §Full schema: 10..600. Without this row the key is an unknown
+     * key (rule 4) and a config that set it would be rejected outright, so the
+     * accept case matters as much as the two refusals. */
+    char why[128] = "";
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK,
+                              validate_root("\"agent\":{\"ask_timeout_s\":120}",
+                                            why, sizeof why),
+                              why);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"agent\":{\"ask_timeout_s\":9}", why,
+                                    sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "ask_timeout_s"));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      validate_root("\"agent\":{\"ask_timeout_s\":601}", why,
+                                    sizeof why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "ask_timeout_s"));
+}
+
+
 static esp_err_t validate_refusal(const char *members, char *why, size_t cap)
 {
     char src[768];

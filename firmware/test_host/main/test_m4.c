@@ -869,13 +869,16 @@ TEST_CASE("the net.ping tool is registered and valid", "[m4]")
     json_free(empty);
 }
 
-TEST_CASE("the builtin registry contains exactly twenty-six tools", "[m4]")
+TEST_CASE("the builtin registry contains exactly twenty-seven tools", "[m4]")
 {
     size_t count = 0;
     const tools_builtin_t *list = tools_builtins(&count);
     TEST_ASSERT_EQUAL(TOOLS_MAX_BUILTINS, count);
-    TEST_ASSERT_EQUAL(26, count);
-    TEST_ASSERT_EQUAL_STRING("net.ping", list[count - 1].name);
+    /* The literal is the count `00-overview.md` §7 freezes. It is here rather than
+     * derived from the constant so that adding a tool without moving the doc fails
+     * this test instead of silently passing. */
+    TEST_ASSERT_EQUAL(27, count);
+    TEST_ASSERT_EQUAL_STRING("ask", list[count - 1].name);
 }
 
 /* `http.get` is refused unless its host is allowlisted, exactly. */

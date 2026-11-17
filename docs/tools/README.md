@@ -28,6 +28,7 @@ with workspace confinement detailed in §6.1.
 | `web.md` | `http.get`, `weather_now`, `web_search` | HTTP and declarative tools |
 | `skills.md` | `skill.read` | Skill definition access |
 | `tasks.md` | `task.list`, `task.set` | Task management |
+| `ask.md` | `ask` | Put a question to the human |
 | `todo.md` | `todo` | RAM-only checklist |
 | `events.md` | `event.emit` | System events |
 | `geo.md` | `geo.locate` | Geolocation |

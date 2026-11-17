@@ -26,7 +26,7 @@ MAX_FROM_DEVICE_BYTES = 16384
 #: Frozen by `04-protocol.md` §2.1. Direction is a decode concern: a `pong`
 #: arriving bridge-to-device is malformed input, not a session bug.
 BRIDGE_TO_DEVICE: FrozenSet[str] = frozenset(
-    {"hello", "prompt", "cancel", "command", "secret.set", "ping", "ack"}
+    {"hello", "prompt", "cancel", "command", "secret.set", "ping", "ack", "ask.reply"}
 )
 DEVICE_TO_BRIDGE: FrozenSet[str] = frozenset(
     {
@@ -36,6 +36,7 @@ DEVICE_TO_BRIDGE: FrozenSet[str] = frozenset(
         "agent.start",
         "agent.tool",
         "agent.tool_result",
+        "agent.ask",
         "agent.thinking",
         "agent.final",
         "agent.error",
