@@ -1156,10 +1156,15 @@ class HelpModal(ModalScreen[None]):
     width: 90%;
     max-width: 104;
 }
-#help-tabs { height: auto; max-height: 100%; }
-#help-tabs > ContentSwitcher { height: auto; max-height: 100%; }
-#help-tabs TabPane { height: auto; max-height: 100%; }
-#help-tabs TabPane > VerticalScroll { width: auto; height: auto; max-height: 100%; }
+/* `17` §4: every link of the tab chain sizes from its content and carries the
+   ceiling, so the body grows to the catalogue and stops at the box. A `1fr` on any
+   link stretched the box to the screen (66 rows for a 51-row catalogue), and a
+   `width: auto` on the scroll view collapsed it to zero columns. */
+#help-tabs, #help-tabs > ContentSwitcher, #help-tabs TabPane,
+#help-tabs TabPane > VerticalScroll {
+    height: auto;
+    max-height: 100%;
+}
 """
     BINDINGS = [Binding("escape", "cancel", "Close", show=False)]
 
@@ -1168,7 +1173,12 @@ class HelpModal(ModalScreen[None]):
         self.categories = categories
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="help-box"):
+        # `17` §4: the box is the scroll view, and the title lives inside it. With a
+        # fixed title as a sibling, the tab chain's `max-height: 100%` resolved
+        # against the whole content area and counted the title's row twice, so the
+        # last row of the active catalogue was drawn one line below the border at
+        # every size.
+        with VerticalScroll(classes="help-box"):
             yield Static("Commands", classes="prompt-title")
             with TabbedContent(id="help-tabs"):
                 for name, text in self.categories.items():
