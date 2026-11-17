@@ -427,14 +427,20 @@ esp_err_t net_scan(net_scan_entry_t *out, size_t cap, size_t *count, bool *trunc
         esp_wifi_clear_ap_list();
         return ESP_OK;
     }
-    if (found > NET_SCAN_MAX) found = NET_SCAN_MAX;
+    /* A radio that saw more APs than the buffer holds is a list this call cannot
+     * return whole. `clipped` carries that out as `truncated` (§4.24 rule 3):
+     * `net_scan_condense` cannot see it, because the records beyond the cap are
+     * never handed to it and it would find `kept <= cap` and report a complete
+     * list. */
+    bool clipped = found > NET_SCAN_MAX;
+    uint16_t want = clipped ? NET_SCAN_MAX : found;
 
     /* The driver's records are ~100 bytes each; on the agent task's stack a 20-entry
      * array would be 2 KiB, so it is a static. Dispatch is single-threaded
      * (`02-firmware.md` §4.16) and a scan is not `E_BUSY`-safe against anything else,
      * so nothing else is in this buffer. */
     static wifi_ap_record_t s_records[NET_SCAN_MAX];
-    uint16_t got = found;
+    uint16_t got = want;
     err = esp_wifi_scan_get_ap_records(&got, s_records);
     /* Free the driver's copy whether or not it was read: a scan that is not cleared
      * leaks the list until the next one. */
@@ -459,7 +465,10 @@ esp_err_t net_scan(net_scan_entry_t *out, size_t cap, size_t *count, bool *trunc
     }
     *count = n;
     net_scan_condense(out, count, cap, truncated);
-    ESP_LOGI(TAG, "scan: %u in range, %u reported", (unsigned)got, (unsigned)*count);
+    /* After `condense`, which clears the flag on entry: the drop happened at the
+     * driver boundary, not in the condensing. */
+    if (clipped && truncated != NULL) *truncated = true;
+    ESP_LOGI(TAG, "scan: %u in range, %u reported", (unsigned)found, (unsigned)*count);
     return ESP_OK;
 }
 
