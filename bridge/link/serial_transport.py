@@ -99,6 +99,16 @@ class SerialTransport(Transport):
             raise TransportError(f"cannot open {self._port}: {exc}") from exc
         self._serial = port
         self._queue = asyncio.Queue()
+        # The reader thread of a previous session put its `None` end-of-stream
+        # sentinel (and possibly a final line) on this queue. Draining it here is
+        # what makes a reconnect read the new port: a sentinel left over from the
+        # old one is taken for "the peer vanished" on the first `read_line`, so
+        # every cycle after the first disconnect reported the link lost instantly.
+        while True:
+            try:
+                self._pending.get_nowait()
+            except queue.Empty:
+                break
         self._closed.clear()
         self._thread = threading.Thread(target=self._reader, name="bridge-reader", daemon=True)
         self._thread.start()

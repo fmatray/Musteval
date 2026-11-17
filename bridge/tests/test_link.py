@@ -573,3 +573,48 @@ async def test_closing_a_transport_that_was_never_opened_is_not_an_error():
     transport = SerialTransport("/dev/never-opened")
     await transport.close()
     assert transport._serial is None
+
+
+async def test_reopening_a_transport_reads_the_new_session_not_the_old_sentinel(monkeypatch):
+    """A reconnect must not inherit the previous session's end-of-stream marker.
+
+    `Session._supervise` calls `transport.open()` again on every retry and
+    `transport.close()` between them. `close` leaves the previous reader's `None`
+    on the thread-to-loop queue, and the old `open` did not clear it, so the first
+    `read_line` after every reconnect returned that stale sentinel: the session
+    reported the link lost before the device had sent anything. Observed as a
+    bridge that could connect once per process and never again.
+    """
+
+    class Port:
+        in_waiting = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def write(self, data):
+            pass
+
+        def flush(self):
+            pass
+
+        def read(self, size):
+            time.sleep(0.005)
+            return b""
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("bridge.link.serial_transport.serial.Serial", Port)
+    transport = SerialTransport("/dev/irrelevant", read_timeout=0.02)
+    await transport.open()
+    await transport.close()
+    await transport.open()
+    try:
+        # The new session is quiet; the only thing on the queue is the sentinel
+        # this test planted by closing once. A drained queue means `read_line`
+        # waits for the device instead of reporting it gone.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(transport.read_line(), 0.05)
+    finally:
+        await transport.close()
