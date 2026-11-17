@@ -2596,6 +2596,24 @@ TEST_CASE("agent_parse_reply records a truncated content length", "[m4]")
     TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
     TEST_ASSERT_EQUAL_size_t(AGENT_TEXT_MAX - 1, reply->content_len);
     TEST_ASSERT_EQUAL_size_t(AGENT_TEXT_MAX - 1, strlen(reply->content));
+    /* The cut must be *reported*, not just performed: `agent.final` derives both
+     * `truncated` and `full_bytes` from this, so a zero here emits a cut answer as a
+     * whole one (§3.14). */
+    TEST_ASSERT_EQUAL_size_t(AGENT_TEXT_MAX + 9, reply->content_full);
+    free(reply);
+}
+
+/* The other half: a short answer is not flagged, so a complete reply cannot be
+ * reported as truncated by the same field. */
+TEST_CASE("agent_parse_reply leaves content_full zero for a whole answer", "[m4]")
+{
+    static const char *body =
+        "{\"choices\":[{\"message\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}";
+    agent_reply_t *reply = (agent_reply_t *)calloc(1, sizeof(agent_reply_t));
+    TEST_ASSERT_NOT_NULL(reply);
+    TEST_ASSERT_EQUAL_INT(ESP_OK, agent_parse_reply(body, strlen(body), reply));
+    TEST_ASSERT_EQUAL_size_t(5, reply->content_len);
+    TEST_ASSERT_EQUAL_size_t(0, reply->content_full);
     free(reply);
 }
 

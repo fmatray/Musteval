@@ -43,14 +43,17 @@ static bool copy_arguments(char *dst, size_t cap, const json_node_t *node)
 }
 
 /* Copy one string into the reply's `content` field, truncating at the frame cap.
- * `04` §3.14 makes truncation a reported fact, not a silent one; the loop shortens
- * and sets `truncated`. An over-long body is a provider reply the frame cannot carry
- * either way, so it is copied truncated and the length recorded, letting one code
- * path decide. */
+ * `04` §3.14 makes truncation a reported fact, not a silent one; the cut length is
+ * recorded and the real length kept in `content_full`. An over-long body is a
+ * provider reply the frame cannot carry either way, so it is copied truncated and
+ * the length recorded, letting one code path decide. */
 static void copy_content(agent_reply_t *out, const char *text)
 {
     size_t n = strlen(text);
-    if (n >= sizeof out->content) n = sizeof out->content - 1;
+    if (n >= sizeof out->content) {
+        out->content_full = n;
+        n = sizeof out->content - 1;
+    }
     memcpy(out->content, text, n);
     out->content[n] = '\0';
     out->content_len = n;

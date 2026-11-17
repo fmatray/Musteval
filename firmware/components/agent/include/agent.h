@@ -286,6 +286,11 @@ typedef struct {
 typedef struct {
     char content[AGENT_TEXT_MAX];
     size_t content_len;
+    /* The answer's real length when `content` had to be cut, else 0. Without it the
+     * emit path cannot tell a cut answer from a complete one: `content_len` is the
+     * cut length either way, so `04` §3.14's `truncated` would be false for the one
+     * case it exists to report. */
+    size_t content_full;
     agent_tool_call_t calls[AGENT_MAX_TOOL_CALLS];
     size_t call_count;
     int32_t prompt_tokens;

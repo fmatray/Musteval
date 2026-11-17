@@ -568,14 +568,23 @@ static void emit_agent_final(const char *run_id, const char *reply_to,
     const char *model = NULL;
     llm_last_answer(&provider, &model);
 
-    bool truncated = text_bytes > AGENT_TEXT_MAX || reply_truncated;
-    size_t emit_len = truncated ? AGENT_TEXT_MAX : text_bytes;
+    /* Two causes, two meanings (`04` §3.14). `full_bytes` exists only when the
+     * 16384-byte cap cut the text; a provider that stopped at its own output limit
+     * has no longer version to report, so the field is absent and the boolean alone
+     * says the answer is a prefix.
+     *
+     * No clamp on `text_bytes`: `copy_content` is the only writer of `content` and it
+     * never records more than the buffer holds, so a cut is already visible as
+     * `content_full > 0`. Clamping here on the truncation flag instead was the defect
+     * — it copied the whole frame budget from a text the provider had cut short. */
+    bool cut = full_bytes > 0;
+    bool truncated = cut || reply_truncated;
     json_doc_t *body = json_new_object();
     if (body == NULL) return;
     json_node_t *root = json_root(body);
     json_add_string(root, "run_id", run_id);
-    memcpy(s_final_text, text, emit_len);
-    s_final_text[emit_len] = '\0';
+    memcpy(s_final_text, text, text_bytes);
+    s_final_text[text_bytes] = '\0';
     json_add_string(root, "text", s_final_text);
 
     json_node_t *usage = json_add_object(root, "usage");
@@ -590,7 +599,7 @@ static void emit_agent_final(const char *run_id, const char *reply_to,
     json_add_int(root, "duration_ms", duration_ms);
     json_add_bool(root, "truncated", truncated);
     json_add_bool(root, "todo_open", todo_open);
-    if (truncated) json_add_int(root, "full_bytes", (int64_t)full_bytes);
+    if (cut) json_add_int(root, "full_bytes", (int64_t)full_bytes);
     link_emit_body("agent.final", agent_frame_id(), now_s(), reply_to, body);
     json_free(body);
 }
@@ -1058,7 +1067,7 @@ static void run_once(const agent_job_t *job, int32_t queue_depth)
     emit_agent_final(s_run_id, job->reply_to, s_reply->content, s_reply->content_len,
                      prompt_tokens, completion_tokens, rounds, todo_open,
                      (esp_timer_get_time() - started_ms) / 1000,
-                     s_reply->content_len,
+                     s_reply->content_full,
                      strcmp(s_reply->finish_reason, AGENT_FINISH_LENGTH) == 0);
     finalized = true;
 
