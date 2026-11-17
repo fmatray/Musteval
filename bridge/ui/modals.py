@@ -13,9 +13,8 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import (
+    DataTable,
     Input,
-    ListItem,
-    ListView,
     OptionList,
     LoadingIndicator,
     Select,
@@ -1146,28 +1145,31 @@ class InfoModal(ModalScreen[None]):
 
 class ContextModal(ModalScreen[None]):
     """`05` §7.5: `/context` in two panes — the blocks of the next request on the
-    left, the selected block's text on the right.
+    left as a table, the selected block's text on the right.
 
     A modal rather than a screen for the `help` reason (`05` §5.6): the composer keeps
     its half-typed prompt, and this is a glance at a budget rather than a place to
     work.
 
-    The right pane is empty until a block is selected. It is deliberately not
-    pre-filled with the first block: a reader opening `/context` is asking what the
-    next request is made of, and a pane showing text they did not ask for reads as
-    the answer to a question they have not asked yet.
+    The left pane is a `DataTable` with four columns — block, bytes, share of the
+    budget, item count — because the numbers are compared against each other and a
+    one-line `ListView` row cannot line them up. The right pane is empty until a block
+    is selected: a reader opening `/context` is asking what the next request is made
+    of, and a pane showing text they did not ask for reads as the answer to a
+    question they have not asked yet.
     """
 
     CSS = _CSS + """
 .context-box {
-    /* `17` §4: same rule as `.info-box` — a percentage so the gutter survives a
-       60-column terminal, a column cap so the text keeps a readable measure. The cap
-       is 120 columns for the right pane plus the 22-column list, the box's two
-       columns of border and its four of padding, so the pane beside the list is
-       exactly the 120-column measure the task names. A `124` box (the `/context`
-       width before the split) leaves 96. */
-    width: 96%;
-    max-width: 148;
+    /* `17` §4: the box takes the terminal so the pane gets its 120-column measure,
+       capped so a wide terminal does not stretch the text past it. The cap is
+       arithmetic against what the pane loses inside the box: 120 of text, 34 of
+       table, two of border, four of padding. `width: 100%` already excludes the
+       margin, so a terminal 164 columns wide is the narrowest that reaches the cap.
+       A `96%` width never reached it at all — at a 120-column terminal it left the
+       pane 71 wide — because a percentage of the terminal is not the measure. */
+    width: 100%;
+    max-width: 160;
 }
 .context-title { text-style: bold; }
 #context-panes {
@@ -1175,13 +1177,14 @@ class ContextModal(ModalScreen[None]):
     max-height: 100%;
 }
 #context-blocks {
-    /* `17` §4: the list is one row per block, so it is content-sized; eight blocks
-       never outgrow the pane the terminal allows. */
-    width: 22;
+    /* `17` §4: eight rows of table, so content-sized under the box's cap. The 34
+       columns are the four headers and the widest cell each holds: `assistant
+       thinking` is the longest label, and a byte count in a 16 KiB budget is five
+       digits. */
+    width: 34;
     height: auto;
     max-height: 100%;
 }
-#context-blocks > ListItem { padding: 0 1; }
 #context-body {
     /* `17` §4: the right pane is the variable part, so it is the scroll view, and
        `auto` under a 40-row cap is the whole point of it: an empty pane is one row
@@ -1196,8 +1199,8 @@ class ContextModal(ModalScreen[None]):
 """
     BINDINGS = [
         Binding("escape", "cancel", "Close", show=False),
-        # `05` §7.5: `Enter` on the list selects, which `ListView` does with
-        # `Selected`, so there is no binding for it here.
+        # `05` §7.5: `Enter` on the table selects, which `DataTable` does with
+        # `RowSelected`, so there is no binding for it here.
     ]
 
     def __init__(self, result: dict[str, Any]) -> None:
@@ -1205,15 +1208,16 @@ class ContextModal(ModalScreen[None]):
         self.result = result
         #: The block the reader has selected, or `None` for the empty right pane.
         self.selected: str | None = None
-        #: Filled by `on_mount` from the frame, so the list and the pane agree.
-        self.blocks: list[tuple[str, str, str, str]] = []
+        #: Filled by `on_mount` from the frame, so the table and the pane agree.
+        self.blocks: list[tuple[str, str, str, str, str]] = []
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(classes="context-box"):
             yield Static("Context", classes="context-title")
             yield Static(context_summary(self.result), classes="context-counter")
             with Horizontal(id="context-panes"):
-                yield ListView(id="context-blocks")
+                yield DataTable(id="context-blocks", cursor_type="row",
+                                zebra_stripes=True)
                 # The pane is a scroll view, not a `Static`: a whole prompt runs past
                 # 40 rows and a clipped pane would hide the end of the block the reader
                 # asked for. `markup=False` on the inner `Static` because the block
@@ -1225,12 +1229,15 @@ class ContextModal(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self.blocks = context_blocks(self.result)
-        view = self.query_one("#context-blocks", ListView)
-        # Two columns inside each row, because a `ListView` row is one line: the
-        # counter first (`04` §4.30's item count) then the share of the budget, which
-        # is the pair the doc's left column names.
-        for key, label, counter, share in self.blocks:
-            view.append(ListItem(Static(f"{label}  {counter}  {share}"), id=f"ctx-{key}"))
+        table = self.query_one("#context-blocks", DataTable)
+        # The four columns are one row's answer to "what is this and what does it
+        # cost", in the order a reader reads it: the name, then the two measures, then
+        # the count. Cell keys are `ctx-<block>`, so the selection needs no second map
+        # beside the one `context_blocks` already returned.
+        table.add_columns("block", "bytes", "share", "items")
+        for key, label, size, share, counter in self.blocks:
+            table.add_row(label, size, share, counter, key=f"ctx-{key}")
+        table.focus()
 
     class RequestBlock(Message):
         """Asks the app to send `context.block` for this key.
@@ -1244,18 +1251,18 @@ class ContextModal(ModalScreen[None]):
             super().__init__()
             self.block = block
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """`05` §7.5: selecting a block asks the device for that block's text.
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """`05` §7.5: selecting a row asks the device for that block's text.
 
-        The event carries the list item, and the item's id is `ctx-<key>`, so the key
-        needs no second map beside the one `context_blocks` already returned.
+        The event carries the row key, which is `ctx-<key>`: a key rather than a row
+        index, because a row index is a position in a table the frame built and a key
+        is the block itself.
         """
-        # No guard on `event.item`: every row this list is built with carries an id,
-        # and a guard no caller can reach is a branch the gate pays for.
-        item = event.item
-        key = item.id.removeprefix("ctx-")
+        key = str(event.row_key.value).removeprefix("ctx-")
         self.selected = key
-        self.query_one("#context-text", Static).update("asking the device for this block…")
+        self.query_one("#context-text", Static).update(
+            "asking the device for this block…"
+        )
         self.post_message(self.RequestBlock(key))
 
     def show_block(self, block: str, text: str, truncated: bool) -> None:

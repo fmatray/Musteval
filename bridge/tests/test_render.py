@@ -494,25 +494,35 @@ def test_context_blocks_name_every_block_in_the_documents_order() -> None:
         "tool_calls": 4,
         "tool_output": 4,
     }
-    blocks = {"system_prompt": 4096, "tools": 1638, "user": 40}
+    # A device reply carries all eight: a measured zero and an absent block are
+    # different answers, and only the second is an em dash.
+    blocks = {
+        "system_prompt": 4096, "skills": 0, "tools": 1638, "user": 40,
+        "assistant": 0, "thinking": 0, "tool_calls": 0, "tool_output": 0,
+    }
     rows = context_blocks({"budget": 16384, "counts": counts, "blocks": blocks})
-    assert [key for key, _, _, _ in rows] == [
+    assert [key for key, *_ in rows] == [
         "system_prompt", "skills", "tools", "user", "assistant", "thinking",
         "tool_calls", "tool_output",
     ]
-    assert [label for _, label, _, _ in rows] == [
+    assert [label for _, label, *_ in rows] == [
         "system prompt", "skills", "tools", "user messages", "assistant messages",
         "assistant thinking", "tool calls", "tool outputs",
     ]
     # The counter is the item count, and `thinking`'s zero is a measurement rather
     # than an omission: the trace never enters the history.
-    assert [counter for _, _, counter, _ in rows] == [
+    assert [counter for *_, counter in rows] == [
         "—", "3", "18", "2", "1", "0", "4", "4"
     ]
     # The share is the block's byte share of the budget, so "what can I drop" and
     # "what is in there" are answered from the same row.
-    assert [share for _, _, _, share in rows] == [
+    assert [share for _, _, _, share, _ in rows] == [
         "25%", "0%", "9%", "0%", "0%", "0%", "0%", "0%"
+    ]
+    # The size column is the block's measured bytes, so the four columns of one row
+    # are that block's answer and a reader never has to line up two lists.
+    assert [size for _, _, size, _, _ in rows] == [
+        "4096", "0", "1638", "40", "0", "0", "0", "0"
     ]
 
 
@@ -520,22 +530,26 @@ def test_context_blocks_show_an_em_dash_for_a_block_with_no_measurement() -> Non
     """`system_prompt` is one document, so the device sends no counter for it, and a
     reply with no `budget` makes no share measurable.
 
-    A zero would be an answer and would tell a reader there is no prompt.
+    A zero would be an answer and would tell a reader there is no prompt, or that a
+    block takes none of the budget.
     """
-    rows = context_blocks({"counts": {"user": 1}})
+    rows = context_blocks({"counts": {"user": 1}, "blocks": {"user": 10}})
     prompt = next(row for row in rows if row[0] == "system_prompt")
-    assert prompt[2] == "—"
+    assert prompt[4] == "—"
     # No budget in the reply: no share is measurable, which is not "0%".
     assert prompt[3] == "—"
-    assert next(row for row in rows if row[0] == "user")[2] == "1"
+    user = next(row for row in rows if row[0] == "user")
+    assert (user[2], user[4]) == ("10", "1")
+    assert user[3] == "—"
 
 
 def test_context_blocks_survive_a_reply_that_omits_the_counts() -> None:
     """A malformed or older reply lists the blocks with no numbers, not nothing."""
     rows = context_blocks({})
     assert len(rows) == 8
-    assert {counter for _, _, counter, _ in rows} == {"—"}
-    assert {share for _, _, _, share in rows} == {"—"}
+    assert {counter for *_, counter in rows} == {"—"}
+    assert {share for _, _, _, share, _ in rows} == {"—"}
+    assert {size for _, _, size, _, _ in rows} == {"—"}
 
 
 def test_context_blocks_treat_a_non_numeric_measurement_as_unmeasured() -> None:
@@ -547,13 +561,14 @@ def test_context_blocks_treat_a_non_numeric_measurement_as_unmeasured() -> None:
         {"budget": "many", "blocks": {"skills": "big", "tools": None},
          "counts": {"skills": "lots", "tools": 18}}
     )
-    by_key = {key: (counter, share) for key, _, counter, share in rows}
+    by_key = {key: (size, share, counter) for key, _, size, share, counter in rows}
     # An unmeasurable size has no share, and an unmeasurable count is not a zero.
-    assert by_key["skills"] == ("—", "—")
+    assert by_key["skills"] == ("—", "—", "—")
     # No usable budget means no share, even for a block whose size is known: a share of
-    # zero is a claim about a budget the reply did not give.
-    assert by_key["tools"] == ("18", "—")
-    assert by_key["system_prompt"] == ("—", "—")
+    # zero is a claim about a budget the reply did not give. A `null` size is unmeasured,
+    # which is not the same as a measured zero.
+    assert by_key["tools"] == ("—", "—", "18")
+    assert by_key["system_prompt"] == ("—", "—", "—")
 
 
 def test_context_summary_reads_the_frames_own_totals() -> None:

@@ -193,19 +193,25 @@ CONTEXT_BLOCKS = (
 )
 
 
-def context_blocks(result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
-    """`04` §4.30's answer as the left pane's rows: `(key, label, counter, share)`.
+def context_blocks(
+    result: dict[str, Any],
+) -> list[tuple[str, str, str, str, str]]:
+    """`04` §4.30's answer as the left pane's columns.
 
-    The counter is the item count from `counts`, not the byte count from `blocks`,
-    because a reader looking at "skills 3" is asking how many skills are in the index,
-    and one looking at "user messages 2" is asking how many turns there are. The share
-    is the block's byte share of the reply's own `budget` for the same reason
-    `/context` has always shown it: the counters say what is in the request, the share
-    says where the budget went, and a reader needs both to answer "what can I drop".
+    One row per block, in the order the document lists them, as
+    `(key, label, size, share, counter)`: what the block is, how many bytes it takes,
+    what share of `LLM_BODY_MAX` that is, and how many items it holds.
 
-    A block with no counter in `counts` gets an em dash rather than a zero: a zero is
-    a measured answer, and `system_prompt` is the one block the device does not count
-    because it is a single document.
+    The four columns are one row because they answer one question — a reader looking
+    at "tools 5200 31% 18" is deciding what to drop, and splitting the numbers across
+    two rows or two screens would make them compare a number against a label.
+
+    The counter is the item count from `counts`, not the byte count: a reader looking
+    at "skills 3" is asking how many skills are in the index. A block with no counter
+    gets an em dash rather than a zero, because a zero is a measured answer and
+    `system_prompt` is one document. The size is `blocks`, and a reply that omits
+    either map still lists all eight rows — a block missing from the list reads as one
+    the device cannot report, and the reader cannot tell that from a measured nothing.
     """
     counts = result.get("counts")
     if not isinstance(counts, dict):
@@ -217,7 +223,7 @@ def context_blocks(result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
         budget = int(result.get("budget") or 0)
     except (TypeError, ValueError):
         budget = 0
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for key, label in CONTEXT_BLOCKS:
         if key in counts:
             try:
@@ -226,14 +232,21 @@ def context_blocks(result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
                 counter = "—"
         else:
             counter = "—"
-        share = "—"
+        # `17` §4: the device's value is data, and a string where a number belongs is
+        # the reply's, not the bridge's to crash on — the compositor is behind this.
+        # A block the reply did not measure is an em dash, not a zero: eight rows are
+        # drawn from the document's list, and one the frame omitted has no size to
+        # show rather than a measured none.
+        measure, share = "—", "—"
         try:
-            size = int(blocks.get(key) or 0)
-        except (TypeError, ValueError):
-            size = 0
-        if budget > 0:
-            share = f"{size * 100 // budget}%"
-        rows.append((key, label, counter, share))
+            size = int(blocks[key])
+        except (KeyError, TypeError, ValueError):
+            size = None
+        if size is not None:
+            measure = str(size)
+            if budget > 0:
+                share = f"{size * 100 // budget}%"
+        rows.append((key, label, measure, share, counter))
     return rows
 
 

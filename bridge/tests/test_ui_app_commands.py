@@ -565,14 +565,15 @@ async def test_a_refused_clear_keeps_the_pane():
 
 
 async def test_context_opens_the_split_box_with_an_empty_right_pane():
-    """`05` §7.5: `/context` asks the device for the eight blocks and shows them in one
-    split box, with the right pane empty until a row is selected.
+    """`05` §7.5: `/context` asks the device for the eight blocks and shows them as a
+    table, with the right pane empty until a row is selected.
 
-    Two things are worth pinning: it must reach the wire (a host-side estimate would be
-    a number the device contradicts), and every block must be listed with its counter —
-    a table that silently dropped the empty ones would leave the reader unable to tell
-    "no thinking" from "not measured". The empty pane is the third: showing a block the
-    reader has not asked for reads as the answer to a question they have not asked.
+    Three things are worth pinning: it must reach the wire (a host-side estimate would
+    be a number the device contradicts), every block must be listed with its size, its
+    share and its counter — a table that silently dropped the empty ones would leave
+    the reader unable to tell "no thinking" from "not measured" — and the pane must
+    stay empty, because showing a block the reader has not asked for reads as the
+    answer to a question they have not asked.
     """
 
     async def body(app, pilot):
@@ -584,13 +585,22 @@ async def test_context_opens_the_split_box_with_an_empty_right_pane():
         sent = [f for f in _frames(app) if f.get("name") == "context.budget"]
         assert sent, "the bridge answered from the host instead of asking the device"
 
-        view = app.screen.query_one("#context-blocks")
-        rows = [str(item.query_one("Static").render()) for item in view.children]
-        assert len(rows) == 8, rows
-        # The counters are the frame's, beside the block they count.
-        assert any("skills" in row and " 2 " in row for row in rows), rows
-        assert any("tools" in row and " 18 " in row for row in rows), rows
-        assert any("assistant thinking" in row and " 0 " in row for row in rows), rows
+        table = app.screen.query_one("#context-blocks")
+        assert [str(col.label) for col in table.columns.values()] == [
+            "block", "bytes", "share", "items"
+        ]
+        assert table.row_count == 8, table.row_count
+        rows = [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        by_block = {row[0]: row for row in rows}
+        # The four columns of one row are that block's answer: the counters are the
+        # frame's, and they sit beside the block they count rather than in a second
+        # list the reader has to line up.
+        assert by_block["skills"][3] == "2", rows
+        assert by_block["tools"][3] == "18", rows
+        assert by_block["assistant thinking"][3] == "0", rows
+        # The size and the share come from the frame too.
+        assert by_block["tools"][1] == "160", rows
+        assert by_block["tools"][2] == "0%", rows
 
         # Nothing is fetched for a block the reader has not selected, and the pane
         # says nothing rather than showing an arbitrary block.
@@ -616,18 +626,14 @@ async def test_selecting_a_context_block_fills_the_right_pane():
         await _until(pilot, lambda: isinstance(app.screen, ContextModal))
         await pilot.pause(0.1)
         modal = app.screen
-        view = modal.query_one("#context-blocks")
+        table = modal.query_one("#context-blocks")
 
-        view.focus()
-        view.action_cursor_down()
-        await pilot.pause(0.1)
-        view.action_cursor_down()
+        table.focus()
+        # The `skills` row is row 1, and `Enter` selects the row the cursor is on —
+        # that is the gesture, so it is driven here the way a reader drives it rather
+        # than by calling the handler.
+        table.move_cursor(row=1)
         await pilot.press("enter")
-        await _until(
-            pilot,
-            lambda: modal.query_one("#context-text").render() != "",
-        )
-        # Two rows down from the first row is `skills`.
         await _until(
             pilot,
             lambda: "text of" in str(modal.query_one("#context-text").render()),

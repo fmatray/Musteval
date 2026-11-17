@@ -577,6 +577,39 @@ async def test_every_modal_keeps_a_one_row_two_column_gutter(size):
     assert not bad, bad
 
 
+async def test_the_context_box_gives_its_right_pane_the_measure_it_names() -> None:
+    """`17` §4: a two-pane box names its measure in characters, and the cap is
+    arithmetic against the box's own chrome.
+
+    This is the rule that was wrong: `96%` never reached a 160-column cap, so at a
+    120-column terminal the pane the doc promises 120 columns was 71 wide. The width is
+    now the terminal, capped; the pane gets its 120 when the cap is reachable and the
+    table keeps its 34 either way.
+    """
+    from bridge.ui.modals import ContextModal
+
+    result = {
+        "budget": 16384, "used": 1304, "free": 15080, "messages": 3,
+        "blocks": {"tools": 5996}, "counts": {"tools": 23},
+    }
+    from bridge.ui.testing import ModalCanvas
+
+    # A terminal wide enough for the cap, and a narrow one where the percentage wins.
+    for size, pane in [((180, 50), 120), ((120, 40), 120 - 44)]:
+        app = ModalCanvas()
+        async with app.run_test(size=size) as pilot:
+            app.push_screen(ContextModal(dict(result)))
+            await pilot.pause(0.2)
+            box = pilot.app.screen.query_one(".context-box")
+            table = pilot.app.screen.query_one("#context-blocks")
+            body = pilot.app.screen.query_one("#context-body")
+            assert table.region.width == 34, (size, table.region.width)
+            assert body.region.width == pane, (size, body.region.width, pane)
+            # The cap is 120 of pane + 34 of table + 2 of border + 4 of padding, so a
+            # terminal past it must not widen the box any further.
+            assert box.region.width <= 160, (size, box.region.width)
+
+
 # Content that would paint past the box's inside border, per modal, to prove the box
 # either grows or scrolls. Two ways in: content longer than the screen, and a child
 # that claims fewer rows than it paints (`LoadingIndicator` reports one row for an

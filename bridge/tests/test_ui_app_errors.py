@@ -205,10 +205,11 @@ async def test_a_block_read_that_fails_says_so_and_leaves_the_pane_alone():
         # Broken after the box opened: the budget read is what opens it, so breaking
         # the link first would test that the box never appears instead of the pane.
         app.session.request = broken  # type: ignore[assignment]
-        view = modal.query_one("#context-blocks")
-        view.focus()
-        view.action_cursor_down()
-        view.action_cursor_down()
+        # Row 1 is `skills`; `Enter` selects the row the cursor is on, which is the
+        # gesture a reader uses rather than a handler called directly.
+        table = modal.query_one("#context-blocks")
+        table.focus()
+        table.move_cursor(row=1)
         await pilot.press("enter")
         await _await_chat(pilot, app, "the block could not be read")
         assert "the block could not be read" in _text(app)

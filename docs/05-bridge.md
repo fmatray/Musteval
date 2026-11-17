@@ -1256,27 +1256,35 @@ model's request unchanged, which is the failure mode worth naming.
 on the left, the selected block's content on the right. It is a glance at a budget,
 not a place to work, which is why it is a modal rather than a screen.
 
-| Left column | Right column |
+| Left pane | Right pane |
 |---|---|
-| one row per block, with its item count and its share of `LLM_BODY_MAX` | the selected block's text, empty until a row is selected |
+| a table, one row per block: block, bytes, share of `LLM_BODY_MAX`, item count | the selected block's text, empty until a row is selected |
 
+- **The left pane is a table, not a list.** The numbers are compared against each
+  other — "tools is 37 % of the budget and 23 items, skills is 0 % and 0" — so they
+  are columns lined up under headers. A row of prose cannot do that comparison at a
+  glance, which is the only thing `/context` is for.
 - **The left rows come from `context.budget`** (`04-protocol.md` §4.30), one send for
   the whole list. The eight rows are the order the document lists them — what the
-  model is told, then what was said, then what was called — so the column reads
+  model is told, then what was said, then what was called — so the table reads
   top-down as the prompt does.
 - **The right pane comes from `context.block`** (`§4.32`), sent when a row is
   selected, not with the list: the sum of the eight blocks is most of the request
   body, and fetching them all to show one would be a second copy of the prompt on
   every `/context`.
-- **The pane is sized for a 120-column, 40-row read** and scrolls past that. A block
-  is a document, so it gets `height: auto` under a `max-height: 100%` ceiling like
-  every other box (`17-ux-rules.md` §4); the 120/40 figure is the measure it is
-  comfortable at, not a fraction of the terminal.
-- **Each row carries its counter**: skills, tools, messages by role, tool calls and
-  tool outputs. `counts.tools` is the length of the array the model is offered, so a
-  disabled tool is not counted — the number answers "what is in my context", and a
-  tool the model cannot call is not in it. `counts.skills` is the skills the index had
-  room for, not the files on disk.
+- **The right pane is sized for a 120-column, 40-row read** and scrolls past that. A
+  block is a document, so the pane is a scroll view with `height: auto` under a
+  `max-height: 40` ceiling (`17-ux-rules.md` §4); the 120/40 figure is the measure it
+  is comfortable at, not a fraction of the terminal. The box's own cap is 160 columns
+  — 120 of pane, 34 of table, two of border and four of padding — and its two-column
+  margin sits outside that, so a terminal 164 columns wide is the narrowest one where
+  the right pane gets its full 120. Below that the pane is the terminal's width minus
+  44 and scrolls inside the 120 it would have had.
+- **Each row carries its counter in the `items` column**: skills, tools, messages by
+  role, tool calls and tool outputs. `counts.tools` is the length of the array the
+  model is offered, so a disabled tool is not counted — the number answers "what is in
+  my context", and a tool the model cannot call is not in it. `counts.skills` is the
+  skills the index had room for, not the files on disk.
 - **A zero row is drawn, not dropped.** "assistant thinking 0" answers "where did my
   budget go" with the honest answer; a block missing from the list reads as one the
   device cannot report, and the reader cannot tell that from a measured nothing.
