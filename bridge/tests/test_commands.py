@@ -62,10 +62,10 @@ def test_the_four_former_top_level_commands_are_gone():
 def test_a_sys_verb_that_is_not_a_verb_is_a_usage_error_naming_the_forms():
     with pytest.raises(CommandError) as excinfo:
         parse("/sys")
-    assert str(excinfo.value) == "usage: /sys status|diag|reload|reboot|reset-counter"
+    assert str(excinfo.value) == "usage: /sys status|diag|reload|reboot|reset-counter|prompt"
     with pytest.raises(CommandError) as excinfo:
         parse("/sys restart")
-    assert str(excinfo.value) == "usage: /sys status|diag|reload|reboot|reset-counter"
+    assert str(excinfo.value) == "usage: /sys status|diag|reload|reboot|reset-counter|prompt"
 
 
 def test_rejects_a_non_slash_line():
@@ -496,7 +496,7 @@ def test_sys_reset_counter_builds_a_command():
 def test_sys_reset_counter_rejects_bad_sub():
     """A verb outside the table names every form, rather than one of the five."""
     with pytest.raises(
-        CommandError, match="usage: /sys status\\|diag\\|reload\\|reboot\\|reset-counter"
+        CommandError, match="usage: /sys status\\|diag\\|reload\\|reboot\\|reset-counter\\|prompt"
     ):
         parse("/sys bogus")
 

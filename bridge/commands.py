@@ -39,7 +39,7 @@ LOCAL_COMMANDS = frozenset(
     }
 )
 
-#: `05-bridge.md` §7 and §7.6: the verbs `/wifi` accepts, in the order the refusal
+#: `05-bridge.md` §7 and §7.7: the verbs `/wifi` accepts, in the order the refusal
 #: names them. `list` and `edit` are intercepted by the screen and only reach this
 #: arm on the `--send` path, but they are still verbs of the command.
 WIFI_VERBS = (
@@ -188,7 +188,7 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         return [_command("geo.locate")]
     if head == "wifi":
         # `05-bridge.md` §7: `scan` asks the radio, the four steer verbs ask the
-        # station, and `list`/`edit` are UI commands (§7.6) that the screen
+        # station, and `list`/`edit` are UI commands (§7.7) that the screen
         # intercepts. This arm keeps `parse` honest for the `--send` path.
         if rest == ["scan"]:
             return [_command("wifi.scan")]
@@ -294,7 +294,12 @@ def parse(text: str, state: CommandState | None = None) -> list[Frame]:
         if rest[:1] == ["reboot"]:
             _exact(rest[1:], 0, "/sys reboot")
             return [_command("reboot")]
-        raise CommandError("usage: /sys status|diag|reload|reboot|reset-counter")
+        if rest[:1] == ["prompt"]:
+            # `05` §7.6: the editor is a modal, so the UI intercepts this verb before
+            # `parse` sees it. Reaching here means a caller bypassed the screen, and
+            # silence would look like a command that did nothing.
+            raise CommandError("/sys prompt opens the editor on the chat screen")
+        raise CommandError("usage: /sys status|diag|reload|reboot|reset-counter|prompt")
 
     raise CommandError(f"unknown command: /{head}")
 

@@ -428,9 +428,9 @@ The modal itself, over whatever screen was open:
 | Help  Device | Chat | Info | Screens                         |
 +--------------------------------------------------------------+
 | Device commands                                              |
-|   /sys status|diag|reload|reboot|reset-counter               |
-|       read the device, or reload, reboot and clear its       |
-|       failure counter                                        |
+|   /sys status|diag|reload|reboot|reset-counter|prompt         |
+|       read the device, edit its system prompt, or reload,    |
+|       reboot and clear its failure counter                   |
 +--------------------------------------------------------------+
 ```
 
@@ -682,7 +682,7 @@ and key reference have to be visible before a row is chosen, and none of them is
 row's answer, so none of them may ride a label.
 
 `WifiScanForm`, `WifiCustomForm` and the wizard's steps they resemble are
-detailed in `§7.6` and `§7.1`.
+detailed in `§7.7` and `§7.1`.
 
 ## 6. Keybindings
 
@@ -780,6 +780,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/sys reload` | `command {name:"reload"}` | none | Re-reads flash configs, in chat: the reloaded scopes, then one line per warning |
 | `/sys reboot` | `command {name:"reboot"}` | none | Restarts the device, in chat: the grace period in milliseconds |
 | `/sys reset-counter` | `command {name:"sys.reset_counter"}` | none | Clears the boot-failure counter |
+| `/sys prompt` | `config.get` then `template.get` then `fs.put` | none | Opens the persona file in the editor; `Ctrl+S` writes it back (§7.6) |
 | `/sys diag` | `command {name:"status"}` | none | The same modal, opened on the counters: heap, PSRAM, safe-mode flag, boot failures, tool call counts, and the LLM hour/day counters against their caps |
 | `/tasks` | `command {name:"tasks.list"}` | none | Lists tasks in chat; also switches to the Tasks screen |
 | `/run <id>` | `command {name:"tasks.run"}` | `id` | Runs a task now; confirms in chat with the `run_id` that `/cancel` and the status screen name |
@@ -805,9 +806,9 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/wifi connect` | `command {name:"wifi.connect"}` | none | Joins the best configured network, as the boot sequence does; the join runs on its own task, so the prompt stays responsive while it waits |
 | `/wifi disconnect` | `command {name:"wifi.disconnect"}` | none | Leaves the network and stays down: the connection does not come back on its own (`04-protocol.md` §4.26) |
 | `/wifi reconnect` | `command {name:"wifi.reconnect"}` | none | Leaves and rejoins, so a link that is up but on the wrong AP is moved to the best one |
-| `/wifi list` | `command {name:"wifi.status"}`, `command {name:"wifi.scan"}` | none | One row per configured network: priority, whether it is the joined one, and its RSSI when audible (§7.6) |
-| `/wifi edit` | `command {name:"config.get"}`, `command {name:"wifi.scan"}`, `command {name:"config.set"}`, `command {name:"secret.set"}` | none | Opens the network editor: pick a known network to change its passphrase or forget it, or add one from the scan (`Ctrl+R` rescans) or by hand. Writes the whole `wifi.networks` array (§7.6) |
-| `/providers` | `command {name:"config.get"}`, `command {name:"config.set"}`, `command {name:"secret.set"}`, `command {name:"secret.delete"}` | none | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (§7.7) |
+| `/wifi list` | `command {name:"wifi.status"}`, `command {name:"wifi.scan"}` | none | One row per configured network: priority, whether it is the joined one, and its RSSI when audible (§7.7) |
+| `/wifi edit` | `command {name:"config.get"}`, `command {name:"wifi.scan"}`, `command {name:"config.set"}`, `command {name:"secret.set"}` | none | Opens the network editor: pick a known network to change its passphrase or forget it, or add one from the scan (`Ctrl+R` rescans) or by hand. Writes the whole `wifi.networks` array (§7.7) |
+| `/providers` | `command {name:"config.get"}`, `command {name:"config.set"}`, `command {name:"secret.set"}`, `command {name:"secret.delete"}` | none | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (§7.8) |
 | `/mqtt publish <srv> <topic> <payload>` | `command {name:"mqtt.publish"}` | `server_id, topic, payload` | Publishes once |
 | `/geo` | `command {name:"geo.locate"}` | none | Forces a fresh fix |
 | `/tool` | `command {name:"config.get"}`, `command {name:"config.set"}` | `tools.disabled` | Lists every offered tool with the disabled ones marked, or turns one off for the model. Verbs: `list` (the bare default), `enable <name>`, `disable <name>`; each refuses the state it would not change |
@@ -1315,7 +1316,46 @@ a run is in flight (`cancel it first, then compact`), `E_LLM_UNAVAILABLE` and
 unusable. **A failed compaction leaves the history untouched**, so the message says so
 rather than implying the conversation is now shorter.
 
-### 7.6 `/wifi list` and `/wifi edit`
+### 7.6 `/sys prompt`
+
+The persona the model is given is a file on the device, not a string in the bridge:
+`agent.system_prompt` (`03-config.md` §prompts) names a path under `/prompts/`, and
+`build_system_prompt` reads that file at the start of every run. `/sys prompt` is the
+editor for it, and it is the only writer: `fs.put` takes bytes, so no other command
+carries a file's text.
+
+1. It reads `agent.system_prompt`, and falls back to the settings table's default when
+   the device's `/config.json` does not carry the key. **The path is read, never
+   assumed** — a reader who moved the persona would otherwise edit a file no run
+   looks at.
+2. It reads the basename with `template.get`, which answers the whole file or refuses;
+   it has no truncated form, so the editor never opens on a prefix.
+3. It opens the file editor (§5.8) on that text. `Ctrl+S` writes back with `fs.put` in
+   `SANDBOX_CHUNK_BYTES` chunks, `Esc` discards.
+4. It confirms in chat: `system prompt written: N bytes at /prompts/system.md; the
+   next prompt uses it`. **No reboot is needed** and the message must not imply one —
+   the file is read per run, not held.
+
+Two refusals are local, because they are about the reader's intent rather than the
+device's state:
+
+| Gesture | Result |
+|---|---|
+| `Ctrl+S` with no change | nothing is sent; a `fs.put` of identical bytes is a flash write for no change |
+| `Ctrl+S` on an empty buffer | `empty prompt discarded; nothing written` — an empty persona would run the model with none |
+
+A third is `parse`'s, and it is a guard rather than a gesture: the verb is a modal, so a
+caller that reaches `parse` has no screen to open. It raises `/sys prompt opens the
+editor on the chat screen` instead of returning no frames, because a command that
+answers nothing reads as a hang rather than as a refusal.
+
+A refused chunk stops the upload. The device clears the staging file when a chunk is
+refused (`write_chunk_canonical` in `store.c`), because a `<name>.new` left behind is
+partial state `04` §4.16 forbids exposing; a later chunk then has no staged length to
+match and would come back `E_PROTOCOL`. Sending the rest would therefore turn one
+failure into N.
+
+### 7.7 `/wifi list` and `/wifi edit`
 
 The five `wifi.*` verbs in §7 steer the station; these two look at what it is
 configured to join and change that list. `list` is a read, `edit` is a form.
@@ -1391,7 +1431,7 @@ Every gesture writes the whole array. The order inside each follows
   array is written first; the orphaned key is harmless, and `06-security.md` keeps
   erasure a deliberate separate act.
 
-### 7.7 `/providers`
+### 7.8 `/providers`
 
 One modal: a header listing every entry of `llm.providers[]` with its `id`, `model`,
 `base_url` and the `nvs:` key its `api_key_ref` names, then one row per gesture. Every

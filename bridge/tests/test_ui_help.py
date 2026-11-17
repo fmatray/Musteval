@@ -160,15 +160,16 @@ def test_options_filters_a_unique_prefix(typed, expected):
 
 
 def test_sys_usage_names_every_verb():
-    """`05-bridge.md` §7: the five verbs are the whole surface of `/sys`."""
+    """`05-bridge.md` §7: the six verbs are the whole surface of `/sys`."""
     sys_command = next(command for command in COMMANDS if command.name == "sys")
-    assert sys_command.usage == "/sys status|diag|reload|reboot|reset-counter"
+    assert sys_command.usage == "/sys status|diag|reload|reboot|reset-counter|prompt"
 
 
 def test_every_sys_verb_has_its_own_line():
     rows = {candidate.text: candidate.help for candidate in options("/sys ")}
     assert list(rows) == [
-        "/sys status", "/sys diag", "/sys reload", "/sys reboot", "/sys reset-counter"
+        "/sys status", "/sys diag", "/sys reload", "/sys reboot",
+        "/sys reset-counter", "/sys prompt"
     ]
     assert all(rows.values()), rows
 

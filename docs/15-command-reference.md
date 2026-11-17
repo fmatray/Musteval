@@ -45,7 +45,7 @@ Column meanings:
 | `/ping llm` | `llm` | `net.ping` | The device ICMPs its active provider host |
 | `/ping ntp` | `ntp` | `net.ping` | The device ICMPs its first NTP server |
 | `/ping router` | `router` | `net.ping` | The device ICMPs its default gateway |
-| `/providers` | none | `config.get`, `config.set`, `secret.set`, `secret.delete` | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (`05-bridge.md` §7.7) |
+| `/providers` | none | `config.get`, `config.set`, `secret.set`, `secret.delete` | Opens the provider editor: add, log in to, or disconnect an `llm.providers` entry (`05-bridge.md` §7.8) |
 | `/quit` | none | (Local) | Exits the bridge |
 | `/retry` | none | `prompt` | Resends the last prompt verbatim; refused when there is none |
 | `/run <id>` | task `id` | `tasks.run` | Runs a task now and names the `run_id` |
@@ -58,6 +58,7 @@ Column meanings:
 | `/secret delete <key>` | `key` | `secret.delete` | Erases one key; refused while a config `_ref` still names it |
 | `/secret set <key>` | `key` | `secret.set` | Value is prompted, masked, and never echoed |
 | `/sys diag` | `diag` | `status` | Opens the info modal on the diagnostic half of a fresh `status`, headed `Memory`, `Boot`, `Tools`, `LLM budget` |
+| `/sys prompt` | `prompt` | `config.get`, `template.get`, `fs.put` | Opens the persona file named by `agent.system_prompt` in the editor; `Ctrl+S` writes it back, and the next run reads it (`05-bridge.md` §7.6) |
 | `/sys reboot` | `reboot` | `reboot` | Restarts the device; reports the grace period in chat |
 | `/sys reload` | `reload` | `reload` | Re-reads the flash configs; reports each reloaded scope and each warning in chat |
 | `/sys reset-counter` | `reset-counter` | `sys.reset_counter` | Clears the boot-failure counter |
@@ -91,7 +92,7 @@ Column meanings:
 | `/usage` | none | (Local) | Token totals for this link session |
 | `/wifi connect` | `connect` | `wifi.connect` | Joins the best configured network |
 | `/wifi disconnect` | `disconnect` | `wifi.disconnect` | Leaves the network and stays down |
-| `/wifi edit` | none | `config.get`, `wifi.scan`, `secret.set`, `config.set` | Opens the network editor: pick a known network to change its passphrase or forget it, or add one from the scan (`Ctrl+R` rescans) or by hand (`05-bridge.md` §7.6) |
+| `/wifi edit` | none | `config.get`, `wifi.scan`, `secret.set`, `config.set` | Opens the network editor: pick a known network to change its passphrase or forget it, or add one from the scan (`Ctrl+R` rescans) or by hand (`05-bridge.md` §7.7) |
 | `/wifi list` | none | `wifi.status`, `wifi.scan` | One row per configured network with its priority, whether it is joined, and its RSSI when audible; `unknown` when the scan was refused |
 | `/wifi reconnect` | `reconnect` | `wifi.reconnect` | Leaves and rejoins, moving to the best AP |
 | `/wifi scan` | `scan` | `wifi.scan` | Lists audible access points, strongest first |

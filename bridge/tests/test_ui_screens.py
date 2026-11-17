@@ -22,6 +22,7 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
     _text,
 )
 from bridge.ui.app import ChatScreen, LogsScreen, TasksScreen
+from bridge.ui.help import COMMANDS
 
 
 @pytest.fixture(autouse=True)
@@ -357,12 +358,15 @@ async def test_the_narrow_panel_drops_the_help_column_rather_than_wrapping():
         await pilot.pause(0.15)
         panel = chat.query_one("#completion")
         wide = str(panel.content)
-        assert "read the device, or reload, reboot" in wide
+        # Derived from the catalogue: the row this test reads is `/sys`'s, and a
+        # summary edit must not be able to make the check vacuous.
+        summary = next(c.summary for c in COMMANDS if c.name == "sys")
+        assert summary in wide
         panel.styles.width = 12
         await pilot.pause(0.2)
         chat._render_options()
         narrow = str(panel.content)
-        assert "read the device, or reload, reboot" not in narrow
+        assert summary not in narrow
         assert "/sys" in narrow, "the row itself is what must survive"
 
     await _run(_device(), body)

@@ -54,8 +54,8 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
 COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp(
         "sys",
-        "/sys status|diag|reload|reboot|reset-counter",
-        "read the device, or reload, reboot and clear its failure counter",
+        "/sys status|diag|reload|reboot|reset-counter|prompt",
+        "read the device, edit its prompt, or reload, reboot or reset",
         False,
     ),
     CommandHelp(
@@ -162,7 +162,7 @@ _SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "fs": ("put",),
     "sandbox": ("list", "read", "mkdir", "move", "delete"),
     "tool": ("list", "enable", "disable"),
-    "sys": ("status", "diag", "reload", "reboot", "reset-counter"),
+    "sys": ("status", "diag", "reload", "reboot", "reset-counter", "prompt"),
     "secret": ("delete", "set"),
     "ping": ("device", "router", "llm", "ntp"),
     "wifi": ("scan", "status", "connect", "disconnect", "reconnect", "list", "edit"),
@@ -203,6 +203,7 @@ SUBCOMMAND_HELP: dict[str, dict[str, str]] = {
         "reload": "re-read the flash configs",
         "reboot": "restart the device",
         "reset-counter": "clear the boot-failure counter",
+        "prompt": "open the system prompt in an editor",
     },
     "tool": {
         "list": "show every tool, marking the disabled ones",

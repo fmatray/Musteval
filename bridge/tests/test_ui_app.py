@@ -8,6 +8,7 @@ refusal that prints nothing is indistinguishable from a hang (`05-bridge.md` §4
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -246,6 +247,22 @@ def _device(overrides: dict[str, object] | None = None, *, drop: set[str] | None
                 return [_result(frame, name,
                                 {"code": "E_STORAGE", "message": "no such entry"},
                                 ok=False)]
+            if name == "template.get":
+                # `04` §4.21: the whole file or a refusal, never a prefix, so the
+                # persona the editor opens is the one `build_system_prompt` reads.
+                return [_result(frame, name, {"name": args.get("name"),
+                                              "bytes": 7, "text": "persona"})]
+            if name == "fs.put":
+                # `04` §4.16: a chunked write, so the reply counts what landed and
+                # says whether a reboot is needed to see it. The count is raw bytes,
+                # not the base64 length the frame carries.
+                landed = len(args.get("data") or "")
+                if (args.get("encoding") or "utf-8") == "base64":
+                    landed = len(base64.b64decode(args.get("data") or ""))
+                return [_result(frame, name, {"path": args.get("path"),
+                                              "bytes": landed,
+                                              "created": False,
+                                              "requires_reboot": False})]
             return [_result(frame, name, {"echo": True})]
         return []
 

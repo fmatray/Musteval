@@ -16,7 +16,7 @@ import json
 import pytest
 
 from bridge.protocol import reset_ids
-from bridge.ui.app import COMPLETION_ROWS
+from bridge.ui.app import COMPLETION_ROWS, SANDBOX_CHUNK_BYTES
 from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
     CONFIG,
     ENTRIES,
@@ -24,6 +24,7 @@ from bridge.tests.test_ui_app import (  # noqa: F401 - the shared device double
     _await_chat,
     _await_screen,
     _device,
+    _result,
     _run,
     _text,
 )
@@ -830,3 +831,186 @@ async def test_a_refused_wifi_status_ends_the_list_without_a_second_excuse():
         assert "home" not in text
 
     await _run(_device(drop={"wifi.status"}), body)
+
+
+async def test_sys_prompt_opens_the_persona_file_the_config_names():
+    """`05` §7.5: the editor must show the file `build_system_prompt` reads, so the
+    path comes from `agent.system_prompt` rather than a literal. A reader who moved
+    the persona would otherwise edit a file no run looks at."""
+
+    seen: list[str] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        name = frame.get("name", "")
+        if frame.get("type") == "hello":
+            return [_device()(line)[0]]
+        if name == "config.get":
+            return [_result(frame, name, {"path": "agent.system_prompt",
+                                          "value": "/prompts/other.md"})]
+        if name == "template.get":
+            seen.append(frame["args"]["name"])
+            return [_result(frame, name, {"name": "other.md",
+                                          "text": "persona v1"})]
+        return _device()(line)
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        assert seen == ["other.md"]
+        assert app.screen.query_one("#file-body").text == "persona v1"
+
+    await _run(reply, body)
+
+
+async def test_a_persona_the_device_will_not_read_is_not_opened():
+    """`template.get` answers the whole file or refuses: `store_read_file` is
+    all-or-nothing at 4096 bytes (`03-config.md` §Storage limits), so a persona over
+    the cap comes back as an error rather than a prefix.
+
+    Opening the editor on the refusal would show an empty buffer whose `Ctrl+S` then
+    writes that emptiness over a file the bridge never read — the reader would lose
+    a persona they could not see. The handler returns, and the device's message is
+    what the chat already says."""
+    asked: list[str] = []
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [_device()(line)[0]]
+        if frame.get("name") == "template.get":
+            asked.append(frame["args"]["name"])
+            return [_result(frame, "template.get",
+                            {"code": "E_STORAGE", "message": "over the cap"},
+                            ok=False)]
+        return _device()(line)
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: asked, rounds=40)
+        await _until(pilot, lambda: "E_STORAGE" in _text(app), rounds=40)
+        assert not isinstance(app.screen, FilePrompt)
+        assert not [f for f in _frames(app) if f.get("name") == "fs.put"]
+
+    await _run(reply, body)
+
+
+async def test_sys_prompt_writes_the_edit_back_and_says_the_next_run_uses_it():
+    """`04` §4.16: `fs.put` is the only frame that carries a file's bytes, and the
+    persona is read at the start of every run rather than held, so no reboot is
+    needed and the confirmation must not claim one."""
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        app.screen.query_one("#file-body").text = "persona v2"
+        app.screen.action_save()
+        await _await_chat(pilot, app, "the next prompt uses it")
+
+        puts = [f for f in _frames(app) if f.get("name") == "fs.put"]
+        assert len(puts) == 1
+        assert puts[0]["args"]["path"] == "/prompts/system.md"
+        assert puts[0]["args"]["final"] is True
+        decoded = base64.b64decode(puts[0]["args"]["data"]).decode()
+        assert decoded == "persona v2"
+        assert "reboot" not in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_an_unchanged_prompt_writes_nothing():
+    """`04` §4.16: a `fs.put` at the same bytes is a flash write, a staging file and
+    a quota check for no change. Ctrl+S without a keystroke must cost nothing.
+
+    The assertion is a negative, so the test gives the write the same bounded window
+    a real one would have before it concludes there was none: reading the frames the
+    instant the modal closes would pass on a writer that had not started yet."""
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        app.screen.action_save()
+        await _until(pilot, lambda: not isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: False, rounds=40)
+        assert not [f for f in _frames(app) if f.get("name") == "fs.put"]
+
+    await _run(_device(), body)
+
+
+async def test_an_empty_prompt_is_discarded_rather_than_written():
+    """`build_system_prompt` would run the model with no persona at all, and an empty
+    buffer is never what Ctrl+S meant. The reader is told instead of silently kept."""
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        app.screen.query_one("#file-body").text = "   \n"
+        app.screen.action_save()
+        await _await_chat(pilot, app, "nothing written")
+        assert not [f for f in _frames(app) if f.get("name") == "fs.put"]
+
+    await _run(_device(), body)
+
+
+async def test_a_refused_prompt_write_stops_at_the_first_chunk():
+    """`04` §4.16: a refused chunk discards the staging file, so the chunks after it
+    have nothing to join. Sending them would turn one failure into N."""
+
+    def reply(line: bytes) -> list[bytes]:
+        frame = json.loads(line)
+        if frame.get("type") == "hello":
+            return [_device()(line)[0]]
+        if frame.get("name") == "fs.put":
+            return [_result(frame, "fs.put",
+                            {"code": "E_STORAGE", "message": "image is full"},
+                            ok=False)]
+        return _device()(line)
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        # 3000 bytes is two chunks at `SANDBOX_CHUNK_BYTES`, so a loop that ignored
+        # the refusal would send a second one.
+        app.screen.query_one("#file-body").text = "x" * 3000
+        app.screen.action_save()
+        await _await_chat(pilot, app, "image is full")
+        puts = [f for f in _frames(app) if f.get("name") == "fs.put"]
+        assert len(puts) == 1
+
+    await _run(reply, body)
+
+
+async def test_a_prompt_above_one_chunk_is_written_in_offsets():
+    """`04` §4.16 caps a chunk at 2048 raw bytes for the 4 KiB RX line, and a persona
+    may reach 4096, so the writer must split rather than send one oversize frame that
+    comes back `E_PROTOCOL`. The offsets are what lets the device assemble the parts in
+    order, and only the last carries `final`."""
+
+    async def body(app, pilot):
+        app.submit("/sys prompt")
+        await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        # 3000 bytes is two chunks, the second shorter than the first.
+        text = "y" * 3000
+        app.screen.query_one("#file-body").text = text
+        app.screen.action_save()
+        await _await_chat(pilot, app, "the next prompt uses it")
+
+        puts = [f for f in _frames(app) if f.get("name") == "fs.put"]
+        assert [p["args"]["offset"] for p in puts] == [0, SANDBOX_CHUNK_BYTES]
+        assert [p["args"]["final"] for p in puts] == [False, True]
+        joined = b"".join(base64.b64decode(p["args"]["data"]) for p in puts)
+        assert joined == text.encode()
+        assert all(len(base64.b64decode(p["args"]["data"])) <= 2048 for p in puts)
+
+    await _run(_device(), body)
+
+
+async def test_sys_prompt_is_refused_by_parse_when_no_screen_can_open_it():
+    """`05` §7: the verb is a modal, so `parse` cannot honour it. Silence would look
+    like a command that ran and did nothing, which is the failure mode the refusal
+    exists to prevent."""
+
+    from bridge.commands import CommandError, parse
+
+    with pytest.raises(CommandError, match="opens the editor"):
+        parse("/sys prompt")

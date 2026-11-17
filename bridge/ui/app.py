@@ -60,7 +60,7 @@ from ..protocol import (
     sandbox_normalise,
     sandbox_parent,
 )
-from .config import ROWS, coerce, flatten, lookup, render_value
+from .config import ROWS, DEFAULT_SYSTEM_PROMPT, coerce, flatten, lookup, render_value
 from .splash import SPLASH_SECONDS, pick_tip, render_splash
 from . import onboard
 from .onboard import provider_secret_key, wifi_secret_key
@@ -1488,12 +1488,15 @@ class BridgeApp(App):
         await self.save_file(path, "")
         await self.view_file(path)
 
-    async def save_file(self, path: str, text: str) -> None:
-        """Stage the whole buffer in `04` §4.20 chunks, committing on the last.
+    async def _stage(self, command: str, path: str, text: str) -> bool:
+        """Send `text` as `command` chunks under `SANDBOX_CHUNK_BYTES`, `True` on a
+        clean commit.
 
-        `data` carries at most `SANDBOX_CHUNK_BYTES` raw bytes per frame, so a
-        file above that is several `sandbox.write` calls rather than one that
-        overruns the cap and comes back `E_PROTOCOL`.
+        `data` carries at most `SANDBOX_CHUNK_BYTES` raw bytes per frame, so a file
+        above that is several calls rather than one that overruns the cap and comes
+        back `E_PROTOCOL`. Both writers take the same four arguments, so one loop
+        serves `sandbox.write` (a workspace file) and `fs.put` (a userfs file, which
+        `04` §4.16 caps at 2048 raw bytes per chunk for the 4 KiB RX line).
         """
         raw = text.encode("utf-8")
         chunks = [
@@ -1501,8 +1504,8 @@ class BridgeApp(App):
             for i in range(0, len(raw), SANDBOX_CHUNK_BYTES)
         ] or [b""]
         for index, chunk in enumerate(chunks):
-            await self._request(
-                "sandbox.write",
+            ok = await self._request(
+                command,
                 {
                     "path": path,
                     "data": base64.b64encode(chunk).decode("ascii"),
@@ -1510,6 +1513,48 @@ class BridgeApp(App):
                     "offset": index * SANDBOX_CHUNK_BYTES,
                     "final": index == len(chunks) - 1,
                 },
+            )
+            if ok is None:
+                # A refused chunk makes the device clear its staging file
+                # (`write_chunk_canonical` in `store.c`), so the remaining chunks have
+                # no staged length to match and would each fail too.
+                return False
+        return True
+
+    async def save_file(self, path: str, text: str) -> None:
+        """Stage the whole buffer in `04` §4.20 chunks, committing on the last."""
+        await self._stage("sandbox.write", path, text)
+
+    async def _edit_system_prompt(self) -> None:
+        """`05` §7.6: edit the persona file the device reads at the start of a run.
+
+        The path comes from `agent.system_prompt` rather than a constant: the config
+        key is what `build_system_prompt` reads, so a reader who moved the persona
+        would otherwise edit a file no run looks at.
+        """
+        config = await self._request("config.get", {"path": "agent.system_prompt"})
+        # The default comes from the settings table rather than a second constant:
+        # `agent.system_prompt` is absent from a stock `config.json` on some builds,
+        # and one owner for the fact is the rule (`03-config.md` §prompts).
+        path = str((config or {}).get("value") or DEFAULT_SYSTEM_PROMPT)
+        body = await self._request("template.get", {"name": os.path.basename(path)})
+        if body is None:
+            # `template.get` refuses an oversize file (`store_read_file` is
+            # all-or-nothing at 4096 bytes) and `_request` has said why.
+            return
+        text = str(body.get("text", ""))
+        edited = await self.push_screen_wait(FilePrompt(path, text))
+        if edited is None or edited == text:
+            return
+        if not edited.strip():
+            # An empty persona is legal on the device but never what the reader
+            # meant, and `build_system_prompt` would run the model without one.
+            self._chat().write("empty prompt discarded; nothing written", kind="warn")
+            return
+        if await self._stage("fs.put", path, edited):
+            self._chat().write(
+                f"system prompt written: {len(edited.encode('utf-8'))} bytes at {path};"
+                " the next prompt uses it"
             )
 
     def action_back(self) -> None:
@@ -2073,6 +2118,12 @@ class BridgeApp(App):
             # `_on_command_result` renders from the frame.
             await self._request(words[1])
             return
+        if head == "sys" and words[1:2] == ["prompt"]:
+            # `05` §7.6: the persona lives on the device at `agent.system_prompt`
+            # and the editor is the only writer, because `fs.put` takes bytes and
+            # no other command carries a file's text.
+            await self._edit_system_prompt()
+            return
         if head == "sys" and words[1:2] in (["diag"], ["status"]):
             # `05-bridge.md` §5.10: both verbs answer from one fresh `status` frame, in
             # a modal, so a reader comparing the two does not reopen it. `status`
@@ -2084,15 +2135,15 @@ class BridgeApp(App):
             self._sys_info(diag_first=words[1] == "diag")
             return
         if head == "wifi" and words[1:2] == ["list"]:
-            # `05` §7.6: configured networks joined with a live scan.
+            # `05` §7.7: configured networks joined with a live scan.
             await self._wifi_list()
             return
         if head == "wifi" and words[1:2] == ["edit"]:
-            # `05` §7.6: add, re-key or forget, all over `wifi.networks`.
+            # `05` §7.7: add, re-key or forget, all over `wifi.networks`.
             await self._wifi_edit()
             return
         if head == "providers":
-            # `05` §7.7: add, log in or disconnect, over `llm.providers`.
+            # `05` §7.8: add, log in or disconnect, over `llm.providers`.
             await self._providers()
             return
         if head == "secret" and self._pending_secret is None:
@@ -2811,7 +2862,7 @@ class BridgeApp(App):
         )
 
     async def _wifi_list(self) -> None:
-        """`05` §7.6: every configured network, and whether the radio can hear it.
+        """`05` §7.7: every configured network, and whether the radio can hear it.
 
         Two frames, both reads. The document says which networks exist and in what
         order they are tried; the scan says which are audible now. Neither is a
@@ -2841,7 +2892,7 @@ class BridgeApp(App):
             self._chat().write(line)
 
     async def _wifi_edit(self) -> None:
-        """`05` §7.6: pick a known network to rekey or forget, or add one.
+        """`05` §7.7: pick a known network to rekey or forget, or add one.
 
         Two questions, both in a modal: which network, then what to do with it. The
         row per action that this used to draw made the list grow by two every time a
@@ -3118,7 +3169,7 @@ class BridgeApp(App):
         )
 
     async def _providers(self) -> None:
-        """`05` §7.7: add, log in to, or remove an `llm.providers` entry.
+        """`05` §7.8: add, log in to, or remove an `llm.providers` entry.
 
         Every gesture writes the whole array, because `config.set` replaces a value and
         `04` §4.9 will not create an array index. `add` runs `ProviderStep` and
@@ -3190,7 +3241,7 @@ class BridgeApp(App):
             answers.model = picked.model
             answers.extra_body = dict(picked.extra_body)
             # One key per provider, so removing one row cannot blank another's
-            # (`05` §7.7). The id is the unique member the schema already enforces.
+            # (`05` §7.8). The id is the unique member the schema already enforces.
             secret_key = provider_secret_key(answers.provider or "custom")
             plan = [
                 ("secret", {"key": secret_key, "value": answers.api_key}),

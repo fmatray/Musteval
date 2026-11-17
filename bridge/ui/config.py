@@ -108,6 +108,14 @@ def rows_for(section: str) -> tuple[ConfigRow, ...]:
     return tuple(row for row in ROWS if row.section == section)
 
 
+#: The path an absent `agent.system_prompt` means, taken from the row so the
+#: default has one owner. `config.get` answers `E_CONFIG` for a key the device's
+#: `/config.json` does not carry, which is the case `/sys prompt` must survive.
+DEFAULT_SYSTEM_PROMPT = str(
+    next(row.default for row in ROWS if row.path == "agent.system_prompt")
+)
+
+
 def _range(bound: str) -> tuple[int, int] | None:
     match = _RANGE.search(bound)
     return (int(match[1]), int(match[2])) if match else None

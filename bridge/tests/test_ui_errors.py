@@ -191,8 +191,14 @@ async def test_a_command_answered_with_the_wrong_type_is_dropped():
 
 
 async def test_a_failed_write_is_reported_and_never_retried():
-    """A refused chunk must not be silently retried: staging would splice two
-    transfers together (`04` §4.20)."""
+    """A refused chunk must not be silently retried, and the chunks after it must not
+    be sent at all.
+
+    `write_chunk_canonical` (`store.c`) clears the staging file when a chunk is
+    refused, because a `<name>.new` left behind is partial state `04` §4.16 forbids
+    exposing. A later chunk at a non-zero offset then has no staged length to match
+    and comes back `E_PROTOCOL`, so sending the rest turns one failure into N. The
+    write is one request, one refusal, one line."""
     sent: list[str] = []
 
     def reply(line: bytes) -> list[bytes]:
@@ -209,7 +215,7 @@ async def test_a_failed_write_is_reported_and_never_retried():
     async def body(app, pilot):
         await app.save_file("/workspace/a.txt", "x" * 5000)
         await pilot.pause(0.1)
-        assert sent.count("sandbox.write") == 3
+        assert sent.count("sandbox.write") == 1
         assert "E_STORAGE" in _text(app)
 
     await _run(reply, body)
