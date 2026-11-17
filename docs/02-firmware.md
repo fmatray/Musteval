@@ -896,18 +896,34 @@ The agent process is **serialized**. Only one run is active at a time.
 Four rules here are load-bearing and each had a defect found by running the loop
 on a board rather than in the host suite.
 
-**A task that needs 8 KiB of stack gets it from PSRAM.** `xTaskCreate` takes its
-stack from internal RAM, and once WiFi and a TLS session are up the device reports
-about 13 KiB of internal RAM free in fragments of 8 KiB or smaller — enough by the
-free total, not enough contiguously, so `xTaskCreate` returns `-1` and the command
-that needed the task answers `E_INTERNAL` on a board with megabytes of PSRAM spare.
-`context.compact` (`04-protocol.md` §4.33) is such a task: one provider round trip
-with a TLS handshake under it, created with `xTaskCreateWithCaps(…,
-MALLOC_CAP_SPIRAM)` and deleted with `vTaskDeleteWithCaps`. Its argument struct
-carries the summary buffer for the same reason: a `static` one took 4 KiB of the
-internal RAM the stack then could not have. The same defect appeared one level up in
-`agent_start`, whose `s_compact_buf` was a `static` array until the agent task could
-no longer be created.
+**A task whose stack carries a flash write is internal RAM.** `context.compact`
+(`04-protocol.md` §4.33) is one provider round trip with a TLS handshake under it,
+and it needs 8 KiB. `xTaskCreate` takes its stack from internal RAM, and once WiFi
+and a TLS session are up the device reports about 13 KiB of internal RAM free in
+fragments of 8 KiB or smaller — enough by the free total, not enough
+contiguously, so the call returned `-1` and `/compact` answered `E_INTERNAL` on a
+board with megabytes of PSRAM spare.
+
+An external stack is not the fix. `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM`
+states the constraint plainly: a PSRAM stack may only be used by a task that
+never touches it while the cache is disabled. With
+`CONFIG_SPI_FLASH_AUTO_SUSPEND` off, a flash write runs inside a window where the
+cache is off and PSRAM is unreachable (`spi_flash_os_func_app.c` disables it
+around every operation). `llm_query` writes NVS through `budget_persist` before it
+opens a socket, so a PSRAM stack would fault on the first `/compact` with a
+provider configured — on the path no host test can reach.
+
+The 8 KiB came from internal RAM instead: `s_line_scratch`, the shared 8193-byte
+buffer behind `sandbox.read` and `context.block`, moved out of `.bss` to a PSRAM
+allocation. It is safe there for the same reason a stack is not — both commands
+answer synchronously on `link_task`, and `esp_flash_read` copies into a
+non-DRAM destination only after `end()` has re-enabled the cache.
+
+The rule generalises: **a buffer a flash operation writes belongs in internal RAM
+or must be filled outside the cache-off window; only a buffer no flash operation
+touches may live in PSRAM.** The same defect appeared one level up in
+`agent_start`, whose `s_compact_buf` was a `static` array until the agent task
+could no longer be created.
 
 **A frame with no `id` is not emitted.** `link_emit_body` rejects a NULL id, and the
 rejection is silent, so a caller that forgets one produces a run that starts and

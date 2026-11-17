@@ -200,9 +200,24 @@ static int64_t uptime_s(void)
 #define CONTEXT_BLOCK_CAP 8192
 
 /* One 8 KiB scratch for `sandbox.read` and `context.block`. Both are reached
- * synchronously from `answer_command` on `link_task`, so they are never live at the
- * same time, and DIRAM is the scarce resource here rather than code size. */
-static char s_line_scratch[CONTEXT_BLOCK_CAP + 1];
+ * synchronously from `answer_command`, so they are never live at the same time. It
+ * lives in PSRAM rather than `.bss`: 8 KiB of DIRAM was the difference between the
+ * `/compact` task's stack fitting in internal RAM and not (`02-firmware.md` §4.3).
+ * A flash read writes this buffer only after `esp_flash_read` has re-enabled the
+ * cache, so PSRAM is safe for it. */
+#define LINE_SCRATCH_BYTES (CONTEXT_BLOCK_CAP + 1)
+static char *s_line_scratch;
+
+/* `02-firmware.md` §4.3: PSRAM first, internal second, because the point of moving
+ * this buffer is to free internal RAM. A board without PSRAM still answers. */
+static esp_err_t line_scratch_alloc(void)
+{
+    s_line_scratch = heap_caps_malloc(LINE_SCRATCH_BYTES, MALLOC_CAP_SPIRAM);
+    if (s_line_scratch == NULL) {
+        s_line_scratch = heap_caps_malloc(LINE_SCRATCH_BYTES, MALLOC_CAP_8BIT);
+    }
+    return s_line_scratch != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+}
 
 #define SANDBOX_LIST_MAX STORE_WS_FILE_COUNT
 
@@ -337,11 +352,12 @@ static esp_err_t handle_sandbox(const char *name, const json_node_t *args, const
     } else if (strcmp(name, "sandbox.read") == 0) {
         const char *path = json_string(json_get(args, "path"));
         if (path == NULL) { emit_failure("sandbox.read", reply_to, "E_PROTOCOL", "Missing path"); return ESP_ERR_INVALID_ARG; }
-        /* `04` §4.18: the buffer is static because `link_task` has 8 KiB of stack
-         * and 8193 bytes of local would still not fit beside the handshake path.
+        /* `04` §4.18: the buffer is one shared scratch because `link_task` has 8 KiB
+         * of stack and 8193 bytes of local would not fit beside the handshake path.
          * Dispatch is single-threaded, so one buffer is correct; a mutex would be
          * dead weight. The cap matches the
          * document exactly: a larger read would not fit the 16384-byte TX limit. */
+        if (s_line_scratch == NULL) { emit_failure("sandbox.read", reply_to, "E_INTERNAL", "Read failed"); return ESP_ERR_NO_MEM; }
         char *s_text = s_line_scratch;
         size_t len = 0, total = 0;
         bool truncated = false;
@@ -686,9 +702,9 @@ typedef struct {
     uint32_t keep;
     int64_t start_us;
     /* The summary, in the struct the task already owns: a `static` here held 4 KiB of
-     * internal RAM for a command that runs one at a time, and the task's own 8 KiB
-     * stack is internal RAM it then could not get. This is the same trade the agent
-     * buffers make below. */
+     * internal RAM for a command that runs one at a time. The struct is the one PSRAM
+     * allocation in this path and nothing on the stack refers to it while the flash
+     * cache is off: `llm_query` copies what it needs before it writes NVS. */
     char summary[AGENT_COMPACT_SUMMARY_MAX + 1];
 } compact_args_t;
 
@@ -701,7 +717,7 @@ static void compact_task(void *arg)
                                           &after_bytes, ca->summary, sizeof ca->summary);
 
     json_doc_t *doc = json_new_object();
-    if (doc == NULL) { free(ca); vTaskDeleteWithCaps(NULL); return; }
+    if (doc == NULL) { free(ca); vTaskDelete(NULL); return; }
     json_node_t *root = json_root(doc);
     /* `d-<counter>` per frame: `frame_id`'s buffer is shared with `link_task`. */
     char id[16];
@@ -746,7 +762,7 @@ static void compact_task(void *arg)
     link_emit_body("command.result", id, 0, ca->reply_to, doc);
     json_free(doc);
     free(ca);
-    vTaskDeleteWithCaps(NULL);
+    vTaskDelete(NULL);
 }
 
 static esp_err_t handle_template_get(const json_node_t *args, json_node_t *root,
@@ -1272,9 +1288,13 @@ static void answer_command(const json_node_t *frame)
             emit_failure(name, reply_to, "E_PROTOCOL", "missing block");
             json_free(body); return;
         }
+        if (s_line_scratch == NULL) {
+            emit_failure(name, reply_to, "E_INTERNAL", "context not readable");
+            json_free(body); return;
+        }
         size_t b_written = 0, b_total = 0;
         esp_err_t berr = agent_context_block(block, s_line_scratch,
-                                             sizeof s_line_scratch, &b_written, &b_total);
+                                             LINE_SCRATCH_BYTES, &b_written, &b_total);
         if (berr == ESP_ERR_INVALID_ARG) {
             emit_failure(name, reply_to, "E_CONFIG", "unknown block");
             json_free(body); return;
@@ -1322,13 +1342,12 @@ static void answer_command(const json_node_t *frame)
         ca->keep = (uint32_t)keep;
         ca->start_us = esp_timer_get_time();
         /* 8192 **bytes**: `xTaskCreate` takes a byte count, and the provider's TLS
-         * handshake runs on this task's stack. The stack comes from PSRAM
-         * (`xTaskCreateWithCaps`) because internal RAM has no contiguous 8 KiB left to
-         * give: on an idle board it reports 13.7 KiB free with a largest block of
-         * 7.7 KiB, so a plain `xTaskCreate` failed and `/compact` answered
-         * `E_INTERNAL` on a device with megabytes of PSRAM spare. `04` §4.33. */
-        if (xTaskCreateWithCaps(compact_task, "ctx_compact", 8192, ca, 4, NULL,
-                                MALLOC_CAP_SPIRAM) != pdPASS) {
+         * handshake runs on this task's stack. The stack is internal RAM on purpose:
+         * an external stack is unreachable while the flash cache is disabled
+         * (`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` help), and `llm_query` writes
+         * NVS from this task through `budget_persist` before it opens a socket. The
+         * 8 KiB this needs was freed by moving `s_line_scratch` to PSRAM. `04` §4.33. */
+        if (xTaskCreate(compact_task, "ctx_compact", 8192, ca, 4, NULL) != pdPASS) {
             free(ca);
             emit_failure(name, reply_to, "E_INTERNAL", "compaction task not started");
             json_free(body); return;
@@ -2085,6 +2104,13 @@ void app_main(void)
     }
 
     link_set_sink(&s_link_sink);
+    /* Before `link_start`: `sandbox.read` and `context.block` both answer on
+     * `link_task` and read this buffer. `02-firmware.md` §4.3. */
+    err = line_scratch_alloc();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "store: scratch not allocated: sandbox.read and context.block "
+                      "will answer E_INTERNAL");
+    }
     err = link_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "link: start failed: %s: the device is unreachable",
