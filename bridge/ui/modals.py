@@ -56,14 +56,30 @@ ModalScreen, * {
     align: center middle;
 }
 
+/* `17` §4: every modal keeps the same gutter from the terminal edge — one row above
+   and below, two columns left and right — and the rest is centred. The gutter is a
+   margin on the box, not a padding on the screen: Textual has no `calc()`, so a box
+   that wants `terminal - 4` cannot say so, but `max-width: 100%` inside a margin
+   resolves to exactly that. Before this line a box declared `width: 60` touched both
+   edges of a 60-column terminal, and `width: 84` touched both at 80. */
+.prompt-box, .pick-box, .info-box, .help-box {
+    margin: 1 2;
+    /* `17` §4: a box hugs its content on both axes. Height is the one that was
+       wrong: `info-box` asked for 70% of the screen and `help-box` for 80%, so a
+       diagnostic with eight lines filled a 46-row box at 170x68 and the reader read
+       two thirds of a screen of border. `max-height` is the ceiling, not the size. */
+    height: auto;
+    max-height: 100%;
+    border: thick $accent;
+    padding: 1 2;
+}
+
 /* `17` §4: width follows the content, bounded by the terminal, so a one-line
    prompt is not stretched and the editor is not pinned narrower than its text. */
 .prompt-box {
-    width: 60;
+    width: auto;
+    min-width: 40;
     max-width: 100%;
-    height: auto;
-    border: thick $accent;
-    padding: 1 2;
 }
 
 .prompt-title {
@@ -263,7 +279,6 @@ class _StepBox(PromptBox[Any]):
 .prompt-box.step-box {
     width: 84;
     max-width: 100%;
-    max-height: 92%;
 }
 .step-title {
     text-style: bold;
@@ -301,12 +316,16 @@ class _StepBox(PromptBox[Any]):
         self.passed = False
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="prompt-box step-box"):
+        # The box is the scroll view, and every child is inside it. A
+        # `max-height: 100%` scroll body beside a title, a path, a summary and two
+        # hint rows resolved its cap against the whole content area, so on a 20-row
+        # terminal the last hint was painted one row below the border. As the root,
+        # the box's content area is the scroll view's own height and nothing overhangs.
+        with VerticalScroll(classes="prompt-box step-box"):
             yield Static(f"First run — {self.TITLE}", classes="step-title")
             yield Static(self.PATH, classes="step-note", markup=False)
-            with VerticalScroll(id="step-body"):
-                for widget in self.fields():
-                    yield widget
+            for widget in self.fields():
+                yield widget
             yield Static(self.SUMMARY, classes="step-note", markup=False)
             yield Static(
                 self.pass_note(), id="step-pass", classes="step-note", markup=False
@@ -756,7 +775,15 @@ class ModelPicker(PromptBox[str | None]):
     CSS = (
         _CSS
         + """
-#step-model-list { height: 12; }
+/* `17` §4: content-sized, and capped at what the smallest supported terminal
+   affords. Two hint lines, a two-row tab bar and a twelve-row list came to 17 rows
+   inside a 14-row content area at 60x20, so the modal's own hint was drawn below the
+   border; nine rows of list fit. The list is an `OptionList` and scrolls, so the cap
+   costs no reach. `nowrap` on the hint keeps it one row: wrapped at 34 columns it
+   took two. */
+#step-model-tabs { height: auto; max-height: 100%; }
+#step-model-list { height: auto; max-height: 9; }
+.prompt-hint.one-line { text-wrap: nowrap; text-overflow: ellipsis; }
 """
     )
 
@@ -807,7 +834,8 @@ class ModelPicker(PromptBox[str | None]):
                         id="step-model",
                     )
             yield Static(
-                "Tab: switch | Enter: use | Esc: cancel", classes="prompt-hint"
+                "Tab: switch | Enter: use | Esc: cancel",
+                classes="prompt-hint one-line",
             )
 
     def _names(self) -> list[str]:
@@ -885,6 +913,7 @@ class FilePrompt(PromptBox[str | None]):
     width: 90%;
     max-width: 160;
     height: 80%;
+    max-height: 100%;
 }
 #file-find { display: none; height: 3; }
 #file-find.active { display: block; }
@@ -1028,6 +1057,13 @@ class Working(PromptBox[None]):
     width: 60;
     max-width: 100%;
 }
+/* `17` §4: `LoadingIndicator` claims four rows and paints one. In an `auto` box the
+   claim is what counts, so the spinner's three empty rows pushed the detail and the
+   cancel note past the border at every size. It is one line of braille, so it is
+   given one row. */
+#working-spinner {
+    height: 1;
+}
 .working-action {
     text-style: bold;
     color: $accent;
@@ -1066,13 +1102,14 @@ class InfoModal(ModalScreen[None]):
 
     CSS = _CSS + """
 .info-box {
+    /* `17` §4: a readable measure, not a screen fraction. `80%` alone is 136
+       columns of prose on a 170-column terminal, which the eye loses its place in;
+       a flat `100` is wider than a 60-column terminal allows. A percentage resolves
+       inside the `1 2` margin, so it is the half that keeps the gutter, and the
+       column cap is the half that keeps the measure. */
     width: 80%;
-    max-width: 100%;
-    height: 70%;
-    border: thick $accent;
-    padding: 0 1;
+    max-width: 100;
 }
-#info-body { height: 1fr; }
 .info-heading { text-style: bold; }
 """
     BINDINGS = [Binding("escape", "cancel", "Close", show=False)]
@@ -1083,18 +1120,22 @@ class InfoModal(ModalScreen[None]):
         self.sections = sections
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="info-box"):
+        # The heading lives inside the scroll view, not beside it. A `max-height: 100%`
+        # sibling resolves against the whole content area, so the heading's row was
+        # spent twice and the body's last row landed on the box's own padding — the
+        # overflow test caught it as one row painted past the border. Inside, the
+        # content area is the scroll view's own height and nothing overhangs.
+        with VerticalScroll(classes="info-box", id="info-body"):
             yield Static(self.title_text, classes="prompt-title")
-            with VerticalScroll(id="info-body"):
-                for index, (heading, lines) in enumerate(self.sections):
-                    if index:
-                        yield Static("")
-                    if heading:
-                        yield Static(heading, classes="info-heading")
-                    # Parsed as markup, like `StatusScreen._paint`: `render_status`
-                    # escapes every device-supplied value before splicing it, and the
-                    # verdict colours are half of what the grid says.
-                    yield Static(Text.from_markup("\n".join(lines)))
+            for index, (heading, lines) in enumerate(self.sections):
+                if index:
+                    yield Static("")
+                if heading:
+                    yield Static(heading, classes="info-heading")
+                # Parsed as markup, like `StatusScreen._paint`: `render_status`
+                # escapes every device-supplied value before splicing it, and the
+                # verdict colours are half of what the grid says.
+                yield Static(Text.from_markup("\n".join(lines)))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1110,12 +1151,15 @@ class HelpModal(ModalScreen[None]):
 
     CSS = _CSS + """
 .help-box {
+    /* `17` §4: same measure as `.info-box`. Help is a two-column list of command
+       and description, so it takes the wider of the two caps. */
     width: 90%;
-    height: 80%;
-    border: thick $accent;
-    padding: 0 1;
+    max-width: 104;
 }
-#help-tabs { height: 1fr; }
+#help-tabs { height: auto; max-height: 100%; }
+#help-tabs > ContentSwitcher { height: auto; max-height: 100%; }
+#help-tabs TabPane { height: auto; max-height: 100%; }
+#help-tabs TabPane > VerticalScroll { width: auto; height: auto; max-height: 100%; }
 """
     BINDINGS = [Binding("escape", "cancel", "Close", show=False)]
 
@@ -1129,7 +1173,11 @@ class HelpModal(ModalScreen[None]):
             with TabbedContent(id="help-tabs"):
                 for name, text in self.categories.items():
                     with TabPane(name, id=f"help-tab-{name.lower()}"):
-                        yield Static(text, classes="help-body")
+                        # `17` §4: `TabPane` is a plain `Widget`, not a scroll view,
+                        # so a body taller than the box was drawn past the border and
+                        # off the screen instead of scrolling inside it.
+                        with VerticalScroll():
+                            yield Static(text, classes="help-body")
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1450,7 +1498,7 @@ class _PickBox(PromptBox[str | None]):
     width: 76;
     max-width: 100%;
     height: auto;
-    max-height: 90%;
+    max-height: 100%;
     border: thick $accent;
     padding: 1 2;
 }

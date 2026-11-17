@@ -7,6 +7,8 @@ the user finds by typing it.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from bridge.client import Session
@@ -460,3 +462,272 @@ async def test_every_modal_is_centred(factory):
         # means the box is not centred.
         assert abs(left - right) <= 1, (left, right)
         assert abs(top - bottom) <= 1, (top, bottom)
+
+
+def _every_modal() -> list[tuple[str, Any]]:
+    """One instance of every modal class, for the geometry rules.
+
+    A list rather than a `parametrize` over `PromptBox.__subclasses__()`: the point of
+    the test is that *every* modal is measured, so a new class must be added here or
+    the test silently stops covering it. The count below is the guard.
+    """
+    from bridge import providers as providers_mod
+    from bridge.ui import modals as M
+    from bridge.ui.help import help_tabs
+
+    return [
+        ("SecretPrompt", lambda: M.SecretPrompt("llm_api_key")),
+        ("ConfirmPrompt", lambda: M.ConfirmPrompt("Delete task 3?")),
+        ("FilterPrompt", lambda: M.FilterPrompt("Filter", "home")),
+        ("ValuePrompt", lambda: M.ValuePrompt("Upload from", "/tmp/x")),
+        ("Working", lambda: M.Working("reload", "re-boot the station")),
+        ("InfoModal", lambda: M.InfoModal(
+            "Diagnostics", [("Memory", ["heap 1"]), ("Boot", ["safe false"])]
+        )),
+        ("HelpModal", lambda: M.HelpModal(help_tabs())),
+        ("TodoEditor", lambda: M.TodoEditor([{"name": "p1", "tasks": []}])),
+        ("_PickBox", lambda: M._PickBox(
+            [("add a network", "from the scan"), ("home", "priority 0")],
+            title="Wi-Fi networks",
+        )),
+        ("WifiScanForm", lambda: M.WifiScanForm(
+            "Add a network", scan=[{"ssid": "Cafe"}, {"ssid": "home"}]
+        )),
+        ("WifiCustomForm", lambda: M.WifiCustomForm("Add a network")),
+        ("FilePrompt", lambda: M.FilePrompt("/x/y.txt", "one\ntwo")),
+        ("ModelPicker", lambda: M.ModelPicker("openai", "OpenAI", ["a", "b"], "")),
+        ("NetworkStep", lambda: M.NetworkStep({}, [])),
+        ("ProviderStep", lambda: M.ProviderStep({}, list(providers_mod.BUILTIN))),
+        ("ModelStep", lambda: M.ModelStep(["m1"], "openai", "", "none", [], {})),
+    ]
+
+
+def test_every_modal_class_is_measured():
+    """The geometry test below covers what this list names, so a new modal that is
+    never added here would keep the rule untested while looking green."""
+    from bridge.ui import modals as M
+
+    measured = {name for name, _f in _every_modal()}
+    declared = {
+        name
+        for name, obj in vars(M).items()
+        if isinstance(obj, type)
+        and issubclass(obj, M.PromptBox)
+        and obj is not M.PromptBox
+        and not name.startswith("_StepBox")
+    }
+    # `_PickBox` is private by name but is a real modal the editors push.
+    assert declared - measured == set(), declared - measured
+
+
+@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
+async def test_every_modal_keeps_a_one_row_two_column_gutter(size):
+    """`17` §4: one row above and below, two columns either side, every modal.
+
+    Measured rather than read off the stylesheet because the two can disagree: at 60
+    columns a box declared `width: 60` had a zero-column gutter, and `ModelPicker`
+    declared 21 rows on a 20-row terminal and drew its last row off the screen. The
+    margin is the fix (`margin: 1 2`), and this is what holds it.
+
+    The inner padding is asserted against the same two numbers: a box with a uniform
+    outer gutter and `padding: 0 1` still sets its text one column from the border
+    while its neighbour sets it two, which reads as two different modal styles.
+    """
+    from bridge.ui.testing import ModalCanvas
+
+    width, height = size
+    bad: list[str] = []
+    for name, factory in _every_modal():
+        app = ModalCanvas()
+        async with app.run_test(size=size) as pilot:
+            app.push_screen(factory())
+            await pilot.pause(0.2)
+            box = pilot.app.screen.query_one(
+                ".prompt-box, .pick-box, .info-box, .help-box"
+            )
+            left = box.region.x
+            right = width - box.region.right
+            top = box.region.y
+            bottom = height - box.region.bottom
+            inside = box.content_region
+            # The border is one cell; whatever is left is the padding.
+            pad_l = inside.x - box.region.x - 1
+            pad_r = box.region.right - inside.right - 1
+            pad_t = inside.y - box.region.y - 1
+            pad_b = box.region.bottom - inside.bottom - 1
+        if min(left, right) < 2 or min(top, bottom) < 1:
+            bad.append(
+                f"{name} at {width}x{height}: L={left} R={right} T={top} B={bottom}"
+            )
+        if (pad_l, pad_r, pad_t, pad_b) != (2, 2, 1, 1):
+            bad.append(
+                f"{name} at {width}x{height}: padding "
+                f"{(pad_l, pad_r, pad_t, pad_b)}"
+            )
+    assert not bad, bad
+
+
+# Content that would paint past the box's inside border, per modal, to prove the box
+# either grows or scrolls. Two ways in: content longer than the screen, and a child
+# that claims fewer rows than it paints (`LoadingIndicator` reports one row for an
+# `auto` box and occupies four). A function, not a module-level dict, so the import
+# happens where it is used the way `_every_modal` does it.
+def _overflowing() -> dict[str, Any]:
+    from bridge.ui import modals as M
+    from bridge.ui.help import help_tabs
+
+    return {
+        "ModelPicker": lambda: M.ModelPicker(
+            "openai", "OpenAI", [f"model-{i}" for i in range(40)], ""
+        ),
+        "ModelStep": lambda: M.ModelStep(
+            [f"model-{i}" for i in range(40)], "openai", "", "none", [], {}
+        ),
+        "InfoModal": lambda: M.InfoModal(
+            "Diag", [(f"H{i}", [f"line {j}" for j in range(30)]) for i in range(5)]
+        ),
+        "HelpModal": lambda: M.HelpModal(help_tabs()),
+        "TodoEditor": lambda: M.TodoEditor(
+            [
+                {"name": f"p{i}", "tasks": [{"id": f"t{i}{j}"} for j in range(5)]}
+                for i in range(8)
+            ]
+        ),
+        "FilePrompt": lambda: M.FilePrompt(
+            "/x", "\n".join(f"line {i}" for i in range(200))
+        ),
+        "Working": lambda: M.Working("rebooting", "the device is restarting"),
+    }
+
+
+@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
+async def test_a_modal_that_overflows_scrolls_rather_than_drawing_past_its_border(size):
+    """`17` §4: a box that cannot fit its content scrolls inside itself.
+
+    The gutter test above uses small content, so every box fits and the rule "it fits"
+    is never tested. These cases exceed the terminal: `HelpModal`'s body is 44 lines
+    and a `TabPane` is a plain `Widget`, not a scroll view, so it was drawn 30 rows
+    below the bottom of a 20-row screen. The assertion is that no widget paints past
+    the box's content area unless something above it scrolls, which is the property
+    that makes the overflow reachable instead of lost.
+    """
+    from bridge.ui.testing import ModalCanvas
+
+    width, height = size
+    bad: list[str] = []
+    for name, factory in _overflowing().items():
+        app = ModalCanvas()
+        async with app.run_test(size=size) as pilot:
+            app.push_screen(factory())
+            await pilot.pause(0.3)
+            box = pilot.app.screen.query_one(
+                ".prompt-box, .pick-box, .info-box, .help-box"
+            )
+            area = box.content_region
+            for child in box.walk_children():
+                region = child.region
+                if region.width == 0 or region.height == 0:
+                    continue
+                if region.bottom <= area.bottom and region.right <= area.right:
+                    continue
+                # Matched by class name, not by import: `09` §6 confines `textual`
+                # to `bridge/ui/`, and an AST walk enforces that here. `VerticalScroll`
+                # is a `ScrollableContainer`, so the base name is the test.
+                if any(
+                    "Scrollable" in base.__name__
+                    for a in child.ancestors
+                    for base in type(a).__mro__
+                ):
+                    continue
+                bad.append(f"{name} at {width}x{height}: {type(child).__name__} {region}")
+    assert not bad, bad
+
+
+# -- a box is its content, not a fraction of the screen ------------------
+
+
+#: Every modal's chrome: two border rows plus `padding: 1 2`. A box whose height is
+#: its content cannot exceed content + this. Four is the number the rule derives from
+#: the stylesheet, not a tolerance: `thick` border is one row each side and the padding
+#: is one row each side.
+_MODAL_CHROME_ROWS = 4
+
+
+#: Modals whose length *is* their content, so the terminal is the only honest
+#: ceiling. Both are documents rather than forms: the help catalogue is a tab per
+#: command group and the file editor is a file. §4's "content-sized unless it is a
+#: document" is the exemption; every other box must hug its rows.
+_DOCUMENT_MODALS = frozenset({"HelpModal", "FilePrompt"})
+
+#: Two rows of slack over the leaf count: a `Select` reports its closed height while
+#: its options list contributes a border row, and a one-row `Static` can wrap to two
+#: at 60 columns. Anything larger is empty space inside the border.
+_LEAF_SLACK = 2
+
+
+def _leaf_rows(node: Any) -> int:
+    """Rows the box's text would occupy if nothing stretched it.
+
+    Counted at the leaves rather than at the box's direct children: a box that is its
+    own scroll view still hands most of its rows to containers, and a container's
+    height is the artefact a stray `1fr` inflates.
+    """
+    total = 0
+    for child in node.children:
+        if not child.display:
+            continue
+        if child.children:
+            total += _leaf_rows(child)
+        else:
+            total += child.region.height
+    return total
+
+
+@pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40), (170, 68)])
+async def test_a_modal_box_is_its_content_and_not_a_fraction_of_the_screen(size):
+    """`17` §4: height is `auto` with `max-height: 100%`, never a percentage.
+
+    `/sys diag` drew a 46-row border around eight lines at 170x68 and each onboarding
+    step took 66 of 68 rows for three fields, because `.info-box` asked for `70%`,
+    `.help-box` for `80%`, and every `VerticalScroll` kept its `1fr` default. The
+    empty space was the bug: a reader met a wall of border and hunted for the content
+    inside it. A box now grows to its content and only the ceiling stops it.
+
+    Measured at the leaves, not at the box's children: the child is the scroll view,
+    and its height is exactly what a stray `1fr` inflates, so measuring it would
+    assert the bug rather than catch it.
+    """
+    from bridge.ui.testing import ModalCanvas
+
+    width, height = size
+    # The `1 2` margin, then the box's own `thick` border and `1 2` padding.
+    cap = height - 2 - _MODAL_CHROME_ROWS
+    bad: list[str] = []
+    for name, factory in _every_modal():
+        app = ModalCanvas()
+        async with app.run_test(size=size) as pilot:
+            app.push_screen(factory())
+            await pilot.pause(0.2)
+            box = pilot.app.screen.query_one(
+                ".prompt-box, .pick-box, .info-box, .help-box"
+            )
+            content = box.content_region.height
+            leaves = _leaf_rows(box)
+        if name in _DOCUMENT_MODALS:
+            expected = min(leaves, cap)
+        elif leaves > cap:
+            expected = cap
+        else:
+            expected = leaves
+        # A document may sit at the ceiling; anything else must be at or under its
+        # leaves, with the slack named above and nothing more.
+        if name in _DOCUMENT_MODALS:
+            ok = content <= min(leaves, cap) + _LEAF_SLACK
+        else:
+            ok = content <= expected + _LEAF_SLACK
+        if not ok:
+            bad.append(
+                f"{name} at {width}x{height}: content area {content}, "
+                f"leaves want {leaves} (allowed {expected + _LEAF_SLACK})"
+            )
+    assert not bad, bad

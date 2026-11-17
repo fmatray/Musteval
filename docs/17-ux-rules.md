@@ -134,15 +134,112 @@ key the reader could press and nothing happened.
 - **Width follows the content, bounded by the terminal.** A one-line prompt is not
   widened to 90 columns to match the editor, and the editor is not pinned to 90 on a
   60-column terminal. Width is `min(content, terminal - margin)`.
+- **Every modal keeps the same gutter.** One row above and below, two columns left and
+  right, whatever the box's own width. Measured at 60x20, 80x24 and 120x40 across all
+  sixteen modal instances: none touches an edge, and none is off screen.
+- **Every modal keeps the same inner padding.** The gutter of the previous rule is
+  outside the border; the padding is inside it, and it is `1 2` on every box. Two
+  boxes with the same outer gutter but `padding: 0 1` in one of them set their text a
+  column apart, which reads as two modal styles rather than one. The number is the
+  same `1 2` because the prompt boxes — the majority — already had it, and the two
+  read-only boxes were the exception.
+- **The gutter is a margin on the box, never a padding on the screen.** Textual's CSS
+  has no `calc()`: `width: 100% - 4` is a parse error, and `width: 60` on a 60-column
+  terminal is a zero-column gutter. `margin: 1 2` plus `max-width: 100%` is the one
+  spelling that resolves against the terminal whatever the box declared, for a fixed
+  width and a percentage alike. A screen padding instead would be inherited by every
+  child, so a nested `Input` would be inset twice.
+- **`max-height: 100%` on every box, including the fixed-height ones.** A modal taller
+  than the terminal does not fit no matter how it is aligned: `ModelPicker` asked for
+  21 rows on a 20-row terminal and drew its last row one line below the screen. The
+  ceiling is what makes the height rule hold, so it belongs beside the width rule. The
+  margin comes out of the same budget.
+- **Content that does not fit scrolls, it never paints past the border.** A box is
+  capped at the terminal by `max-height: 100%`, but its children are not: `HelpModal`
+  put a 44-line body inside a `TabPane`, which is a plain `Widget` rather than a scroll
+  view, and the last 30 rows were drawn below the bottom of a 20-row screen — present
+  in the tree, invisible to the reader. Any content whose length is not fixed goes
+  inside a `VerticalScroll`. A fixed ceiling on a list is a size, not a guarantee:
+  `#step-model-list` held 12 rows inside a content area of 14, so the modal's own hint
+  fell outside the box. The ceiling must be affordable at the smallest terminal (§4's
+  measured size), and a hint that wraps at a narrow width takes two rows, which the
+  budget must include — the list's cap is 9 for that reason, and the hint is
+  `text-wrap: nowrap` so it stays the one row the budget counted.
 - **A modal that edits a document is wide.** The file editor takes at least 80% of
   the terminal width, because a document wrapped at 60 columns is unreadable and the
   wrap point is not the file's.
-- **Vertical is content-sized** unless the content is a document, which takes a
-  fraction of the screen and scrolls inside itself.
+- **Vertical is content-sized**, a document included. The exemption for a document is
+  its ceiling, not its size: `HelpModal`'s catalogue and `FilePrompt`'s file both hug
+  their rows until the terminal stops them, and only then scroll. A document that
+  took a fixed fraction of the screen was the bug the next three rules describe.
+- **A box hugs its content; a fraction of the screen is not a size.** Height is
+  `auto` with `max-height: 100%`, never a percentage. `InfoModal` asked for `70%` and
+  `HelpModal` for `80%`, so `/sys diag` drew a 46-row border around eight lines at
+  170x68 and the reader read two thirds of a screen of nothing. `auto` plus the
+  ceiling gives the three heights a box can have — content, content plus a scrollbar,
+  or the terminal — and the third is a cap rather than a target.
+- **The box itself is the scroll view.** `VerticalScroll` defaults to `height: 1fr`,
+  and a fraction inside an `auto` parent resolves against the screen rather than the
+  content: the three onboarding steps grew to 66 of 68 rows for three fields each.
+  Fixing that alone is not enough, because a content-sized scroll body that is a
+  *sibling* of fixed rows resolves its `max-height: 100%` against the whole content
+  area rather than the rows left below them, so the fixed rows are spent twice:
+  `InfoModal`'s heading put the body's last row one line past the border at every
+  size, and `ModelStep`'s title, path, summary and two hints put the last hint below
+  the border on a 20-row terminal. The overflow test caught both as a single row past
+  the content area. So a box whose body is its variable part *is* a `VerticalScroll`:
+  its content area is then its own height, nothing overhangs, and it is the box that
+  scrolls. `.info-box` and `.prompt-box.step-box` take that shape. A box with a
+  genuinely fixed footer keeps the footer outside and sizes the body `1fr`, which is
+  affordable only when the fixed rows fit the smallest terminal (§4).
+- **A child that under-reports its height is given the height it paints.**
+  `LoadingIndicator` reports four rows to an `auto` parent and draws one, so
+  `Working`'s three empty rows pushed the detail line and the cancel note past the
+  border at every size the audit measured. `#working-spinner` is pinned to one row; a
+  widget whose painted height differs from its claimed height must be told the
+  painted one, or the box budget counts rows the reader never sees.
+- **Width is a fraction bounded by a character cap.** A percentage is what keeps the
+  gutter — it resolves inside the `1 2` margin — and the cap is what keeps the
+  measure: `80%` of a 170-column terminal is 136 columns of prose, past the point a
+  reader tracks a line back. `.info-box` caps at 100 columns and `.help-box` at 104,
+  the latter wider because help is a two-column command/description list. A fixed
+  column width alone would overflow a 60-column terminal; `auto` alone collapses,
+  because the scroll view inside is `1fr` wide and takes its parent with it.
+- **Two columns of side gutter, not one.** A percentage width rounds to an odd column
+  count, so `80%` on an 80-column terminal is 64 and the leftover 16 does not split
+  into equal margins by itself; the margin is what makes the two sides equal, and one
+  column of it disappears against the border.
 - **State is set in `__init__`, never in `compose()`.** `compose` may run more than
   once and is a pure description of the tree; a constructor assignment inside it
   resets the screen on a re-mount.
 - **`Esc` always leaves**, per `05-bridge.md` §5.10 and §6.1.
+
+The rule is enforced by
+`bridge/tests/test_ui_help.py::test_every_modal_keeps_a_one_row_two_column_gutter`,
+which mounts all sixteen modal instances on a bare canvas at three terminal sizes and
+asserts four outer margins and four inner paddings on each. A companion test,
+`test_every_modal_class_is_measured`, diffs the measured list against
+`PromptBox.__subclasses__()` so a new modal that is never added to the list fails
+rather than going unmeasured.
+
+A second test,
+`test_a_modal_that_overflows_scrolls_rather_than_drawing_past_its_border`, gives six
+modals content longer than the screen and asserts no widget paints past the box's
+content area unless something above it scrolls.
+
+The density rule is enforced by
+`test_a_modal_box_is_its_content_and_not_a_fraction_of_the_screen` at four sizes,
+60x20 through 170x68. It counts the box's rows **at the leaves**, not at its direct
+children: every box puts its variable part inside a `VerticalScroll`, and that
+child's height is the artefact a stray `1fr` inflates, so measuring it would assert
+the bug rather than catch it — which it did, the first version of the test passing
+with the rule deleted. `HelpModal` and `FilePrompt` are named as documents and held
+to the ceiling instead, per the document exemption above.
+
+Both exist because the rules were stated here first and were false: eight modals sat
+at `L = R = 0` on a 60-column terminal, `ModelPicker` drew its last row one line below
+a 20-row screen, `HelpModal` painted 30 rows below one, and the two read-only boxes
+padded their text differently from every prompt box.
 
 ## 5. Search and filtering
 
