@@ -200,30 +200,63 @@ def test_the_seed_system_prompt_only_recommends_mermaid_kinds_that_render():
         )
 
 
-def test_the_seed_skill_satisfies_the_frontmatter_schema():
+SKILLS_DIR = Path("firmware/userfs/skills")
+
+# `03-config.md` §skills frontmatter schema, and the parser in
+# `components/skills/skills_index.c`: a file that breaks any of these is dropped from
+# the index with a logged warning, so the agent never sees it and nothing fails.
+SKILL_FILES = sorted(SKILLS_DIR.glob("*.md"))
+
+
+def test_the_image_ships_skills_to_check():
+    assert SKILL_FILES, f"no skill found under {SKILLS_DIR}"
+
+
+@pytest.mark.parametrize("skill_file", SKILL_FILES, ids=lambda p: p.stem)
+def test_every_shipped_skill_satisfies_the_frontmatter_schema(skill_file):
     import re
-    skill_file = Path("firmware/userfs/skills/led-control.md")
-    assert skill_file.is_file()
     text = skill_file.read_text(encoding="utf-8")
-    
-    # Frontmatter check
-    match = re.search(r"^---\n(.*?)\n---", text, re.S | re.M)
-    assert match is not None
+    match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    assert match is not None, f"{skill_file.name} has no frontmatter block"
     fm = match.group(1)
-    
-    # Name == Stem
-    assert "name: led-control" in fm
-    # Description’s length
-    desc_match = re.search(r"description: (.*)", fm)
-    assert desc_match and len(desc_match.group(1)) <= 200
-    # version, keywords, tools
-    assert "version: 1.0.0" in fm
-    assert "tools: [gpio.read, gpio.write]" in fm
-    assert "max_body_bytes: 2048" in fm
-    
-    # Body size
-    body = text[match.end():]
-    assert len(body.encode("utf-8")) <= 4096
+    fields = dict(re.findall(r"^([a-z_]+): (.*)$", fm, re.M))
+
+    # Rule 11: the declared name must equal the stem, or the skill is dropped.
+    assert fields.get("name") == skill_file.stem
+    assert re.fullmatch(r"[a-z0-9_-]{1,32}", fields["name"])
+
+    desc = fields.get("description", "")
+    assert 1 <= len(desc) <= 200, f"description is {len(desc)} chars"
+
+    keywords = fields.get("keywords", "[]").strip("[]")
+    words = [w.strip() for w in keywords.split(",") if w.strip()]
+    assert len(words) <= 8
+    for word in words:
+        assert re.fullmatch(r"[a-z0-9_-]+", word), f"{word!r} is not a lowercase word"
+
+    body = text[match.end():].encode("utf-8")
+    assert body, f"{skill_file.name} has an empty body"
+    assert len(body) <= int(fields.get("max_body_bytes", 4096))
+    assert len(text.encode("utf-8")) <= 8 * 1024
+
+
+def test_the_shipped_skill_index_fits_the_prompt_budget():
+    """The index is capped at 1024 bytes and drops the tail in name order.
+
+    A skill that does not fit is omitted with a log line and nothing fails, so a
+    description nobody trimmed silently removes a later skill from the prompt. The
+    bound is `AGENT_SKILL_INDEX_MAX` in `components/agent/agent.c`.
+    """
+    import re
+    lines = []
+    for skill_file in SKILL_FILES:
+        text = skill_file.read_text(encoding="utf-8")
+        fm = re.match(r"^---\n(.*?)\n---\n", text, re.S).group(1)
+        name = re.search(r"^name: (.*)$", fm, re.M).group(1).strip()
+        desc = re.search(r"^description: (.*)$", fm, re.M).group(1).strip()
+        lines.append(f"- {name}: {desc}\n")
+    total = sum(len(line.encode("utf-8")) for line in sorted(lines))
+    assert total <= 1024, f"skill index is {total} bytes, over AGENT_SKILL_INDEX_MAX"
 
 def test_the_seed_ships_no_tasks_json():
     assert not (Path("firmware/userfs/tasks.json")).exists()

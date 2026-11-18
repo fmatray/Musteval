@@ -1168,12 +1168,17 @@ levelling, so the quota, not the partition, is what bounds the model.
    destructive task changes stay outside the agent's reach.
 7. Resolved: `/prompts/`, `/skills/` and `/tools/*.json` reach the device two ways.
    A subset ships baked into the `userfs` image built at flash time — the built-in
-   skill (`/skills/led-control.md`), the system prompt (`/prompts/system.md`), the
-   two shipped declarative tools (`/tools/weather_now.json`, `/tools/web_search.json`)
-   and the default `config.json` — and any further file is imported in-session with the
-   host-only `fs.put` command (`04-protocol.md` §4.16). `fs.put` is chunked, so a file
-   larger than the 4 KiB RX line still imports. The link still cannot carry an
-   arbitrary directory tree; the bridge imports one file per invocation.
+   skills (`/skills/*.md`: one per task domain the model can get silently wrong, so
+   `led-control`, `scheduler-authoring`, `i2c-bus`, `memory-hygiene`,
+   `mqtt-publishing`, `file-layout` and `tool-refusals`), the system prompt
+   (`/prompts/system.md`), the two shipped declarative tools
+   (`/tools/weather_now.json`, `/tools/web_search.json`) and the default
+   `config.json` — and any further file is imported in-session with the
+   host-only `fs.put` command (`04-protocol.md` §4.16). Each skill costs one of the
+   16 index slots, so a new one has to displace a worse one rather than accumulate.
+   `fs.put` is chunked, so a file larger than the 4 KiB RX line still imports. The
+   link still cannot carry an arbitrary directory tree; the bridge imports one file
+   per invocation.
 8. Resolved: the `userfs` image is built by a Python script shipped in the bridge
    repository (`bridge/tools/build_userfs.py`), which takes a source directory —
    `firmware/userfs/` by default — produces a littlefs image sized for the `userfs`
