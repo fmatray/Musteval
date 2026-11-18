@@ -132,12 +132,19 @@ static void start_services(bool safe_mode)
     if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
         ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(err));
     }
-    if (net_connected() && clock_sync() == ESP_OK) {
-        /* Step 6: `ntp_synced` is the same transition, and a run it fires is the first
-         * one whose timestamps mean anything. */
-        (void)sched_trigger_bare(SCHED_TRIGGER_NTP_SYNCED);
-    } else if (net_connected()) {
-        ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(ESP_ERR_INVALID_STATE));
+    if (net_connected()) {
+        esp_err_t ntp_err = clock_sync();
+        if (ntp_err == ESP_OK) {
+            /* Step 6: `ntp_synced` is the same transition, and a run it fires is the
+             * first one whose timestamps mean anything. */
+            (void)sched_trigger_bare(SCHED_TRIGGER_NTP_SYNCED);
+        } else {
+            /* The real code: a timeout and "no server configured" are both
+             * `!= ESP_OK` and the operator can only act on the difference. Naming
+             * `ESP_ERR_INVALID_STATE` unconditionally reported a missing
+             * `ntp.servers[]` entry for every ordinary timeout. */
+            ESP_LOGW(TAG, "boot: ntp: %s", esp_err_to_name(ntp_err));
+        }
     }
 
     err = llm_init();
