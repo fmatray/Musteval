@@ -495,7 +495,19 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
             esp_err_t err = store_nvs_key_at(MEMORY_NAMESPACE, i, name, sizeof name);
             if (err == ESP_ERR_NOT_FOUND) break;
             if (err != ESP_OK) return err;
-            if (json_array_push_string(keys, name) == NULL) return ESP_ERR_NO_MEM;
+            /* `tools/memory.md` §`memory.list`: an object per key, never a bare
+             * string, so the model can size a read before making it. */
+            size_t len = 0;
+            /* The buffer bound, not `memory_max_bytes`: a value written under a larger
+             * config must still be listed and sized rather than dropped silently. */
+            if (store_nvs_get_str(MEMORY_NAMESPACE, name, s_read_buf,
+                                  TOOLS_RESULT_MAX, &len) != ESP_OK) {
+                continue;   /* removed between the iteration and this read */
+            }
+            json_node_t *entry = json_array_push_object(keys);
+            if (entry == NULL) return ESP_ERR_NO_MEM;
+            json_add_string(entry, "key", name);
+            add_int(entry, "bytes", (int64_t)len);
         }
         return ESP_OK;
     }
@@ -590,10 +602,12 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
     /* memory.delete */
     esp_err_t err = store_nvs_erase(MEMORY_NAMESPACE, key);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        set_why(why, why_cap, "memory.delete: no such key");
-        json_free(*out);
-        *out = NULL;
-        return err;
+        /* `tools/memory.md` §`memory.delete`: an absent key is a success with
+         * `deleted:false`. The caller's intent is satisfied, and a model that lost
+         * track of the key set can clear one without a preceding `memory.list`. */
+        json_add_string(root, "key", key);
+        json_add_bool(root, "deleted", false);
+        return ESP_OK;
     }
     if (err != ESP_OK) {
         set_why(why, why_cap, "memory.delete: the erase failed");
@@ -602,6 +616,7 @@ static esp_err_t call_memory(const char *tool, const tools_context_t *ctx,
         return err;
     }
     json_add_string(root, "key", key);
+    json_add_bool(root, "deleted", true);
     return ESP_OK;
 }
 
