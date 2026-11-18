@@ -18,7 +18,7 @@ endif()
 
 # Only `main` and its real dependencies: without this IDF builds every component,
 # and `esp_phy` drags `nvs_flash` in, which the host suite has no use for.
-# `AGENTS.md` gates firmware host-testable modules at 80% line, and a gate that no
+# `AGENTS.md` gates firmware host-testable modules at 98% line, and a gate that no
 # command enforces is a suggestion. `-DCOVERAGE=ON` instruments the components and
 # the suite, so `gcovr` reads the run rather than the source.
 option(COVERAGE "Instrument the host suite for gcovr" OFF)

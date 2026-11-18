@@ -1,6 +1,6 @@
-/* Boot to the point where the link is reachable (`02-firmware.md` §3.1). Steps 8-10
- * are not implemented yet; the boot guard they exist to protect already is, so a
- * device that stops here counts as a failed boot exactly as it will later. */
+/* Boot to the point where the link is reachable (`02-firmware.md` §3.1). All ten
+ * steps run in order; the boot guard they exist to protect is what makes a device
+ * that stops short of the idle point count as a failed boot. */
 
 #include "sdkconfig.h"
 
