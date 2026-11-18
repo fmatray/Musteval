@@ -655,6 +655,16 @@ as-is rather than implied precise (`06-security.md` §6).
     also taking the subscription IDF was doing: `idle_core_mask` covers every core
     (`(1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1`), so the idle tasks are watched
     until the scheduler exists and can subscribe its own.
+- `sys_pm_init()`: Configure dynamic frequency scaling, 80..160 MHz with light sleep
+  off (`08-code-architecture.md` §5.3), and create the one `ESP_PM_CPU_FREQ_MAX` lock.
+  Called from `app_main` before anything that measures time, so no deadline is
+  computed against a clock that later halves. Returns `ESP_ERR_NOT_SUPPORTED` in a
+  build without `CONFIG_PM_ENABLE` and changes nothing: the device then runs at the
+  bootloader's fixed frequency, which is the behaviour before DFS existed.
+- `sys_pm_busy_begin()` / `sys_pm_busy_end()`: Take and drop that lock. `agent_task`
+  brackets `run_once` with them, so the clock rises for a run and falls afterwards;
+  `link` and `sched` never take one. With DFS off both are no-ops returning `ESP_OK`,
+  so callers do not branch on the configuration.
 - `sys_gpio_edge_config(pin, edge)`: Configure a pin as input with the given edge
   (`SYS_EDGE_RISING` / `SYS_EDGE_FALLING` / `SYS_EDGE_ANY`). Does not install a
   handler.
@@ -719,7 +729,10 @@ the only place that names both sides.
 The device follows a strict linear boot to ensure dependencies are met.
 
 1. **ROM Stage**: USB-Serial/JTAG enumerates; logs sent to UART0 (D6/D7). Early ROM and bootloader text also reaches the CDC endpoint raw, where the bridge drops it: `04-protocol.md` §1.2 makes an undecodable line non-fatal.
-2. **Hardware Init**: `sys` initializes GPIOs and Watchdog.
+2. **Hardware Init**: `sys` initializes GPIOs and Watchdog, then configures dynamic
+   frequency scaling (`sys_pm_init`: 80..160 MHz, light sleep off —
+   `08-code-architecture.md` §5.3). DFS is set before anything measures time, so no
+   deadline is computed against a clock that later changes.
 3. **Storage**: `store` registers `userfs` at `/fs`, then `wsfs` at `/workspace`.
    Failure to mount `userfs` is fatal (`E_STORAGE`); `wsfs` may be reformatted.
 4. **Config**: `cfg` loads `config.json`, then `geo_init()` validates

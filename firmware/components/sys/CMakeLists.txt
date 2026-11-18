@@ -12,10 +12,11 @@ endif()
 if(IDF_TARGET STREQUAL "linux")
     idf_component_register(SRCS ${srcs} INCLUDE_DIRS "include")
 else()
-    # `esp_driver_gpio` provides driver/gpio.h, `esp_system` esp_task_wdt.h, `esp_adc`
+    # `esp_driver_gpio` provides driver/gpio.h, `esp_system` esp_task_wdt.h, `esp_pm`
+    # esp_pm.h (only compiled when CONFIG_PM_ENABLE is set), `esp_adc`
     # the oneshot unit and `esp_driver_i2c` the master bus.
     idf_component_register(SRCS ${srcs}
                            INCLUDE_DIRS "include"
                            PRIV_REQUIRES esp_driver_gpio esp_system esp_adc
-                                        esp_driver_i2c)
+                                        esp_driver_i2c esp_pm)
 endif()

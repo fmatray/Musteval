@@ -27,6 +27,20 @@ int32_t boot_guard_clamp_threshold(int64_t configured);
 
 esp_err_t sys_board_init(void);
 
+/* Dynamic frequency scaling (`08-code-architecture.md` §5.3): 80 MHz idle, 160 MHz
+ * under a lock. Call once, early in `app_main`, before anything measures time.
+ *
+ * Without `CONFIG_PM_ENABLE` this returns `ESP_ERR_NOT_SUPPORTED` and changes
+ * nothing, so a build that has not enabled DFS still boots — the frequency is then
+ * whatever the bootloader left, which is the behaviour before this existed. */
+esp_err_t sys_pm_init(void);
+
+/* Take the 160 MHz lock for work whose latency the reader is waiting on, and drop
+ * it when that work ends. Paired, never nested, and cheap when DFS is off: with
+ * `CONFIG_PM_ENABLE` unset both are no-ops, so callers do not branch on it. */
+esp_err_t sys_pm_busy_begin(void);
+void      sys_pm_busy_end(void);
+
 /* Onboard user LED, GPIO21, active-low (`01-hardware.md` §6). The inversion is the
  * point of this call: callers ask for lit or dark, never for a logic level. */
 esp_err_t sys_led_set(bool on);

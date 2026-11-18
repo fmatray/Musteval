@@ -31,6 +31,7 @@
 #include "llm.h"
 #include "skills.h"
 #include "store.h"
+#include "sys.h"
 #include "tools.h"
 
 static const char *TAG = "agent";
@@ -1134,7 +1135,14 @@ static void agent_task(void *arg)
         if (xQueueReceive(s_queue, &job, portMAX_DELAY) != pdTRUE) continue;
         s_busy = true;
         s_cancel = false;
+        /* `08-code-architecture.md` §5.3: the clock rises only while there is work.
+         * Taken here rather than inside `run_once` so every exit path — cancelled,
+         * refused, failed, finished — drops it through the one release below. A run
+         * the reader is waiting on is the only thing that needs 160 MHz; the idle
+         * link poll and the scheduler timer do not. */
+        (void)sys_pm_busy_begin();
         run_once(&job, (int32_t)uxQueueMessagesWaiting(s_queue));
+        sys_pm_busy_end();
         /* The run owned the prompt from the moment it left the queue, so it frees it
          * whether it finished, failed or was cancelled. */
         heap_caps_free(job.prompt);

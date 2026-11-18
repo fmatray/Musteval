@@ -33,3 +33,11 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 # is that a crash backtrace has fewer optimisations to unwind, which matters only
 # when debugging on a board that a serial probe can reach anyway.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# Dynamic frequency scaling (docs/08-code-architecture.md §5.3): 160 MHz under a run,
+# 80 MHz otherwise. Light sleep stays off because docs/01-hardware.md §5 requires the
+# device to answer `ping` and fire `schedule` triggers while the link is open, and
+# light sleep is what breaks that (§5.4). Tickless idle is left off for the same
+# reason: on ESP-IDF it *is* automatic light sleep.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n

@@ -2074,6 +2074,19 @@ void app_main(void)
         ESP_LOGE(TAG, "sys: init failed: %s", esp_err_to_name(err));
     }
 
+    /* `08-code-architecture.md` §5.3: DFS is configured before anything that measures
+     * time, so no deadline is computed against a clock that later halves. A build
+     * without `CONFIG_PM_ENABLE` returns `ESP_ERR_NOT_SUPPORTED`; that is the
+     * pre-DFS behaviour and is logged at info, not as a failure. */
+    err = sys_pm_init();
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGI(TAG, "pm: DFS not built, fixed 160 MHz");
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "pm: init failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "pm: DFS 80..160 MHz, light sleep off");
+    }
+
     err = store_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "store: nvs init failed: %s", esp_err_to_name(err));

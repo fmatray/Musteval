@@ -3,10 +3,11 @@
  * stub here would be a test of the stub (`AGENTS.md`, coverage gates). */
 
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_task_wdt.h"
-#include "driver/i2c_master.h"
 
 #include "sys.h"
 
@@ -14,6 +15,50 @@
 
 static adc_oneshot_unit_handle_t s_adc;
 static i2c_master_bus_handle_t s_i2c_bus;
+/* One shared lock rather than one per caller: a run is the only thing that holds it,
+ * so a second handle would only add a way to leak the first. */
+static esp_pm_lock_handle_t s_pm_busy;
+
+esp_err_t sys_pm_init(void)
+{
+#if CONFIG_PM_ENABLE
+    /* `08-code-architecture.md` §5.3. Light sleep stays off: `01-hardware.md` §5
+     * requires `ping` and `schedule` to answer while the link is open, and light
+     * sleep is what breaks that (§5.4). 80 MHz is the floor because below it the
+     * SPI clock driving the LCD-free but DMA-bound peripherals starts to matter,
+     * and the saving is already most of the way there. */
+    const esp_pm_config_t pm = {
+        .max_freq_mhz = 160,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = false,
+    };
+    esp_err_t err = esp_pm_configure(&pm);
+    if (err != ESP_OK) return err;
+    return esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "agent-run", &s_pm_busy);
+#else
+    /* No DFS in this build: `CONFIG_PM_ENABLE` is what compiles the API in at all,
+     * so naming it here would not link. */
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+esp_err_t sys_pm_busy_begin(void)
+{
+#if CONFIG_PM_ENABLE
+    return s_pm_busy != NULL ? esp_pm_lock_acquire(s_pm_busy) : ESP_OK;
+#else
+    return ESP_OK;
+#endif
+}
+
+void sys_pm_busy_end(void)
+{
+#if CONFIG_PM_ENABLE
+    if (s_pm_busy != NULL) {
+        (void)esp_pm_lock_release(s_pm_busy);
+    }
+#endif
+}
 
 /* `01-hardware.md` §6: onboard user LED, active-low, not on the header. */
 #define SYS_LED_PIN GPIO_NUM_21

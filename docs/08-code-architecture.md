@@ -409,6 +409,15 @@ one, so an idle device sits at 80 MHz with the modem asleep.
 DFS costs nothing architecturally: no task changes, no wake-latency budget, no USB
 side effect. It is the default and is verified at M5 alongside the current figures.
 
+The configuration lives in `sys`, not in `app_main`: `sys_pm_init()` calls
+`esp_pm_configure` and creates the one lock, and `agent_task` brackets `run_once` with
+`sys_pm_busy_begin()` / `sys_pm_busy_end()`. Both are compiled to no-ops without
+`CONFIG_PM_ENABLE` and `sys_pm_init` then returns `ESP_ERR_NOT_SUPPORTED`, so a
+configuration that drops the flag still links and boots at a fixed frequency. The
+lock is taken around the whole run rather than around each request, because a run is
+one reader-visible operation and a clock that drops between two rounds of the same
+run would slow the second for no saving.
+
 **Tickless idle is deliberately *not* used in v1**, and this is the subtle one. On
 ESP-IDF, FreeRTOS tickless idle is implemented **as automatic light sleep** — enabling
 it alongside `CONFIG_PM_ENABLE` puts the core into light sleep between ticks. So it is
