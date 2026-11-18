@@ -818,7 +818,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/context` | `command {name:"context.budget"}`, `command {name:"context.block"}` | none | Opens one split box: the blocks of the next request with their item counts on the left, and the selected block's text on the right, fetched on selection (§7.5) |
 | `/compact [keep]` | `command {name:"context.compact"}` | none | Asks first, naming the message count and the bytes; then has the device summarise the conversation and reports what it replaced and what it kept (§7.5) |
 | `/todo [op] [target]` | `command {name:"todo.apply"}` | `op, task?, phase?, items?, list?, reason?` | Renders the phases and their tasks as one line per task, with `pending`, `in_progress`, `completed`, `abandoned` and `blocked` distinguished and a blocked task's `blocker` shown. Bare `/todo` is `view`. Verbs: `init [<phase> <item>...]` (no arguments clears), `start <task>`, `append <phase> <item>...`, `done`, `drop`, `rm`, `block`, `unblock`. A trailing target is sent as both `task` and `phase`: the tool's own `task → phase` chain decides which one matched, so `/todo done auth` finishes every task in phase `auth` without the bridge guessing, and each op keeps its own rule for what a phase target means (`block` still leaves a finished task alone). A required argument is refused by the bridge rather than sent. A finished run whose `agent.final` carried `todo_open: true` prints a hint pointing here, so an unfinished plan is visible instead of silent. `edit` is a UI verb, not an op: the completion list offers it after the device verbs, and it opens the tree editor of §6.2. The editor reads the live tree (`todo.apply` with `view`), lets the reader select a phase or a task, modify it, add one before or after it, drop it, or move it, and sends one `init` that rewrites the whole list. Esc sends nothing. Because that frame replaces every task, the editor re-reads the tree just before sending and refuses its own edit with `the todo list changed while you were editing` when the run moved anything meanwhile: an edit made against a stale tree would otherwise overwrite the run's own work. Because no device op moves, renames or inserts at a position, a full-list rewrite is the only way to express those edits — which is why `init`'s `items` accepts an object carrying a task's own `status` and `blocker` (`tools/todo.md` §Operations): a string would reset every task to `pending` and turn reordering into data loss. |
-| `/export` | (Local) | none | Writes the chat log to `bridge-export-<ts>.md` |
+| `/export` | (Local) | none | Writes the chat pane to `bridge-export-<ts>.md` in the cwd (§7.9) |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
 | `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |
 | `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
@@ -1307,7 +1307,7 @@ and the one that destroys history, so it asks first:
    mistake cannot spend a request and rewrite the history.
 3. It sends `context.compact` and reports `summarised N messages, kept K, X B -> Y B`.
 4. **It says the summary is now the only copy** in chat, because that is true: the old
-   messages are gone and `05` §5.6's `/export` is how a reader keeps them. A command
+   messages are gone and §7.9's `/export` is how a reader keeps them. A command
    that silently discards a transcript is one a reader stops trusting.
 
 A refusal is reported with the device's code, like every other command: `E_BUSY` when
@@ -1474,6 +1474,27 @@ provider cannot blank another's credential.
 - **Nothing here reports a provider as down.** That verdict belongs to `status`
   (`render.llm_verdict`), and a modal that repeated it would be a second opinion about
   a fact one owner already decides.
+
+### 7.9 `/export`
+
+`/export` writes the chat pane to `bridge-export-<ts>.md` in the bridge's working
+directory, one message per line under a `# musteval transcript <ts>` heading, and
+answers with the path it wrote. It costs no frame: the pane is the record.
+
+The body is the message text, not the rendered widget. Rich's log stores
+width-cropped strips trimmed to the scrollback cap, so reading the pane back would
+export text cut at whatever width the terminal happened to have, and would drop
+everything past the cap. A drawn Mermaid diagram is exported as its source fence, so
+the file re-renders elsewhere rather than carrying one terminal's layout.
+
+The transcript is bounded at the same order as the scrollback, so a session left open
+for days does not grow the bridge's memory without limit; the oldest lines fall off
+both together. `Ctrl+L` and `/clear` empty it with the pane, because a file that
+reinstated lines the reader asked to forget is not a transcript of what they see.
+
+A write that fails — an unwritable cwd, a name already taken by a directory — is one
+error line naming the reason, and nothing is created. The pane is untouched either
+way, so the reader still has the scrollback to try again from.
 
 ## 8. Secrets & Redaction
 

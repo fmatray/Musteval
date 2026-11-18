@@ -96,6 +96,10 @@ from .render import (
 COMPOSER_MAX_ROWS = 6
 #: `05-bridge.md` §5.1: the candidate list never pushes the conversation away.
 COMPLETION_ROWS = 8
+#: How many lines `/export` keeps. Matches `RichLog(max_lines=2000)` on the Logs
+#: screen's order of magnitude: a session long enough to exceed it is one the
+#: reader has already scrolled past, and the alternative is an unbounded list.
+EXPORT_MAX_LINES = 5000
 
 
 def _entries_note(result: dict[str, Any] | None) -> str:
@@ -164,6 +168,10 @@ class ChatScreen(Vertical):
         #: of raising out of the worker or silently losing it.
         self._ready = False
         self._pending: list[tuple[Any, str]] = []
+        #: The pane as text, for `/export`. `RichLog.lines` is width-cropped and
+        #: trimmed to the scrollback cap, so what a narrow terminal shows is not
+        #: what the file should say.
+        self.transcript: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield ChatLog(id="chat-log", wrap=True, markup=False, highlight=False)
@@ -315,6 +323,9 @@ class ChatScreen(Vertical):
         if not isinstance(text, str):
             # A caller that already built a renderable (`render_json_block`) owns
             # its own presentation; wrapping it in a `Text` would crash on it.
+            # `Syntax` carries the source it highlights, so the transcript gets the
+            # JSON rather than a blank line the file could not explain.
+            self._record(str(getattr(text, "code", text)))
             log.write(text)
             return
         # `06` T16 and `17` §2: every one of these strings can carry a device or
@@ -324,6 +335,9 @@ class ChatScreen(Vertical):
         if kind in ("user", "assistant"):
             style = theme.accent if kind == "user" else "none"
             if kind == "assistant":
+                # `05` §5.6: the transcript is the source text, not the laid-out
+                # diagram, so `/export` keeps the fence a reader can re-render.
+                self._record(text)
                 # A drawn diagram is a tree of text, so it is laid out to the pane
                 # it lands in rather than to a fixed column count.
                 rendered = Markdown(
@@ -333,6 +347,7 @@ class ChatScreen(Vertical):
                 )
                 log.write(rendered)
                 return
+            self._record(f"you: {text}")
             rendered = Markdown(text, style=style, code_theme=MARKDOWN_CODE_THEME)
             # `you: ` is its own column rather than a prefix inside the Markdown:
             # glued on, a prompt that opens with a fence or a `#` stops being a
@@ -351,7 +366,21 @@ class ChatScreen(Vertical):
             style = f"bold {theme.error}"
         else:  # thinking, tool, info
             style = "dim" if kind in ("thinking", "tool") else "none"
+        # After the marker, so the file and the pane say the same line: `!` and `✗`
+        # are the fact, not decoration (`17` §2).
+        self._record(text)
         log.write(Text(text, style=style))
+
+    def _record(self, text: str) -> None:
+        """One line for `/export`, in the pane's own order.
+
+        Bounded by the same cap as the scrollback so a long session cannot grow the
+        bridge without limit; `RichLog.max_lines` is the number this tracks.
+        """
+        self.transcript.append(text)
+        overflow = len(self.transcript) - EXPORT_MAX_LINES
+        if overflow > 0:
+            del self.transcript[:overflow]
 
     def render_bar(self, line: str, styled: Text | None = None) -> None:
         """`05` §5.1: the fact line above the composer.
@@ -379,6 +408,10 @@ class ChatScreen(Vertical):
     def action_clear_log(self) -> None:
         """`05` §6.2: clear this session's scrollback, which is local only."""
         self.query_one("#chat-log", RichLog).clear()
+        # The exported file is the scrollback's own content, so `/clear` clears what
+        # `/export` would write too; a transcript that survived the pane would
+        # reintroduce the lines the reader asked to forget (`05` §7.5).
+        self.transcript.clear()
         self._turns = 0
 
     def action_clear_input(self) -> None:
@@ -404,6 +437,7 @@ class ChatScreen(Vertical):
             self.query_one("#chat-log", RichLog).write(
                 Rule(characters="─", style="dim")
             )
+            self._record("─" * 40)
         self._turns += 1
 
     def _input(self) -> Input:
@@ -3520,10 +3554,30 @@ class BridgeApp(App):
         elif head == "usage":
             self._chat().write(f"total tokens: {self._usage_total}")
         elif head == "export":
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            self._chat().write(f"exported bridge-export-{stamp}.md")
+            self._export()
         elif head == "quit":
             self.exit()
+
+    def _export(self) -> None:
+        """`05` §7: write the chat log to `bridge-export-<ts>.md` in the cwd.
+
+        The file, not the widget, is the transcript: `RichLog` stores width-cropped
+        `Strip`s trimmed to the scrollback cap, so reading the pane back would write
+        text cut at the terminal's width. The failure is reported and the pane is
+        left alone — a reader who cannot write the cwd still has their scrollback.
+        """
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = f"bridge-export-{stamp}.md"
+        # No code fence around the body: an assistant reply can itself contain one,
+        # and a transcript wrapped in a fence it also closes is not a transcript.
+        lines = [f"# musteval transcript {stamp}", "", *self._chat().transcript, ""]
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines))
+        except OSError as exc:
+            self._chat().write(f"could not write {path}: {exc.strerror or exc}", kind="error")
+            return
+        self._chat().write(f"exported {path}")
 
 
 def _provider_label(

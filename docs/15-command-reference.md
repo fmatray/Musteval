@@ -29,7 +29,7 @@ Column meanings:
 | `/config get <path>` | `path` | `config.get` | Dumps one value |
 | `/config set <path> <value>` | `path`, then the value as the rest of the line | `config.set` | Writes one value |
 | `/context` | none | `context.budget`, `context.block` | Opens one split box: the eight blocks with their item counts on the left, the selected block's text on the right |
-| `/export` | none | (Local) | Names the `bridge-export-<ts>.md` file it wrote |
+| `/export` | none | (Local) | Writes the chat pane to `bridge-export-<ts>.md` in the cwd and names it (`05-bridge.md` §7.9) |
 | `/files [<path>]` | optional sandbox `path`, `/workspace/` by default | (Local) | Opens the Files screen; the screen then sends `sandbox.list` |
 | `/fs put <path>` | `path` inside the import allowlist | `fs.put` | Prompts for a local file, uploads it in 2 KiB chunks |
 | `/geo` | none | `geo.locate` | Forces a fresh fix |

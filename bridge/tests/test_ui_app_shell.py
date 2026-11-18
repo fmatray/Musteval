@@ -430,17 +430,20 @@ async def test_onboard_typed_as_a_command_opens_the_network_step():
 # -- local verbs, and the panels that answer without the device ----------
 
 
-async def test_the_local_verbs_answer_from_state_already_in_hand():
+async def test_the_local_verbs_answer_from_state_already_in_hand(tmp_path, monkeypatch):
     """`05` §7: `usage` and `export` are local, so they cost no frame. `export` names
-    the file it wrote; `usage` quotes the counters.
+    the file it wrote (`test_ui_app.py` asserts the file's content); `usage` quotes
+    the counters. The cwd is a temp directory so the export lands outside the tree.
 
     `/context` is deliberately absent: it asks the device (`context.budget`), because
     the prompt, the tool array and the history are device state and a host-side count
     would be a number the device contradicts (`05` §7.5)."""
     from bridge.protocol import Frame as F
 
+    monkeypatch.chdir(tmp_path)
+
     async def body(app, pilot):
-        app.query_one("#chat-log").clear()
+        app.query_one("#chat-log").clear()  # type: ignore[attr-defined]
         app._on_frame(
             F(
                 type="agent.final",
@@ -501,7 +504,7 @@ async def test_a_reply_that_is_not_a_command_result_is_not_read_for_a_result():
     from bridge.protocol import Frame as F
 
     async def body(app, pilot):
-        app.query_one("#chat-log").clear()
+        app.query_one("#chat-log").clear()  # type: ignore[attr-defined]
 
         async def wrong_reply(frame):
             return F(type="status", id=frame.id, ts=0, body={"result": {"ok": 1}})

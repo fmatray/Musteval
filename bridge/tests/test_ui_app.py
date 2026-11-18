@@ -352,16 +352,45 @@ async def test_usage_reports_the_running_totals():
     await _run(_device(), body)
 
 
-async def test_export_names_a_timestamped_file_and_writes_nothing():
-    """`05` §7: `/export` is the bridge's own transcript, so it names the file it made
-    and touches no device frame."""
+async def test_export_writes_the_transcript_to_the_file_it_names(tmp_path, monkeypatch):
+    """`05` §7: `/export` is the bridge's own transcript, so the file it names must
+    exist and carry what the pane said, and it must cost no device frame."""
+    monkeypatch.chdir(tmp_path)
 
     async def body(app, pilot):
+        app._on_frame(
+            Frame(
+                type="agent.final",
+                id="d-9",
+                ts=0,
+                body={"run_id": "r-1", "text": "the answer", "stop": "done"},
+            )
+        )
         before = len(app.session._transport.written)  # type: ignore[attr-defined]
         app.submit("/export")
-        await _await_chat(pilot, app, "bridge-export-")
-        assert ".md" in _text(app)
+        await _await_chat(pilot, app, "exported bridge-export-")
         assert len(app.session._transport.written) == before  # type: ignore[attr-defined]
+        written = list(tmp_path.glob("bridge-export-*.md"))
+        assert len(written) == 1
+        text = written[0].read_text(encoding="utf-8")
+        assert text.startswith("# musteval transcript ")
+        assert "the answer" in text
+
+    await _run(_device(), body)
+
+
+async def test_export_reports_a_refused_write_instead_of_the_file(tmp_path, monkeypatch):
+    """A write that fails is the one case where naming the file would be a lie, so
+    the line says why. The clock is frozen because the failure is triggered by a
+    directory sitting on the name the export picks."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("bridge.ui.app.time.strftime", lambda _fmt: "20260101-000000")
+    (tmp_path / "bridge-export-20260101-000000.md").mkdir()
+
+    async def body(app, pilot):
+        app.submit("/export")
+        await _await_chat(pilot, app, "could not write")
+        assert not (tmp_path / "bridge-export-20260101-000000.md").is_file()
 
     await _run(_device(), body)
 

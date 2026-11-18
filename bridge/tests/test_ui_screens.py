@@ -48,6 +48,9 @@ async def test_clearing_the_chat_empties_the_pane_and_the_turn_count():
         await pilot.pause(0.05)
         assert chat._turns == 0
         assert chat.query_one("#chat-log").lines == []
+        # `/export` writes this list, so a transcript that survived Ctrl+L would
+        # hand back the lines the reader just cleared.
+        assert chat.transcript == []
 
     await _run(_device(), body)
 
