@@ -153,6 +153,13 @@ bool store_path_is_under(const char *dir, const char *path);
  * read what the image ships; it is never used for a model-supplied path. Pure. */
 esp_err_t store_resolve_image_path(const char *in, char *out, size_t out_cap);
 
+/* `store_resolve_image_path` plus the mount map, so the result is a VFS path
+ * `opendir` can use: `/skills/` becomes `/fs/skills`, and the two `/workspace`
+ * spellings become the mount itself. Pure, and the only mapping a directory takes:
+ * a caller that maps the result again lists `/fs/fs/...` and finds nothing
+ * (`store_list_dir`, `store_read_file`). */
+esp_err_t store_resolve_dir_path(const char *in, char *out, size_t out_cap);
+
 /* Largest VFS path any `store_*` call produces; sized for a full agent path plus
  * the `/fs/` prefix. A caller's buffer may be smaller, which the calls reject. */
 #define STORE_PATH_MAX 512

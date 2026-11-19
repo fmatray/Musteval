@@ -261,3 +261,39 @@ TEST_CASE("a set replaces an array element and refuses a missing index", "[store
     json_free(val);
     json_free(doc);
 }
+
+TEST_CASE("a directory resolves to one VFS path, not two mappings", "[store]")
+{
+    char out[256];
+
+    /* `02-firmware.md` §store: `store_list_dir` hands `opendir` a path, so its
+     * resolver must return a mount path and nothing may map it again. The defect this
+     * pins mapped `/skills/` twice, to `/fs/fs/skills`, and `opendir` answered
+     * `ESP_ERR_NOT_FOUND`; `skills_scan` reads that as "no tree yet", so every skill
+     * silently vanished from the prompt with no log line. */
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_dir_path("/skills/", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/fs/skills", out);
+
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_dir_path("/prompts", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/fs/prompts", out);
+
+    /* The userfs root: `/` canonicalises to the empty path, which the map refuses, so
+     * it is named `/` and maps with the mount's own separator. */
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_dir_path("/", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/fs/", out);
+
+    /* Both workspace spellings are the mount itself, not `/fs/workspace`. The
+     * separator is the one `STORE_ROOT_WORKSPACE` carries, and `opendir` accepts it. */
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_dir_path("/workspace", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/workspace/", out);
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_dir_path("/workspace/", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/workspace/", out);
+    TEST_ASSERT_EQUAL(ESP_OK, store_resolve_dir_path("/workspace/runs", out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("/workspace/runs", out);
+
+    /* An escape is refused here, not canonicalised into the image root. */
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      store_resolve_dir_path("/../../etc", out, sizeof out));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                      store_resolve_dir_path("skills", out, sizeof out));
+}

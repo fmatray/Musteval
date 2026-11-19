@@ -55,17 +55,6 @@ static void quota_scan(const char *dir, store_quota_t *q, int depth, const char 
 
 static esp_err_t image_vfs(const char *agent_path, char *out, size_t out_cap);
 
-static esp_err_t resolve_dir(const char *in, char *out, size_t out_cap)
-{
-    if (strcmp(in, "/workspace") == 0 || strcmp(in, "/workspace/") == 0) {
-        return store_map_path(STORE_ROOT_WORKSPACE, out, out_cap);
-    }
-    /* Both mounts are listable (`06` §6.1): `fs.list` may list `/fs`, and the skill
-     * scan lists `/skills/`. Confinement belongs to the host-only `sandbox.*`
-     * commands, which admit their own paths. */
-    return image_vfs(in, out, out_cap);
-}
-
 static int entry_qsort_cmp(const void *a, const void *b)
 {
     return store_entry_cmp((const store_entry_t *)a, (const store_entry_t *)b);
@@ -73,18 +62,12 @@ static int entry_qsort_cmp(const void *a, const void *b)
 
 /* An image path is canonicalised for the `06` §6.1 rules and then mapped onto the
  * mount (`03-config.md` §1). Skipping the map writes to the VFS root, which no
- * partition is mounted at, so every image import failed with ESP_FAIL. */
+ * partition is mounted at, so every image import failed with ESP_FAIL. The mapping
+ * itself lives in `store_path.c` beside every other path rule, and is what a listing
+ * uses too: two independent copies is how `store_list_dir` came to map twice. */
 static esp_err_t image_vfs(const char *agent_path, char *out, size_t out_cap)
 {
-    char canon[STORE_PATH_MAX];
-    esp_err_t err = store_resolve_image_path(agent_path, canon, sizeof canon);
-    if (err != ESP_OK) return err;
-    /* `/` canonicalises to the empty path, which `store_map_path` refuses; it is the
-     * `userfs` root and `fs.list`'s default (`tools/filesystem.md`). */
-    if (canon[0] == '\0') {
-        memcpy(canon, "/", 2);
-    }
-    return store_map_path(canon, out, out_cap);
+    return store_resolve_dir_path(agent_path, out, out_cap);
 }
 
 /* Shared by the sandbox listing and the image listing; only the admission rule
@@ -126,11 +109,11 @@ esp_err_t store_list_dir(const char *agent_path, store_entry_t *out, size_t cap,
                          size_t *count)
 {
     if (agent_path == NULL || out == NULL || count == NULL) return ESP_ERR_INVALID_ARG;
-    char resolved[STORE_PATH_MAX];
-    esp_err_t err = resolve_dir(agent_path, resolved, sizeof resolved);
-    if (err != ESP_OK) return err;
+    /* `store_resolve_dir_path` already returns a VFS path, so this must not map
+     * again: a second `store_map_path` put every image listing under `/fs/fs`, and
+     * `opendir` returned `ESP_ERR_NOT_FOUND` for a directory that existed. */
     char vfs[STORE_PATH_MAX];
-    err = store_map_path(resolved, vfs, sizeof vfs);
+    esp_err_t err = store_resolve_dir_path(agent_path, vfs, sizeof vfs);
     if (err != ESP_OK) return err;
     return list_canonical(vfs, out, cap, count);
 }

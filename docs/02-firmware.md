@@ -114,11 +114,19 @@ path. Pure prefix substitution, no filesystem access:
   is admitted, because `04` §4.17 defaults `sandbox.list` to it. It exists so a
   caller cannot reach the root by passing the file-target resolver, whose refusal
   of `/workspace/` is correct there and wrong here.
-- `store_list_dir(agent_path, out, cap, count)`: list one directory under
-  `/workspace/`, sorting directories first then names. A listing exceeding the
-  cap returns `E_STORAGE`. The root `/workspace/` is a legal listing target,
-  though not a legal file target; `store_resolve_sandbox_path` is the admission
-  for it, and the resolver is applied to entries within.
+- `store_resolve_dir_path(in, out, out_len)`: the only resolver a directory
+  takes. `store_resolve_image_path` plus the mount map, so `/skills/` becomes
+  `/fs/skills` and both `/workspace` spellings become `/workspace/`. Returns a
+  VFS path, and a caller MUST NOT map it again: a second `store_map_path` turns
+  `/fs/skills` into `/fs/fs/skills`, `opendir` says `ESP_ERR_NOT_FOUND`, and a
+  caller that reads "not found" as "no tree yet" reports an empty directory for
+  one that exists. `store_list_dir`, `store_list_image_dir`, `store_read_file`
+  and `store_read_text` all go through it.
+- `store_list_dir(agent_path, out, cap, count)`: list one directory, sorting
+  directories first then names. A listing exceeding the cap returns `E_STORAGE`.
+  Any mounted path is listable: `/workspace/`, the userfs root, and the image
+  directories `/skills`, `/prompts` and `/tools`. The resolver is applied to
+  entries within.
   The staging file of a live transfer is never listed, because `04` §4.16
   forbids exposing partial state: an entry whose path equals the current
   staging path is skipped, and nothing else is.

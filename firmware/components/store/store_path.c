@@ -138,6 +138,28 @@ esp_err_t store_resolve_image_path(const char *in, char *out, size_t out_cap)
      * model-supplied path reaches here (`03-config.md` §1). */
     return resolve_canonical(in, out, out_cap, NULL, false);
 }
+esp_err_t store_resolve_dir_path(const char *in, char *out, size_t out_cap)
+{
+    if (in == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
+    if (out_cap == 0) return ESP_ERR_INVALID_SIZE;
+    /* The workspace root is the mount itself, and `store_map_path` would root it at
+     * `userfs`; the listing admission stops at `/workspace` with no further segment,
+     * which the canonical form has to name explicitly. */
+    if (strcmp(in, "/workspace") == 0 || strcmp(in, "/workspace/") == 0) {
+        return store_map_path(STORE_ROOT_WORKSPACE, out, out_cap);
+    }
+    /* Both mounts are listable (`06` §6.1): `fs.list` may list the userfs root, and
+     * the skill scan lists `/skills/`. Confinement belongs to the host-only
+     * `sandbox.*` commands, which admit their own paths. */
+    char canon[STORE_PATH_MAX];
+    esp_err_t err = store_resolve_image_path(in, canon, sizeof canon);
+    if (err != ESP_OK) return err;
+    /* `/` canonicalises to the empty path, which `store_map_path` refuses; it is the
+     * `userfs` root and `fs.list`'s default (`tools/filesystem.md`). */
+    if (canon[0] == '\0') memcpy(canon, "/", 2);
+    return store_map_path(canon, out, out_cap);
+}
+
 bool store_path_is_under(const char *dir, const char *path)
 {
     if (dir == NULL || path == NULL) return false;

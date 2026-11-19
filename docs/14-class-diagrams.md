@@ -675,6 +675,7 @@ classDiagram
       +store_resolve_sandbox_path(in, out, out_cap) esp_err_t
       +store_path_is_under(dir, path) bool
       +store_resolve_image_path(in, out, out_cap) esp_err_t
+      +store_resolve_dir_path(in, out, out_cap) esp_err_t
       +store_mount() esp_err_t
       +store_fs_usage(fs, used, total) esp_err_t
       +store_init() esp_err_t
