@@ -71,7 +71,7 @@ Column meanings:
 | `/tasks set <id>` | task `id` | `tasks.set` | Resends the cached task unchanged |
 | `/template <name>` | template `name` | `template.get` | Dumps one template's text |
 | `/templates` | none | `templates.list` | Lists prompt templates |
-| `/thinking` | none | `config.get`, `config.set` | Reports the stored level and the levels this provider accepts |
+| `/thinking` | none | `config.get`, `config.set` | Offers this provider's levels in a picker and writes the chosen one |
 | `/thinking <level>` | a level the provider accepts | `config.get`, `config.set` | Writes the level into `llm.providers[0].extra_body` |
 | `/todo` | none | `todo.apply` | Same as `/todo view` |
 | `/todo append <phase> <item>...` | `phase`, then at least one `item` | `todo.apply` | Adds items to a phase, creating it |

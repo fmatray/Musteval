@@ -279,14 +279,20 @@ async def test_the_list_url_is_the_entrys_own_base_url(monkeypatch):
 # -- `/thinking` -------------------------------------------------------
 
 
-async def test_the_bare_form_reads_the_stored_level_and_writes_nothing():
-    """`05` §7.2: the read form reports; only the argument form writes."""
+async def test_cancelling_the_bare_form_writes_nothing():
+    """`05` §7.2: the bare form offers the levels; only a chosen one is written, so a
+    dismissed picker must leave `extra_body` untouched."""
     async def body(app, pilot):
         app._config = _config_with(dict(OLLAMA))
         app._config_fetched = True
+
+        async def cancel(screen):
+            return None
+
+        app.push_screen_wait = cancel  # type: ignore[method-assign]
         await app._thinking([])
         assert not _sets(app)
-        assert _text(app).strip()
+        assert "thinking: cancelled" in _text(app)
 
     await _run(_device(), body)
 
@@ -447,9 +453,9 @@ async def test_a_thinking_write_offers_what_the_model_publishes(monkeypatch):
     await _run(_device(), body)
 
 
-async def test_a_thinking_read_names_the_levels_the_model_publishes(monkeypatch):
-    """`05` §7.2: with no argument `/thinking` reports the stored level and the set to
-    choose from, and that set is the model's own."""
+async def test_the_thinking_picker_offers_the_levels_the_model_publishes(monkeypatch):
+    """`05` §7.2: the rows are the set the chosen model publishes, not the provider
+    row's, so `/thinking` cannot offer `max` at a model that refuses it."""
     entry = {**OLLAMA, "model": "deepseek-v4.1-flash"}
 
     monkeypatch.setattr(
@@ -461,10 +467,18 @@ async def test_a_thinking_read_names_the_levels_the_model_publishes(monkeypatch)
     async def body(app, pilot):
         app._config = _config_with(entry)
         app._config_fetched = True
+        rows: list[list[tuple[str, str]]] = []
+
+        async def capture(screen):
+            rows.append(list(screen.rows))
+            return None
+
+        app.push_screen_wait = capture  # type: ignore[method-assign]
         await app._thinking([])
-        said = _text(app)
-        assert "choose from none, low, high, max" in said
-        assert not _sets(app), "a read sends nothing"
+        assert [[label for label, _ in r] for r in rows] == [
+            ["none", "low", "high", "max"]
+        ]
+        assert not _sets(app), "an offered level is not a written one"
 
     await _run(_device(), body)
 
@@ -488,8 +502,15 @@ async def test_a_provider_that_cannot_answer_falls_back_to_the_row(monkeypatch):
     async def body(app, pilot):
         app._config = _config_with(entry)
         app._config_fetched = True
+        rows: list[list[str]] = []
+
+        async def capture(screen):
+            rows.append([label for label, _ in screen.rows])
+            return None
+
+        app.push_screen_wait = capture  # type: ignore[method-assign]
         await app._thinking([])
-        assert "choose from low, high" in _text(app)
+        assert rows == [["low", "high"]]
         # Now the same entry with no answer from the provider: the row's set, which
         # the answer above cannot have produced.
         monkeypatch.setattr(
@@ -498,6 +519,97 @@ async def test_a_provider_that_cannot_answer_falls_back_to_the_row(monkeypatch):
             lambda provider, model, key="", fetch=None: (),
         )
         await app._thinking([])
-        assert "choose from none, low, medium, high, xhigh, max" in _text(app)
+        assert rows[-1] == ["none", "low", "medium", "high", "xhigh", "max"]
 
     await _run(_device(), body)
+
+
+# -- `/thinking`: the bare form is a picker, the typed form is not -----------
+
+
+async def test_the_bare_thinking_form_opens_a_picker_and_writes_the_chosen_level():
+    """`05` §7.2: with no argument the command offers the levels instead of only
+    reporting one. A report is a level the reader has to retype into a second
+    command, which is the case the picker exists for.
+
+    The row chosen is the frame written: an `_PickBox` answers its own label, so a
+    picker that answered anything else would be indistinguishable from a cancel.
+    """
+
+    async def body(app, pilot):
+        from bridge.ui.modals import _PickBox
+
+        rows: list[list[tuple[str, str]]] = []
+
+        async def picker(screen):
+            rows.append(list(screen.rows))
+            return "high"
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        app.submit("/thinking")
+        for _ in range(200):
+            if _sets(app):
+                break
+            await pilot.pause(0.02)
+        assert rows, "the bare form must open the picker, not print a sentence"
+        assert [label for label, _ in rows[0]] == list(
+            providers_mod.find("openai").thinking_levels
+        )
+        assert "high" in _text(app)
+        wrote = _sets(app)
+        assert wrote, "the chosen level must be written"
+        extra = wrote[0]["args"]["value"][0]["extra_body"]
+        assert providers_mod.find("openai").level_of(extra) == "high"
+
+    await _run(_device(), body)
+
+
+async def test_a_typed_thinking_level_skips_the_picker():
+    """`05` §7.2: one argument is the direct write, so no modal may open on that
+    path — a reader who typed the level has already chosen it."""
+
+    async def body(app, pilot):
+        opened: list[object] = []
+
+        async def picker(screen):
+            opened.append(screen)
+            return None
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        app.submit("/thinking low")
+        for _ in range(200):
+            if "thinking: low" in _text(app):
+                break
+            await pilot.pause(0.02)
+        assert not opened, "/thinking <level> must not open a modal"
+        assert "thinking: low" in _text(app)
+        assert _sets(app)
+
+    await _run(_device(), body)
+
+
+async def test_the_bare_thinking_form_reports_when_there_is_nothing_to_offer():
+    """`05` §7.2: a provider this bridge cannot describe has no rows, so the picker
+    would be a box with nothing in it. The sentence that names why is the answer."""
+
+    entry = {**OLLAMA, "id": "not-in-the-catalog"}
+    device = _device({"config.get": _config_with(entry)})
+
+    async def body(app, pilot):
+        opened: list[object] = []
+
+        async def picker(screen):
+            opened.append(screen)
+            return None
+
+        app.push_screen_wait = picker  # type: ignore[method-assign]
+        app.submit("/thinking")
+        for _ in range(200):
+            if "not in this bridge's catalog" in _text(app):
+                break
+            await pilot.pause(0.02)
+        assert not opened, "a provider with no levels must not open an empty box"
+        assert "not in this bridge's catalog" in _text(app)
+        assert not _sets(app)
+
+    await _run(device, body)

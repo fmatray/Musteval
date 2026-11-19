@@ -242,6 +242,24 @@ def writes(answers: Answers) -> list[tuple[str, dict[str, object]]]:
     )
 
 
+def thinking_levels(
+    providers_now: object, levels: "tuple[str, ...] | None" = None
+) -> "tuple[str, ...]":
+    """The levels `llm.providers[0]` takes, or `()` when it takes none.
+
+    One rule for the picker and the writer: `/thinking` with no argument offers these
+    rows and `/thinking <level>` validates against them, so a row the modal shows can
+    never be a level the write then refuses (`05` §7.2). The model's own answer wins
+    over the row's set, for the reason `thinking_writes` gives.
+    """
+    chain = providers_now if isinstance(providers_now, list) else []
+    entry_now = chain[0] if chain and isinstance(chain[0], dict) else {}
+    entry = providers.find(str(entry_now.get("id") or ""))
+    if entry is None:
+        return ()
+    return tuple(levels) if levels else entry.thinking_levels
+
+
 def thinking_writes(
     level: str, providers_now: object, levels: "tuple[str, ...] | None" = None
 ) -> "tuple[list[tuple[str, dict[str, object]]] | None, str]":
@@ -273,7 +291,7 @@ def thinking_writes(
     entry = providers.find(provider_id_)
     if entry is None:
         return None, f"provider {provider_id_!r} is not in this bridge's catalog"
-    offered = tuple(levels) if levels else entry.thinking_levels
+    offered = thinking_levels(chain, levels)
     if not offered:
         return None, f"{provider_id_} takes no thinking level; nothing to set"
     if level not in offered:

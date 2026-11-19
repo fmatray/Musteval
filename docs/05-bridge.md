@@ -821,7 +821,7 @@ alphabetical table, for looking a command up by name rather than by kind.
 | `/export` | (Local) | none | Writes the chat pane to `bridge-export-<ts>.md` in the cwd (§7.9) |
 | `/retry` | `prompt` | none | Resends the last prompt verbatim |
 | `/ping <target>` | `ping` or `command {name:"net.ping"}` | `target` | `device` measures link latency (a `pong: <n> ms` chat line and the `PING` row on F3); `router`, `llm` and `ntp` ICMP the device's default gateway, its active provider host and its first NTP server from the device, one chat line per answer, 100 % loss shown as an error |
-| `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it reports the stored level and the levels this provider accepts; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
+| `/thinking [level]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `level` | Reads or sets the thinking level of `llm.providers[0]`. With no argument it opens a picker over the levels this provider accepts and writes the chosen one; with one it writes that level into the entry's `extra_body` and re-reads the chain, so the level applies to the next prompt without a `reload` (§7.2) |
 | `/model [name]` | `command {name:"config.get"}`, `command {name:"config.set"}` | `name` | Sets the model of `llm.providers[0]`. With no argument it opens a picker of the provider's published models, pre-filled with the stored one and accepting a typed name instead; with one it writes that name directly. The write is the whole `llm.providers` array, so the rest of the entry moves untouched (§7.3) |
 | `/cancel` | `cancel` | none | Cancels the run in flight, or says there is nothing to cancel. Both outcomes answer in chat, printed once with no prefix: a live run ends with the `E_CANCELLED` `message` (`run cancelled`), an idle one with the `cancel.noop` `reason` (`nothing to cancel`) |
 | `/clear` | `command {name:"history.clear"}` | none | Forgets the conversation on both sides: the device's PSRAM history and this pane's scrollback. Refused with `E_BUSY` while a run is in flight, and then nothing is cleared on either side |
@@ -1015,8 +1015,24 @@ network and the key as well — a form of a full reconfiguration to change one n
 
 | Form | Sends | Answer |
 |---|---|---|
-| `/thinking` | `config.get`, then one `POST` to the provider's `show_url` when it has one | the stored level, and the levels **this model** accepts |
+| `/thinking` | `config.get`, then one `POST` to the provider's `show_url` when it has one, then `config.set llm.providers` if a level is chosen | a picker over the levels **this model** accepts; the level written, or `thinking: cancelled` |
 | `/thinking <level>` | `config.get`, the level-set lookup, then `config.set llm.providers` | the level written, and whether the chain took it |
+
+- **The bare form opens a picker; it does not merely report.** A report leaves the
+  reader copying a level out of one line into a second command, and the levels are a
+  closed set this bridge already knows, so the box can be the choice. The rows are
+  the same set `thinking_writes` validates against, read by one helper
+  (`_thinking_levels`), because a picker offering a row the write then refuses is a
+  modal that exists to produce an error.
+- **A provider with nothing to offer answers in chat instead.** No configured
+  provider, a provider this bridge's catalog does not describe, or a row that takes
+  no level leaves the picker with no rows; the sentence naming why is then the whole
+  answer, because a box the reader can only cancel is a dead end. The sentence is
+  `onboard.thinking_line`, the same one the read form used to print.
+- **The typed form never opens a modal.** One argument is the reader's choice
+  already made; a box there would ask twice for one answer. Both forms end in
+  `_thinking_set`, so a typed level and a chosen row cannot differ in what is
+  validated or what is sent.
 
 - **The levels offered are the chosen model's.** The lookup is `POST
   <origin>/api/show` for the model the entry names (§7.1), and its answer replaces

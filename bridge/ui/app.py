@@ -2845,7 +2845,7 @@ class BridgeApp(App):
 
 
     async def _thinking(self, rest: list[str]) -> None:
-        """`05` §7.2: read, or read-modify-write, the provider's thinking level.
+        """`05` §7.2: a typed level writes; no level offers one to choose.
 
         The level is validated before any frame is sent: the device accepts any flat
         `extra_body` member and turns every call into a 400, so a refused word has to
@@ -2853,18 +2853,47 @@ class BridgeApp(App):
         names, not from the provider row — a row is a statement about every model of
         that provider and cannot say that one of them takes `max` (`05` §7.1).
         """
-        level = rest[0] if rest else ""
         # Both forms read the stored entry: the write is a read-modify-write, and the
-        # read form has nothing to report on an unfetched document. Without this the
-        # line said "no provider is not in this bridge's catalog" against an empty
-        # `_config`, which is a report on a document nobody asked the device for.
+        # picker needs the entry to know what to offer. Without this the line said "no
+        # provider is not in this bridge's catalog" against an empty `_config`, which
+        # is a report on a document nobody asked the device for.
         if not self._config_fetched:
             await self._fetch_config()
         chain = self._existing("llm.providers")
         levels = await self._model_levels(chain)
-        if not level:
-            self._chat().write(onboard.thinking_line(level, chain, levels))
+        if rest:
+            await self._thinking_set(rest[0], chain, levels)
             return
+        # No argument is the picker, not a report: a level the reader can only read
+        # is a level they copy into a second command by hand. The modal is offered
+        # only where there is something to offer — a provider with no levels, or one
+        # this bridge cannot describe, has no rows to show, so the sentence that
+        # names why is the whole answer and a box would be a dead end.
+        offered = onboard.thinking_levels(chain, levels)
+        if not offered:
+            self._chat().write(onboard.thinking_line("", chain, levels))
+            return
+        entry_now, _ = onboard.provider_entry(chain)
+        choice = await self.push_screen_wait(
+            _PickBox(
+                [(lvl, "set this level") for lvl in offered],
+                title=f"thinking — {(entry_now or {}).get('id', '')}",
+            )
+        )
+        if choice is None:
+            self._chat().write("thinking: cancelled")
+            return
+        await self._thinking_set(choice, chain, levels)
+
+    async def _thinking_set(
+        self, level: str, chain: object, levels: "tuple[str, ...] | None"
+    ) -> None:
+        """Write `level` and report the device's answer. `05` §7.2.
+
+        Shared by the typed form and the picker so a level reaches `extra_body` by
+        one path: the picker choosing a row and the reader typing the same word must
+        not differ in what is validated or what is sent.
+        """
         plan, why = onboard.thinking_writes(level, chain, levels)
         if plan is None:
             self._chat().write(why, kind="error")
