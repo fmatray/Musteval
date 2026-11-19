@@ -787,9 +787,10 @@ skill written for another agent drops in unchanged. A loose `.md` directly under
 ```
 
 The agent discovers skills from frontmatter (the body is only loaded by
-`skill.read`), so frontmatter must stay small. Optional subdirectories (`scripts/`,
-`references/`, `assets/`) are allowed by the layout and unused here: no script is
-ever executed, because the firmware has no interpreter.
+`skill.read`), so frontmatter must stay small. The layout's optional subdirectories
+(`scripts/`, `references/`, `assets/`) are unused here and cannot be imported: `fs.put`
+admits only `/skills/<name>/SKILL.md`. Nothing executes a script, because the firmware
+has no interpreter.
 
 ### Frontmatter schema
 
