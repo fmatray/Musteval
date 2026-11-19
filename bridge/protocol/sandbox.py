@@ -63,9 +63,10 @@ def is_dir(path: str) -> bool:
 #: never parsed, so the directory fixes the extension.
 IMPORT_DIRS = (("/prompts/", ".md"), ("/tools/", ".json"))
 
-#: agentskills.io: a skill is `<name>/SKILL.md`, so an import into `/skills/` names
-#: the leaf inside a directory `sandbox.mkdir` already made. A loose `.md` directly
-#: under `/skills/` imports but never loads, which is why it is not admitted.
+#: agentskills.io: a skill is `<name>/SKILL.md`, one directory deep, and the device
+#: creates that directory on import because `sandbox.mkdir` reaches only
+#: `/workspace/`. A loose `.md` directly under `/skills/` imports but never loads,
+#: which is why it is not admitted.
 SKILL_LEAF = "/SKILL.md"
 
 #: `04` §4.16: the two whole documents an import may replace.
