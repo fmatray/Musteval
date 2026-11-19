@@ -1,19 +1,30 @@
 ---
 name: led-control
-description: Control and read the onboard LED to signal device state or debug output.
-version: 1.0.0
-keywords: [led, gpio, signal]
-tools: [gpio.read, gpio.write]
+description: Report device state from the onboard LED; the LED itself is firmware-owned and cannot be driven by a tool.
+version: 1.1.0
+keywords: [led, gpio, signal, diagnostics]
+tools: [sys.diagnostics, gpio.read]
 max_body_bytes: 2048
 ---
 
 # LED Control
 
-The onboard LED is connected to GPIO21 (active-low). Use this skill to signal status to the user.
+The onboard LED is on GPIO21 and is active-low. Firmware owns it: the boot and run
+state it shows is not something a tool can change.
 
-## Usage
-- To turn the LED ON: Use `gpio.write` with pin 21 and value 0.
-- To turn the LED OFF: Use `gpio.write` with pin 21 and value 1.
-- To check the current state: Use `gpio.read` on pin 21.
+## What does not work
 
-Note: `gpio.write` requires `allow_dangerous` to be true in the config. If the tool is refused, inform the user that dangerous operations are disabled.
+`gpio.read` and `gpio.write` both refuse GPIO21 with `E_TOOL`, whatever
+`tools.allow_dangerous` says. GPIO21 is reserved in `docs/01-hardware.md` §6.1 because
+it is not a header pin, and the pin allowlist in the firmware rejects it before the
+gate is consulted. Do not retry with another pin: GPIO13 is the Sense camera pixel
+clock and is equally refused.
+
+`gpio.write` on a header pin still needs `tools.allow_dangerous: true`. If that tool is
+refused, say the config disables dangerous operations and stop.
+
+## What to do instead
+
+Report state, do not signal it. Call `sys.diagnostics` and read the device counters it
+returns, then describe them. For a physical indicator the person can see, ask them to
+watch the onboard LED while you run the task, and tell them what it currently means.

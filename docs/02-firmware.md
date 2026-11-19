@@ -671,8 +671,9 @@ as-is rather than implied precise (`06-security.md` §6).
 - `sys_gpio_read(pin, *level)` / `sys_gpio_write(pin, level)`.
 - `sys_led_set(on)`: the onboard user LED on GPIO21 (`01-hardware.md` §6), which is
   active-low and not on the header. The inversion lives here, so no caller writes a
-  logic level that means the opposite of what it says. `gpio.read` on GPIO21 still
-  reports the raw level, per the tool contract in `03-config.md`.
+  logic level that means the opposite of what it says. GPIO21 is not in the tool pin
+  allowlist (`sys_pin_readable`), so `gpio.read` and `gpio.write` both refuse it and
+  the LED is firmware-only, per §6.1.
 - `sys_adc_read(channel, *mv)`: One-shot ADC1 read.
 - `sys_wdt_reset()` / `sys_wdt_add(task)`.
 - `sys_brownout_pending()`: Returns true if the reset cause was a brownout

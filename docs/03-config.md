@@ -729,7 +729,7 @@ obeys `tools.allow_dangerous` like any other run.
       },
       "action": {
         "kind": "prompt",
-        "prompt": "Read GPIO21 and report whether the LED is on."
+        "prompt": "Read the battery counters from sys.diagnostics and report them."
       },
       "repeat": { "mode": "count", "count": 3 },
       "missed": "skip"
@@ -808,14 +808,12 @@ max_body_bytes: 2048
 
 # LED control
 
-The board LED is on GPIO21 and is active-low.
+The board LED is on GPIO21 and is active-low. Firmware owns it, so no tool can drive
+or read it: `gpio.read` and `gpio.write` both answer `E_TOOL` for pin 21, whatever
+`tools.allow_dangerous` says (`../01-hardware.md` §6.1).
 
-- To turn it on: `gpio.write` with `{"pin": 21, "value": 0}`.
-- To turn it off: `gpio.write` with `{"pin": 21, "value": 1}`.
-- To read it: `gpio.read` with `{"pin": 21}`; `0` means lit.
-
-`gpio.write` requires `tools.allow_dangerous: true`. If the tool is refused, say so
-plainly instead of retrying.
+Report state with `sys.diagnostics` instead of signalling it. On a header pin,
+`gpio.write` needs `tools.allow_dangerous: true`.
 ```
 
 The same frontmatter, as the parsed object the firmware keeps in memory:

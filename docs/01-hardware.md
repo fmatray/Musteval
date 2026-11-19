@@ -300,7 +300,7 @@ and no second host is reserved for a user bus.
 | Interrupt-capable | Any exposed GPIO. Edge detection via the GPIO ISR service, not polling |
 | Debounce | Firmware-side, in `sched`; a bouncing contact must not fire a task twice |
 | Write gate | `gpio.write` is refused unless `tools.allow_dangerous` is `true` (§7) |
-| Read gate | `gpio.read` is always available, including on GPIO21 (LED state). The LED itself is written only by firmware |
+| Read gate | `gpio.read` is always available on the header pins; `gpio.write` needs `tools.allow_dangerous`. GPIO21 is refused by both, because it is firmware-owned and not a header pin (§6.1) |
 | Refusal | Reserved pins (§6.1) return a tool error, not a silent no-op |
 
 Edge events are reported to the bridge as `gpio.edge`; task firing is reported as
