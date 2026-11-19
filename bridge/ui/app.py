@@ -1153,11 +1153,20 @@ class BridgeApp(App):
             yield MqttScreen(id="mqtt")
             yield FilesScreen(id="files")
             yield SplashScreen(pick_tip(), id="splash")
-        # `17` §3: every screen ends in the one hint line, built here from the
-        # app's own bindings. Textual's `Footer` was in this slot and clipped
-        # mid-word — `^r Reconnec` at 100 columns, and F6/F7 lost at 50 — where the
-        # rule says a hint wraps rather than truncating.
-        yield Static(hint_bar(binding_pairs(self.BINDINGS)), id="app-hint", markup=False)
+        # `17` §3: the app row is the entry point to the shortcut list, not the list.
+        # It held every global key and wrapped to four rows at 60 columns, pushing the
+        # composer off a short terminal; the whole list now lives in the `/help` modal
+        # (`F1`), which has the room. Derived from `BINDINGS` by action, so the row
+        # cannot name a key the app does not bind.
+        yield Static(
+            hint_bar(
+                binding_pairs(
+                    [b for b in self.BINDINGS if b.action in ("help", "back")]
+                )
+            ),
+            id="app-hint",
+            markup=False,
+        )
 
     async def on_mount(self) -> None:
         self.session.install_sink(self._on_frame)
@@ -1190,7 +1199,7 @@ class BridgeApp(App):
 
     def action_help(self) -> None:
         """`05` §5.6: `F1` opens the catalogue as a modal, not a screen."""
-        self.push_screen(HelpModal(help_tabs()))
+        self.push_screen(HelpModal(help_tabs(), binding_pairs(self.BINDINGS)))
 
     def action_show(self, name: str) -> None:
         self.title = name.capitalize()

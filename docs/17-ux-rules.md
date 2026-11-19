@@ -121,11 +121,23 @@ this document. They carry a hint line like Tasks, Settings and Files already did
 built from their own `BINDINGS`; Chat adds `Enter` as a pair of its own because the
 composer acts on it without declaring it.
 
-**The app's own row is a hint line too.** `Ctrl+Q`, `F1`–`F7` and `Esc` are the
-`BridgeApp` bindings, so the row under the composer is `hint_bar` over those pairs,
-not Textual's `Footer`. The `Footer` clipped mid-word — `Ctrl+R Reconnec` where the
-terminal was wide enough for the whole label, and `F6`/`F7` gone at 50 columns — which
-is the truncation the third rule above forbids. Textual's `Footer` shows
+**The app's own row names the list, and the list lives in `/help`.** The row under
+the composer is `hint_bar` over the `BridgeApp` bindings, and it carries `F1 Help`
+and `Esc Back / Cancel`: the two keys that are about the shortcut list itself. The
+other globals — `F2`–`F7`, `Ctrl+R`, `Ctrl+Q` — are listed inside the `/help` modal,
+one line above its tabs, built from the same `binding_pairs(BridgeApp.BINDINGS)` the
+row used to print.
+
+The row held all of them until the rule above showed the cost: at 50 columns nine
+pairs wrapped to four rows and pushed the composer off a short terminal, and at
+60×20 Chat's hint was already taking four. Wrapping keeps every key discoverable, but
+the bar is the one row a screen cannot afford to spend on a list the reader can open
+deliberately. The list did not leave the product; it moved to the box with room for
+it, and the row points at the key that opens it.
+
+Textual's `Footer` filled this row before it: it clipped mid-word — `Ctrl+R
+Reconnec` where the terminal was wide enough for the whole label, and `F6`/`F7` gone
+at 50 columns — which is the truncation the third rule above forbids. It showed
 `Ctrl+P palette` as well, a command palette the app never bound, so its row named a
 key the reader could press and nothing happened.
 

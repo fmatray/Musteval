@@ -517,22 +517,49 @@ async def test_a_reply_that_is_not_a_command_result_is_not_read_for_a_result():
 
 
 @pytest.mark.asyncio
-async def test_the_global_hint_names_every_key_at_a_narrow_width() -> None:
-    """`17` §3: the hint line wraps rather than truncating, so no key is lost.
+async def test_the_global_hint_names_the_way_to_the_whole_list() -> None:
+    """`17` §3: the app row announces the shortcut list and does not attempt it.
 
-    Textual's `Footer` used to fill this row and it clipped mid-word: at 100 columns
-    the reader saw `^r Reconnec`, and at 50 the `F6`/`F7` aliases were gone. A key a
-    screen binds but the hint does not show is a key the reader never presses.
+    The row used to carry every global key, `F1`–`F7`, `Ctrl+R`, `Ctrl+Q` and `Esc`,
+    and at 50x20 it wrapped to the width of the terminal and took rows the composer
+    needed. The list moved into the `/help` modal, which has room for it; what the
+    row still owes the reader is the key that opens it. The pairs are derived from
+    `BridgeApp.BINDINGS` by action, so a renamed key moves the row too.
     """
     session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
     app = BridgeApp(session)
     async with app.run_test(size=(50, 20)):
         shown = str(app.query_one("#app-hint").content)
-        for key in ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "Ctrl+Q"):
-            assert key in shown, key
-        # Every label is whole: a truncated line ends mid-word, which is the defect.
-        for label in ("Reconnect", "Quit", "Help", "MQTT"):
-            assert label in shown, label
+        assert "F1" in shown and "Help" in shown
+        assert "Escape" in shown
+        # One row: an app bar that grows is the bug this contract replaced.
+        assert app.query_one("#app-hint").region.height == 1, shown
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_help_lists_every_global_shortcut_the_app_binds() -> None:
+    """`17` §3: the shortcut list lives in `/help`, and it is the app's own list.
+
+    Moved out of the row under the composer, which could not hold it without
+    wrapping the panes away. The modal renders the pairs `BridgeApp.BINDINGS`
+    yields, so a key added to the app appears here in the same edit and a key the
+    app drops cannot linger as a lie the reader presses.
+    """
+    from bridge.ui.modals import HelpModal
+
+    session = Session(FakeTransport(), ack_timeout=1, ping_interval=99)
+    app = BridgeApp(session)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _await_chat(pilot, app, "")
+        app.submit("/help")
+        await _await_screen(pilot, app, HelpModal)
+        shown = str(app.screen.query_one("#help-keys").content)
+        pairs = binding_pairs(BridgeApp.BINDINGS)
+        assert pairs
+        for chord, label in pairs:
+            assert chord in shown, (chord, shown)
+            assert label.split(" ")[0] in shown, (label, shown)
     await session.close()
 
 

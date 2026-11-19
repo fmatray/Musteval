@@ -17,7 +17,6 @@ from bridge.link import FakeTransport
 from bridge.ui import BridgeApp
 from bridge.ui.help import (
     COMMANDS,
-    HELP_TEXT,
     SUBCOMMAND_HELP,
     _SUBCOMMANDS,
     options,
@@ -69,17 +68,25 @@ def test_sys_is_a_device_command_covering_both_frame_shapes():
         assert verb not in LOCAL_COMMANDS
 
 
-def test_help_text_lists_every_head():
+def test_help_tabs_list_every_head():
     """A row is a line whose first cell is the head. Substring matching would pass on
-    `/tool` because `/tools` contains it, so the row itself is what is checked."""
+    `/tool` because `/tools` contains it, so the row itself is what is checked.
+
+    Read through `help_tabs`, the modal's own source: `KEYS_TEXT` used to be a
+    separate concatenation above the tabs, so a head could sit in one and not the
+    other. The tabs are now the only rendering.
+    """
+    from bridge.ui.help import help_tabs
+
+    bodies = help_tabs()
     heads = {
         line.split()[0]
-        for line in HELP_TEXT.splitlines()
+        for text in bodies.values()
+        for line in text.splitlines()
         if line.startswith("  /")
     }
     for command in COMMANDS:
         assert f"/{command.name}" in heads, command.name
-    assert len(HELP_TEXT.splitlines()) > len(COMMANDS)
 
 
 async def test_sys_diag_requests_status_and_shows_the_counters():
@@ -107,7 +114,10 @@ def _log(app) -> str:
 
 
 def test_help_fits_an_eighty_column_terminal():
-    assert max(len(line) for line in HELP_TEXT.splitlines()) <= 78
+    from bridge.ui.help import help_tabs
+
+    for text in help_tabs().values():
+        assert max(len(line) for line in text.splitlines()) <= 78
 
 
 # -- the suggester -------------------------------------------------------

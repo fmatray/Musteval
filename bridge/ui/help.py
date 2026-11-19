@@ -265,29 +265,11 @@ def _table(group: tuple[CommandHelp, ...]) -> list[str]:
     return [f"  {command.usage.ljust(width)}  {command.summary}" for command in group]
 
 
-#: Above the tables in every tab: the keys that are not a slash command at all.
-KEYS_TEXT = (
-    "F1 Help | F2 Chat | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files\n"
-    "Ctrl+R Reconnect | Ctrl+Q Quit\n"
-    "Esc Closes a modal and cancels a run"
-)
-
-
 def render_help(category: str) -> str:
     """One tab's body: the commands in that group, in catalogue order."""
     names = CATEGORIES[category]
     group = tuple(command for command in COMMANDS if command.name in names)
     return "\n".join(_table(group)) + "\n"
-
-
-def _render_help() -> str:
-    lines = [KEYS_TEXT]
-    for category in CATEGORIES:
-        lines.extend(["", category, *render_help(category).splitlines()])
-    return "\n".join(lines) + "\n"
-
-
-HELP_TEXT: str = _render_help()
 
 
 def help_tabs() -> dict[str, str]:

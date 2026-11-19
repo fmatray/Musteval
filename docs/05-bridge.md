@@ -409,16 +409,18 @@ from the table, or documented but rejected, fails a test rather than a user's me
 The entries are grouped by a second table, `CATEGORIES`, into four `TabPane`s —
 **Device**, **Chat**, **Info**, **Screens** — and a coverage test asserts that the
 groups name every command exactly once, so a new command cannot silently vanish
-from the modal. A keybinding strip sits above the tabs, from `KEYS_TEXT`, because
-the keys that close the modal are the ones a reader looks for. `Esc` dismisses.
+from the modal. Above the tabs sits the keyboard strip: the global shortcuts, as
+`hint_bar` over `binding_pairs(BridgeApp.BINDINGS)`, handed in by the app that owns
+them. It is here and not in the row under the composer because nine pairs wrapped to
+four rows at 50 columns there (`17` §3). `Esc` dismisses.
 
 When the longest usage in a group is wider than a column that still fits a terminal,
 each form moves to its own line with the summary indented beneath it. The result
 never exceeds 78 columns, so no line wraps on a narrow terminal.
 
 ```text
-F1 Help  | F2 Chat   | F3 Status | F4 Tasks | F5 Logs | F6 MQTT | F7 Files
-Ctrl+R Reconnect | Ctrl+Q Quit | Esc Closes a modal and cancels a run
+F1 Help  F2 Chat  F3 Status  F4 Tasks  F5 Logs  F6 MQTT  F7 Files
+Escape Back / Cancel  Ctrl+R Reconnect  Ctrl+Q Quit
 ```
 
 The modal itself, over whatever screen was open:

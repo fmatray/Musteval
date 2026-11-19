@@ -30,7 +30,13 @@ from .. import providers
 from ..commands import CommandError, todo_edit_tree, todo_init
 from ..protocol import Frame
 from . import onboard
-from .render import _TODO_MARKS, context_blocks, context_summary, sanitize
+from .render import (
+    _TODO_MARKS,
+    context_blocks,
+    context_summary,
+    hint_bar,
+    sanitize,
+)
 
 _T = TypeVar("_T")
 
@@ -1310,9 +1316,15 @@ class HelpModal(ModalScreen[None]):
 """
     BINDINGS = [Binding("escape", "cancel", "Close", show=False)]
 
-    def __init__(self, categories: dict[str, str]) -> None:
+    def __init__(
+        self, categories: dict[str, str], keys: list[tuple[str, str]] = ()
+    ) -> None:
         super().__init__()
         self.categories = categories
+        # `17` §3: the shortcuts, as `(key, label)` pairs the app hands in from its
+        # own `BINDINGS`. Passed rather than built here, so the modal cannot name a
+        # key the app does not bind; the modal knows no binding the app owns.
+        self.keys = keys
 
     def compose(self) -> ComposeResult:
         # `17` §4: the box is the scroll view, and the title lives inside it. With a
@@ -1322,6 +1334,12 @@ class HelpModal(ModalScreen[None]):
         # every size.
         with VerticalScroll(classes="help-box"):
             yield Static("Commands", classes="prompt-title")
+            if self.keys:
+                # `17` §3: the shortcut list lives here now, not in the bar under
+                # the composer. The bar can only hold what fits on one line without
+                # wrapping the panes away, and the reader who wants the whole list
+                # opens the screen that has room for it.
+                yield Static(hint_bar(self.keys), id="help-keys", markup=False)
             with TabbedContent(id="help-tabs"):
                 for name, text in self.categories.items():
                     with TabPane(name, id=f"help-tab-{name.lower()}"):
