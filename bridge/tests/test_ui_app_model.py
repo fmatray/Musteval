@@ -547,15 +547,18 @@ async def test_the_bare_thinking_form_opens_a_picker_and_writes_the_chosen_level
 
         app.push_screen_wait = picker  # type: ignore[method-assign]
         app.submit("/thinking")
+        # Wait for the report, not for the frame: the level is written and then the
+        # config is re-read before the line lands, so a wait on `_sets` alone reads
+        # the transcript mid-command.
         for _ in range(200):
-            if _sets(app):
+            if "thinking: high" in _text(app):
                 break
             await pilot.pause(0.02)
         assert rows, "the bare form must open the picker, not print a sentence"
         assert [label for label, _ in rows[0]] == list(
             providers_mod.find("openai").thinking_levels
         )
-        assert "high" in _text(app)
+        assert "thinking: high" in _text(app)
         wrote = _sets(app)
         assert wrote, "the chosen level must be written"
         extra = wrote[0]["args"]["value"][0]["extra_body"]
