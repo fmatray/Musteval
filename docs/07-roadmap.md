@@ -15,7 +15,11 @@ Goal: Establish a bootable baseline with correct memory and storage layout.
  - Corrupt-`wsfs` recovery: erase `wsfs` from the monitor, reboot, firmware reformats it and boots; the same test on `userfs` halts with `E_STORAGE` instead of wiping.
  - NVS namespaces `secrets`, `runtime` and `memory` initialized.
  - Boot guard: three consecutive boots that halt before the scheduler starts set `sys.safe_mode: true` on the fourth; a boot that reaches idle resets `boot_failures` to `0`; a `safe_mode_after` outside 2..10 falls back to the default `3` instead of locking the device out.
- - LED on GPIO21 toggles via simple driver.
+ - LED on GPIO21: `sys_led_set()` exists and is exercised once at boot, which clears
+   the active-low pin. The LED is not driven afterwards, so the "toggles via simple
+   driver" criterion is **not met**: the board shows no state through it. Neither
+   `gpio.read` nor `gpio.write` may substitute, because GPIO21 is refused by the pin
+   allowlist (`01-hardware.md` §6.1).
  - `idf.py size` verifies flash budget fits 8MB and the partition table matches `01-hardware.md` §4 offsets.
 - **Non-goals**: Network, Link, LLM.
 

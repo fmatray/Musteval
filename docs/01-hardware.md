@@ -227,7 +227,7 @@ never changes config semantics.
 | GPIO33–GPIO37 | **Octal PSRAM** extra data lines. Consumed because the R8 module has octal PSRAM |
 | GPIO45, GPIO46 | Strapping (VDD_SPI voltage, ROM messages). Not exposed on the header; never reassigned |
 | GPIO38–GPIO48 | Not exposed on this board. The Sense variant repurposes GPIO41/42 (PDM mic) and GPIO10–18 (camera) — out of scope per `docs/00-overview.md` §1.2 |
-| GPIO21 | Onboard LED, active-low. Owned by firmware status signalling |
+| GPIO21 | Onboard LED, active-low, not on the header. Firmware configures it at boot and never changes it, so it is never a tool target |
 
 The Sense-variant expansion pads referenced in `docs/00-overview.md` §1.2 as
 "D11/D12" are reserved and unused. This build targets the plain R8 board; no

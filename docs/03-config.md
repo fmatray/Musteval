@@ -799,21 +799,22 @@ Body rules:
 ```markdown
 ---
 name: led-control
-description: Turn the on-board LED on or off and report its current state.
+description: Report device state; the onboard LED is firmware-owned and unlit.
 version: "1.0"
-keywords: [led, gpio, light]
-tools: [gpio.read, gpio.write]
+keywords: [led, gpio, signal]
+tools: [sys.diagnostics, gpio.read]
 max_body_bytes: 2048
 ---
 
 # LED control
 
-The board LED is on GPIO21 and is active-low. Firmware owns it, so no tool can drive
-or read it: `gpio.read` and `gpio.write` both answer `E_TOOL` for pin 21, whatever
-`tools.allow_dangerous` says (`../01-hardware.md` §6.1).
+The board LED is on GPIO21 and is active-low. The firmware's only write to it is the
+one that clears it at boot, so it stays unlit and carries no state.
 
-Report state with `sys.diagnostics` instead of signalling it. On a header pin,
-`gpio.write` needs `tools.allow_dangerous: true`.
+No tool can read or drive it: `gpio.read` and `gpio.write` both answer `E_TOOL` for
+pin 21, whatever `tools.allow_dangerous` says (`../01-hardware.md` §6.1). Report state
+with `sys.diagnostics` instead. On a header pin, `gpio.write` needs
+`tools.allow_dangerous: true`.
 ```
 
 The same frontmatter, as the parsed object the firmware keeps in memory:
@@ -821,10 +822,10 @@ The same frontmatter, as the parsed object the firmware keeps in memory:
 ```json
 {
   "name": "led-control",
-  "description": "Turn the on-board LED on or off and report its current state.",
+  "description": "Report device state; the onboard LED is firmware-owned and unlit.",
   "version": "1.0",
-  "keywords": ["led", "gpio", "light"],
-  "tools": ["gpio.read", "gpio.write"],
+  "keywords": ["led", "gpio", "signal"],
+  "tools": ["sys.diagnostics", "gpio.read"],
   "max_body_bytes": 2048
 }
 ```
