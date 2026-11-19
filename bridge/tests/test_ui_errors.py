@@ -392,8 +392,9 @@ async def test_a_complete_answer_carries_no_truncation_note():
 # -- `/thinking` (`05` §7.2) ---------------------------------------------
 
 
-async def test_thinking_reports_the_stored_level_and_the_levels_offered():
-    """No argument is a read: the stored level, and what this provider takes."""
+async def test_thinking_offers_the_levels_this_provider_takes():
+    """No argument is the picker (`05` §7.2), and its rows are `groq`'s own: a row
+    offering a level the write would refuse is a modal that exists to error."""
 
     async def body(app, pilot):
         app._config = {
@@ -402,11 +403,21 @@ async def test_thinking_reports_the_stored_level_and_the_levels_offered():
             ]
         }
         app._config_fetched = True
-        await app._run_command("/thinking")
-        await pilot.pause(0.1)
-        text = _text(app)
-        assert "thinking: low" in text
-        assert "medium" in text and "high" in text
+        rows: list[list[str]] = []
+
+        async def capture(screen):
+            rows.append([label for label, _ in screen.rows])
+            return None
+
+        app.push_screen_wait = capture  # type: ignore[method-assign]
+        app.submit("/thinking")
+        for _ in range(200):
+            if rows:
+                break
+            await pilot.pause(0.02)
+        # `groq`'s row is `low`/`medium`/`high`: it has no `none`, and the picker
+        # offers the row, not a union of every provider's set.
+        assert rows == [["low", "medium", "high"]]
 
     await _run(_scripted(), body)
 
