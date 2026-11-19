@@ -38,10 +38,12 @@ What bounds a skill:
   (`../03-config.md` §skills, body rule 3).
 - Skills are read-only to the agent. `skill.read` is the intended path; `fs.read`
   can also reach them, `fs.write` cannot (`../06-security.md` §6.1).
-- The tree is capped at 16 skills and 8 KiB per file `[ASSUMPTION]`
-  (`../03-config.md` §Storage limits). `skill.read` refuses a body its result
-  buffer cannot carry with `E_TOOL` rather than truncating, so the model never
-  receives a silently shortened skill.
+- The tree holds at most 16 skills and 8 KiB per file `[ASSUMPTION]`
+  (`../03-config.md` §Storage limits). A `/skills/` with more than 16 entries is
+  refused whole — the scan returns no skills and logs `skill scan failed` — rather
+  than cut down to whichever sixteen the directory listed first. `skill.read` refuses a body its
+  result buffer cannot carry with `E_TOOL` rather than truncating, so the model
+  never receives a silently shortened skill.
 
 The mapped path is `/fs/skills/<name>/SKILL.md`: any agent path outside
 `/workspace/...` resolves to `userfs` (`../03-config.md` §1).

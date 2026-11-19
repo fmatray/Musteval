@@ -69,8 +69,9 @@ esp_err_t skills_scan(skill_meta_t *out, size_t cap, size_t *count)
     *count = 0;
 
     size_t found = 0;
-    /* `SKILLS_MAX` directories, because a `/skills/` holding more entries than that
-     * is refused by name rather than silently truncated to the first sixteen. */
+    /* `SKILLS_MAX` entries, and `store_list_dir` returns `ESP_ERR_INVALID_SIZE` when
+     * the directory holds more: a `/skills/` over the cap is refused whole, never
+     * truncated to whichever sixteen `readdir` happened to return first. */
     esp_err_t err = store_list_dir("/skills/", s_entries, SKILLS_MAX, &found);
     if (err == ESP_ERR_NOT_FOUND) return ESP_OK;  /* no tree yet is not a failure */
     if (err != ESP_OK) return err;
@@ -119,7 +120,16 @@ const skill_meta_t *skills_current(size_t *count)
 {
     if (count != NULL) *count = 0;
     size_t found = 0;
-    if (skills_scan(s_meta, SKILLS_MAX, &found) != ESP_OK) return s_meta;
+    esp_err_t err = skills_scan(s_meta, SKILLS_MAX, &found);
+    if (err != ESP_OK) {
+        /* Silence here is what hid a broken mount: `ESP_ERR_NOT_FOUND` means "no
+         * tree yet" and is quiet, but every other failure is a tree that exists and
+         * cannot be read, and a boot with no skills and no line explaining it reads
+         * as an empty tree. */
+        ESP_LOGE(TAG, "skill scan failed (%s), no skills this boot",
+                 esp_err_to_name(err));
+        return s_meta;
+    }
     skills_sort(s_meta, found);
     if (count != NULL) *count = found;
     return s_meta;
