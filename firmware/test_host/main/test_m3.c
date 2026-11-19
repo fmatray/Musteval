@@ -196,17 +196,20 @@ TEST_CASE("a scan in weak-first order is reordered", "[m3]")
     TEST_ASSERT_EQUAL_INT32(-90, list[2].rssi);
 }
 
-/* A quoted frontmatter value loses its quotes, so `version: "1.0"` parses as `1.0`
- * rather than as a three-character string with quote marks in it. */
+/* A quoted frontmatter value loses its quotes, so `description: "quoted desc"`
+ * parses as the words without the quote marks. */
 TEST_CASE("a quoted frontmatter value loses its quotes", "[m3]")
 {
-    const char *text = "---\nname: quot\ndescription: \"quoted desc\"\nversion: '1.0'\n---\nbody\n";
+    const char *text = "---\nname: quot\ndescription: \"quoted desc\"\n---\nbody\n";
     skill_meta_t meta;
     size_t offset = 0;
     TEST_ASSERT_EQUAL(ESP_OK, skills_parse("quot", text, strlen(text), &meta, &offset));
     TEST_ASSERT_EQUAL_STRING("quoted desc", meta.description);
-    TEST_ASSERT_EQUAL_STRING("1.0", meta.version);
     TEST_ASSERT_EQUAL_STRING("body\n", text + offset);
+
+    const char *single = "---\nname: quot\ndescription: 'single'\n---\nb\n";
+    TEST_ASSERT_EQUAL(ESP_OK, skills_parse("quot", single, strlen(single), &meta, &offset));
+    TEST_ASSERT_EQUAL_STRING("single", meta.description);
 }
 
 /* `\r`, `\b` and `\f` have JSON short forms and must not be emitted raw: a raw CR in

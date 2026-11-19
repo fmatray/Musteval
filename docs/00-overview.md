@@ -94,7 +94,7 @@ Path translation is pure prefix substitution and happens in one place:
 
 ```
 agent "/config.json"      -> VFS "/fs/config.json"
-agent "/skills/a.md"      -> VFS "/fs/skills/a.md"
+agent "/skills/a/SKILL.md" -> VFS "/fs/skills/a/SKILL.md"
 agent "/workspace/x.txt"  -> VFS "/workspace/x.txt"
 ```
 
@@ -108,7 +108,7 @@ inside `wsfs` only, where `..` above its root does not exist, so `open()` fails 
 | `/tasks.json` | user + agent (`task.set`, add/update only) | Triggered and scheduled tasks. |
 | `/prompts/system.md` | user | Main system prompt. MUST instruct the model to open a `todo` list for multi-step work and close every entry before answering (`03-config.md` §prompts). |
 | `/prompts/*.md` | user | Prompt templates. |
-| `/skills/*.md` | user | Skills (frontmatter + body). |
+| `/skills/<name>/SKILL.md` | user | Skills (frontmatter + body), agentskills.io layout. |
 | `/tools/*.json` | user | Declarative HTTP tools. |
 | `/workspace/` | agent | The only writable mount. Separate partition (`wsfs`). |
 

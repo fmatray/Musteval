@@ -1719,12 +1719,13 @@ static const char *SKILL_TEXT =
     "---\n"
     "name: blink\n"
     "description: Blink the onboard LED\n"
-    "version: 1.2\n"
-    "max_body_bytes: 512\n"
+    "metadata:\n"
+    "  version: \"1.2\"\n"
     "---\n"
     "Step one: configure the pin.\n";
 
-/* `03-config.md` §skills: frontmatter is parsed and the body offset points past it. */
+/* agentskills.io: `name` and `description` are read and the body offset points past
+ * the block. The optional fields are not parsed, so they cannot grant anything. */
 TEST_CASE("skills_parse reads frontmatter and the body offset", "[m4]")
 {
     skill_meta_t meta;
@@ -1734,14 +1735,55 @@ TEST_CASE("skills_parse reads frontmatter and the body offset", "[m4]")
     TEST_ASSERT_TRUE(meta.valid);
     TEST_ASSERT_EQUAL_STRING("blink", meta.name);
     TEST_ASSERT_EQUAL_STRING("Blink the onboard LED", meta.description);
-    TEST_ASSERT_EQUAL_STRING("1.2", meta.version);
-    TEST_ASSERT_TRUE(meta.has_max_body);
-    TEST_ASSERT_EQUAL_size_t(512, meta.max_body_bytes);
     TEST_ASSERT_EQUAL_STRING("Step one: configure the pin.\n", SKILL_TEXT + offset);
 }
 
-/* Validation rule 11: `name` must equal the file stem. A mismatch drops the file. */
-TEST_CASE("skills_parse drops a name that does not match the stem", "[m4]")
+/* A description longer than the index line is clipped, not refused: the index is a
+ * pointer to the body, and its whole budget cannot print a 1024-char description. */
+TEST_CASE("skills_parse clips a description to the index line", "[m4]")
+{
+    char text[SKILL_DESC_MAX + 256];
+    size_t pad = SKILL_DESC_MAX + 100;
+    int head = snprintf(text, sizeof text, "---\nname: long\ndescription: ");
+    memset(text + head, 'x', pad);
+    int tail = snprintf(text + head + pad, sizeof text - (size_t)head - pad,
+                        "\n---\n\nBody.\n");
+    TEST_ASSERT_TRUE(tail > 0);
+    size_t len = (size_t)head + pad + (size_t)tail;
+
+    skill_meta_t meta;
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK, skills_parse("long", text, len, &meta, &offset));
+    TEST_ASSERT_TRUE(meta.valid);
+    TEST_ASSERT_EQUAL_size_t(SKILL_DESC_MAX - 1, strlen(meta.description));
+    TEST_ASSERT_EQUAL_STRING("Body.\n", text + offset);
+}
+
+/* `metadata:` is a map in the spec, so its indented members belong to that map and
+ * must not be read as top-level keys: `  name: other` is not the skill's name. */
+TEST_CASE("skills_parse ignores a member of the metadata map", "[m4]")
+{
+    const char text[] =
+        "---\n"
+        "name: blink\n"
+        "description: Blink the LED.\n"
+        "metadata:\n"
+        "  name: other\n"
+        "  description: Not the real one.\n"
+        "---\n"
+        "\n"
+        "Body.\n";
+
+    skill_meta_t meta;
+    size_t offset = 0;
+    TEST_ASSERT_EQUAL_INT(ESP_OK,
+                          skills_parse("blink", text, strlen(text), &meta, &offset));
+    TEST_ASSERT_EQUAL_STRING("blink", meta.name);
+    TEST_ASSERT_EQUAL_STRING("Blink the LED.", meta.description);
+}
+
+/* The spec requires `name` to match the parent directory name. */
+TEST_CASE("skills_parse drops a name that does not match the directory", "[m4]")
 {
     skill_meta_t meta;
     size_t offset = 0;
@@ -1750,16 +1792,23 @@ TEST_CASE("skills_parse drops a name that does not match the stem", "[m4]")
     TEST_ASSERT_FALSE(meta.valid);
 }
 
-/* The name charset is `[a-z0-9_-]{1,32}`. */
-TEST_CASE("skills_name_ok enforces the charset and length", "[m4]")
+/* The spec's rule: 1..64 of `[a-z0-9-]`, no leading or trailing hyphen, no `--`. */
+TEST_CASE("skills_name_ok enforces the spec charset and length", "[m4]")
 {
     TEST_ASSERT_TRUE(skills_name_ok("blink"));
-    TEST_ASSERT_TRUE(skills_name_ok("a-b_c9"));
+    TEST_ASSERT_TRUE(skills_name_ok("a-b-c9"));
     TEST_ASSERT_FALSE(skills_name_ok("Blink"));
     TEST_ASSERT_FALSE(skills_name_ok("blink.md"));
     TEST_ASSERT_FALSE(skills_name_ok("../etc"));
     TEST_ASSERT_FALSE(skills_name_ok(""));
-    TEST_ASSERT_FALSE(skills_name_ok("aaaaaaaaaabbbbbbbbbbccccccccccddddd"));
+    TEST_ASSERT_FALSE(skills_name_ok("a_b"));
+    TEST_ASSERT_FALSE(skills_name_ok("-blink"));
+    TEST_ASSERT_FALSE(skills_name_ok("blink-"));
+    TEST_ASSERT_FALSE(skills_name_ok("blink--led"));
+    TEST_ASSERT_TRUE(skills_name_ok(
+        "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggg"));
+    TEST_ASSERT_FALSE(skills_name_ok(
+        "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffggggg"));
 }
 
 /* The index stops at the budget and reports what it dropped. */
@@ -2233,23 +2282,28 @@ TEST_CASE("skills_parse refuses every shape that is not a skill", "[m4]")
     TEST_ASSERT_NOT_EQUAL(ESP_OK,
         skills_parse("nodesc", no_desc, strlen(no_desc), &meta, &offset));
 
-    /* The name charset is enforced on the parsed value too, not only on the stem. */
+    /* The name rule is enforced on the parsed value too, not only on the directory. */
     const char *bad_name = "---\nname: Bad Name\ndescription: d\n---\nbody\n";
     TEST_ASSERT_NOT_EQUAL(ESP_OK,
         skills_parse("Bad Name", bad_name, strlen(bad_name), &meta, &offset));
 
-    /* A zero or negative `max_body_bytes` is ignored, leaving the default, rather
-     * than making every body of a real skill unreadable. */
-    const char *zero = "---\nname: zero\ndescription: d\nmax_body_bytes: 0\n---\nbody\n";
+    /* The spec's optional fields are ignored, not refused: a skill that carries them
+     * is still a skill, and none of them can widen a gate. */
+    const char *optional =
+        "---\n"
+        "name: opt\n"
+        "description: d\n"
+        "license: Apache-2.0\n"
+        "compatibility: Musteval\n"
+        "metadata:\n"
+        "  author: example\n"
+        "allowed-tools: gpio.write\n"
+        "---\n"
+        "body\n";
     TEST_ASSERT_EQUAL_INT(ESP_OK,
-        skills_parse("zero", zero, strlen(zero), &meta, &offset));
-    TEST_ASSERT_FALSE(meta.has_max_body);
-    TEST_ASSERT_EQUAL_size_t(SKILL_BODY_DEFAULT_MAX, meta.max_body_bytes);
-
-    const char *neg = "---\nname: neg\ndescription: d\nmax_body_bytes: -5\n---\nb\n";
-    TEST_ASSERT_EQUAL_INT(ESP_OK,
-        skills_parse("neg", neg, strlen(neg), &meta, &offset));
-    TEST_ASSERT_EQUAL_size_t(SKILL_BODY_DEFAULT_MAX, meta.max_body_bytes);
+        skills_parse("opt", optional, strlen(optional), &meta, &offset));
+    TEST_ASSERT_EQUAL_STRING("opt", meta.name);
+    TEST_ASSERT_EQUAL_STRING("body\n", optional + offset);
 }
 
 /* An invalid skill never reaches the index, so a dropped file cannot occupy a slot

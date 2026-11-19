@@ -67,7 +67,7 @@ TEST_CASE("the import cap is the target directory's per-file limit", "[quota]")
 {
     /* 03-config.md §Storage limits: imports get no larger budget than the file
      * they could have replaced. */
-    TEST_ASSERT_EQUAL_size_t(8u * 1024u, store_import_cap("/skills/led.md"));
+    TEST_ASSERT_EQUAL_size_t(8u * 1024u, store_import_cap("/skills/led/SKILL.md"));
     TEST_ASSERT_EQUAL_size_t(4u * 1024u, store_import_cap("/prompts/brief.md"));
     TEST_ASSERT_EQUAL_size_t(2u * 1024u, store_import_cap("/tools/gpio.json"));
     TEST_ASSERT_EQUAL_size_t(8u * 1024u, store_import_cap("/config.json"));
@@ -77,14 +77,15 @@ TEST_CASE("the import cap is the target directory's per-file limit", "[quota]")
     TEST_ASSERT_EQUAL_size_t(0, store_import_cap(NULL));
 }
 
-/* 04 §4.16: an import lands on exactly one of five targets, and the directory
- * fixes the extension, because each one carries exactly one file type. A name
- * without the suffix would be listed as a template or tool and never parsed. */
+/* 04 §4.16: an import lands on exactly one of five targets. A skill is
+ * `<name>/SKILL.md` under `/skills/` (agentskills.io), and the other two
+ * directories fix the extension, because each one carries exactly one file
+ * type. A name without the suffix would be listed and never parsed. */
 TEST_CASE("an import path is one of the five legal targets", "[quota]")
 {
     TEST_ASSERT_TRUE(store_import_path_ok("/config.json"));
     TEST_ASSERT_TRUE(store_import_path_ok("/tasks.json"));
-    TEST_ASSERT_TRUE(store_import_path_ok("/skills/led-control.md"));
+    TEST_ASSERT_TRUE(store_import_path_ok("/skills/led-control/SKILL.md"));
     TEST_ASSERT_TRUE(store_import_path_ok("/prompts/brief.md"));
     TEST_ASSERT_TRUE(store_import_path_ok("/tools/gpio.json"));
 
@@ -95,6 +96,8 @@ TEST_CASE("an import path is one of the five legal targets", "[quota]")
 
     /* The extension is the directory's, not any: a `.md` tool never parses. */
     TEST_ASSERT_FALSE(store_import_path_ok("/skills/led.txt"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/skills/led-control.md"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/skills/led-control/skill.md"));
     TEST_ASSERT_FALSE(store_import_path_ok("/tools/gpio.md"));
     TEST_ASSERT_FALSE(store_import_path_ok("/prompts/brief.json"));
 
@@ -103,9 +106,11 @@ TEST_CASE("an import path is one of the five legal targets", "[quota]")
     TEST_ASSERT_FALSE(store_import_path_ok("/prompts/.md"));
     TEST_ASSERT_FALSE(store_import_path_ok("/skills/"));
 
-    /* A nested path is accepted: 04 §4.16 says "under /skills/", which is a
-     * prefix, and the listing simply does not descend. */
-    TEST_ASSERT_TRUE(store_import_path_ok("/skills/sub/led.md"));
+    /* A nested template path is accepted: 04 §4.16 says "under /prompts/", which
+     * is a prefix, and the listing simply does not descend. A skill is not: the
+     * directory between `/skills/` and `SKILL.md` is the skill's identity. */
+    TEST_ASSERT_TRUE(store_import_path_ok("/prompts/sub/brief.md"));
+    TEST_ASSERT_FALSE(store_import_path_ok("/skills/sub/led/SKILL.md"));
 
     /* The rule is on the canonical path, because that is the path written. A raw
      * prefix match would admit `/skills/../workspace/x.md`: it canonicalises into

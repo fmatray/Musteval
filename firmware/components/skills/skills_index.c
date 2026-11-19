@@ -6,7 +6,6 @@
 #include "skills.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -17,12 +16,17 @@ bool skills_name_ok(const char *name)
 {
     if (name == NULL) return false;
     size_t n = strlen(name);
-    if (n == 0 || n > 32) return false;
+    /* agentskills.io: 1..64 characters, `[a-z0-9-]` only, no leading or trailing
+     * hyphen, no consecutive hyphens. Checked here once; every caller delegates. */
+    if (n == 0 || n > 64) return false;
+    if (name[0] == '-' || name[n - 1] == '-') return false;
+    bool previous_hyphen = false;
     for (size_t i = 0; i < n; i++) {
         char c = name[i];
-        bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' ||
-                  c == '-';
+        bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
         if (!ok) return false;
+        if (c == '-' && previous_hyphen) return false;
+        previous_hyphen = c == '-';
     }
     return true;
 }
@@ -40,7 +44,7 @@ static bool frontmatter_open(const char *text, size_t len, size_t *after)
 }
 
 /* Copy a trimmed `key: value` scalar. Quoted values lose their quotes, which is how
- * `version: "1.0"` parses as `1.0`. */
+ * `description: "quoted"` parses without the quote marks. */
 static void scalar(const char *line, size_t len, char *dst, size_t cap)
 {
     size_t end = len;
@@ -58,12 +62,11 @@ static void scalar(const char *line, size_t len, char *dst, size_t cap)
     dst[n] = '\0';
 }
 
-esp_err_t skills_parse(const char *stem, const char *text, size_t len,
+esp_err_t skills_parse(const char *dir_name, const char *text, size_t len,
                        skill_meta_t *out, size_t *body_offset)
 {
-    if (stem == NULL || text == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
+    if (dir_name == NULL || text == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof *out);
-    out->max_body_bytes = SKILL_BODY_DEFAULT_MAX;
 
     size_t at = 0;
     if (!frontmatter_open(text, len, &at)) {
@@ -105,36 +108,29 @@ esp_err_t skills_parse(const char *stem, const char *text, size_t len,
                 value_len--;
             }
 
+            /* Key matching is exact-length, which is also what keeps a member of a
+             * nested map out: `  name:` inside `metadata:` has key_len 6, so it can
+             * never be read as the skill's own name. */
             if (key_len == 4 && strncmp(line, "name", 4) == 0) {
                 scalar(value, value_len, out->name, sizeof out->name);
             } else if (key_len == 11 && strncmp(line, "description", 11) == 0) {
                 scalar(value, value_len, out->description, sizeof out->description);
                 have_desc = out->description[0] != '\0';
-            } else if (key_len == 7 && strncmp(line, "version", 7) == 0) {
-                scalar(value, value_len, out->version, sizeof out->version);
-            } else if (key_len == 14 && strncmp(line, "max_body_bytes", 14) == 0) {
-                char buf[16] = {0};
-                scalar(value, value_len, buf, sizeof buf);
-                char *end = NULL;
-                long n = strtol(buf, &end, 10);
-                if (end != buf && n > 0) {
-                    out->max_body_bytes = (size_t)n;
-                    out->has_max_body = true;
-                }
             }
-            /* `keywords` and `tools` are not parsed: the index needs neither, and
-             * neither can grant anything (`03-config.md` §skills body rule 3), so an
-             * unread value cannot weaken a gate. */
+            /* `license`, `compatibility`, `metadata` and `allowed-tools` are the
+             * spec's optional fields and are not parsed: the index needs neither,
+             * and an unread value cannot weaken a gate (`03-config.md` §skills body
+             * rule 3). */
         }
 
         at = next;
     }
 
     if (!skills_name_ok(out->name) || !have_desc) return ESP_ERR_INVALID_ARG;
-    /* Rule 11: the frontmatter name must equal the file stem, or the skill is
-     * dropped. `skill.read` then has no such skill (`tools/skills.md`). */
-    if (strcmp(out->name, stem) != 0) {
-        ESP_LOGW(TAG, "%s.md declares name %s; dropped", stem, out->name);
+    /* The spec requires `name` to match the parent directory name; a mismatch drops
+     * the skill, and `skill.read` then has no such skill (`tools/skills.md`). */
+    if (strcmp(out->name, dir_name) != 0) {
+        ESP_LOGW(TAG, "%s/SKILL.md declares name %s; dropped", dir_name, out->name);
         return ESP_ERR_INVALID_ARG;
     }
 

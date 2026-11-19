@@ -32,8 +32,9 @@ esp_err_t skills_read_body(const char *name, char *out, size_t cap, size_t *len)
      * be used to enumerate `/skills/` through error text (`tools/skills.md`). */
     if (!skills_name_ok(name)) return ESP_ERR_INVALID_ARG;
 
-    char path[64];
-    int n = snprintf(path, sizeof path, "/skills/%s.md", name);
+    /* agentskills.io: the skill is a directory holding `SKILL.md`. */
+    char path[96];
+    int n = snprintf(path, sizeof path, "/skills/%s/" SKILL_FILE_NAME, name);
     if (n < 0 || (size_t)n >= sizeof path) return ESP_ERR_INVALID_ARG;
 
     size_t file_len = 0;
@@ -46,9 +47,10 @@ esp_err_t skills_read_body(const char *name, char *out, size_t cap, size_t *len)
     if (err != ESP_OK) return ESP_ERR_INVALID_ARG;
 
     size_t body_len = file_len - body_at;
-    /* Over the skill's own cap is a refusal, not a truncation: the model must not act
-     * on half an instruction set. */
-    if (body_len > meta.max_body_bytes || body_len >= cap) {
+    /* Over the bound is a refusal, not a truncation: the model must not act on half
+     * an instruction set. The bound is the reader's cap, not a per-file frontmatter
+     * field: the spec has no such field (`tools/skills.md`). */
+    if (body_len >= cap) {
         return ESP_ERR_INVALID_SIZE;
     }
     memcpy(out, s_file + body_at, body_len);
@@ -59,42 +61,37 @@ esp_err_t skills_read_body(const char *name, char *out, size_t cap, size_t *len)
 
 /* Read `/skills/` and return the parsed frontmatter, sorted by name so the index
  * order is deterministic (the drop-to-fit rule drops "from the end in name order",
- * `tools/skills.md`). Returns the count; a malformed file is skipped with a warning,
- * never fatal. */
+ * `tools/skills.md`). Returns the count; a directory without a readable `SKILL.md`,
+ * or with malformed frontmatter, is skipped with a warning, never fatal. */
 esp_err_t skills_scan(skill_meta_t *out, size_t cap, size_t *count)
 {
     if (out == NULL || count == NULL) return ESP_ERR_INVALID_ARG;
     *count = 0;
 
     size_t found = 0;
+    /* `SKILLS_MAX` directories, because a `/skills/` holding more entries than that
+     * is refused by name rather than silently truncated to the first sixteen. */
     esp_err_t err = store_list_dir("/skills/", s_entries, SKILLS_MAX, &found);
     if (err == ESP_ERR_NOT_FOUND) return ESP_OK;  /* no tree yet is not a failure */
     if (err != ESP_OK) return err;
 
     size_t at = 0;
     for (size_t i = 0; i < found && at < cap; i++) {
-        if (s_entries[i].dir) continue;
-        size_t name_len = strlen(s_entries[i].name);
-        const char *suffix = ".md";
-        if (name_len <= 3 || strcmp(s_entries[i].name + name_len - 3, suffix) != 0) {
-            continue;
-        }
-        char stem[SKILL_NAME_MAX];
-        size_t stem_len = name_len - 3;
-        if (stem_len >= sizeof stem) continue;
-        memcpy(stem, s_entries[i].name, stem_len);
-        stem[stem_len] = '\0';
+        /* agentskills.io: each skill is a directory, and the file inside it is what
+         * carries the instructions. A loose `.md` in `/skills/` is not a skill. */
+        const char *name = s_entries[i].name;
+        if (!s_entries[i].dir || !skills_name_ok(name)) continue;
 
-        char path[64];
-        int n = snprintf(path, sizeof path, "/skills/%s.md", stem);
+        char path[96];
+        int n = snprintf(path, sizeof path, "/skills/%s/" SKILL_FILE_NAME, name);
         if (n < 0 || (size_t)n >= sizeof path) continue;
 
         size_t file_len = 0;
         if (store_read_file(path, s_file, SKILL_FILE_MAX, &file_len) != ESP_OK) {
-            ESP_LOGW(TAG, "%s: unreadable, dropped", stem);
+            ESP_LOGW(TAG, "%s: no readable " SKILL_FILE_NAME ", dropped", name);
             continue;
         }
-        if (skills_parse(stem, s_file, file_len, &out[at], NULL) != ESP_OK) {
+        if (skills_parse(name, s_file, file_len, &out[at], NULL) != ESP_OK) {
             continue;  /* the parser already logged why */
         }
         at++;

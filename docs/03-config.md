@@ -33,7 +33,7 @@ Paths below are **agent-visible**; `store_map_path()` translates them, and
 | `/tasks.json` | `tasks.set`/`tasks.delete` commands, or agent via `task.set` | JSON | boot, `reload` |
 | `/prompts/system.md` | flashing a `userfs` image | Markdown | boot, `reload` |
 | `/prompts/*.md` | flashing a `userfs` image | Markdown + optional frontmatter | boot, `reload` |
-| `/skills/*.md` | flashing a `userfs` image | Markdown with YAML frontmatter | boot, `reload` |
+| `/skills/<name>/SKILL.md` | flashing a `userfs` image, or `fs.put` (the importer makes the one directory above the file) | Markdown with YAML frontmatter | boot, `reload` |
 | `/tools/*.json` | flashing a `userfs` image | JSON | boot, `reload` |
 | `/workspace/` | agent (`fs.write`) | free-form | never |
 
@@ -772,20 +772,44 @@ obeys `tools.allow_dangerous` like any other run.
 
 ## skills
 
-A skill is one Markdown file at `/skills/<name>.md`: YAML frontmatter delimited by
-`---` lines, then a body of instructions. The agent discovers skills from frontmatter
-(the body is only loaded by `skill.read`), so frontmatter must stay small.
+A skill is a directory under `/skills/` holding a `SKILL.md`: YAML frontmatter
+delimited by `---` lines, then a body of instructions. This is the
+[agentskills.io](https://agentskills.io/specification) layout, adopted as-is so a
+skill written for another agent drops in unchanged. A loose `.md` directly under
+`/skills/` is not a skill and is ignored.
+
+```
+/skills/
+├── led-control/
+│   └── SKILL.md
+└── i2c-bus/
+    └── SKILL.md
+```
+
+The agent discovers skills from frontmatter (the body is only loaded by
+`skill.read`), so frontmatter must stay small. Optional subdirectories (`scripts/`,
+`references/`, `assets/`) are allowed by the layout and unused here: no script is
+ever executed, because the firmware has no interpreter.
 
 ### Frontmatter schema
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `name` | string | yes | none | `[a-z0-9_-]{1,32}`, must equal the file stem |
-| `description` | string | yes | none | 1..200 chars, shown to the model in the skill index |
-| `version` | string | no | `"1"` | free-form `MAJOR.MINOR` `[ASSUMPTION]` |
-| `keywords` | string[] | no | `[]` | 0..8 lowercase words used for matching |
-| `tools` | string[] | no | `[]` | tool names the skill expects; must exist in the tool surface |
-| `max_body_bytes` | int | no | `4096` | advisory cap used by `skill.read` |
+| `name` | string | yes | none | `[a-z0-9-]{1,64}`, no leading or trailing hyphen, no `--`, must equal the directory name |
+| `description` | string | yes | none | 1..1024 chars; the index line keeps the first 256, since the whole index is 1024 bytes |
+| `license` | string | no | none | ignored by the loader |
+| `compatibility` | string | no | none | ignored by the loader |
+| `metadata` | map | no | none | ignored by the loader; `version` and `keywords` live here when a skill wants them |
+| `allowed-tools` | string | no | none | ignored by the loader; names tools, grants nothing (body rule 3) |
+
+Only `name` and `description` are read. Every other field is accepted and dropped,
+so a skill written against the full spec loads here rather than being refused for a
+member this firmware has no use for. A field that is not read cannot widen a gate.
+
+A description is clipped to 256 characters when the index is built, not refused: the
+index is a pointer to the body, and its whole budget (`AGENT_SKILL_INDEX_MAX`) is
+1024 bytes, so a full-length description could never be printed twice over. Write the
+description as one sentence that makes the body worth loading.
 
 Body rules:
 
@@ -793,17 +817,18 @@ Body rules:
 2. Body must not contain secrets or `nvs:` values.
 3. A skill cannot grant tools. It only names them; the config allowlists still apply.
 4. Skills are read-only to the agent (`fs.read` is fine, `fs.write` outside `/workspace/` is not).
+5. The body is refused, not truncated, when `skill.read` cannot carry it whole.
 
 ### Example
 
 ```markdown
 ---
 name: led-control
-description: Report device state; the onboard LED is firmware-owned and unlit.
-version: "1.0"
-keywords: [led, gpio, signal]
-tools: [sys.diagnostics, gpio.read]
-max_body_bytes: 2048
+description: The onboard LED is firmware-owned and permanently unlit; no tool can read or drive it. Report state from sys.diagnostics.
+metadata:
+  version: "1.0"
+  keywords: "led gpio signal diagnostics"
+allowed-tools: sys.diagnostics gpio.read
 ---
 
 # LED control
@@ -822,11 +847,7 @@ The same frontmatter, as the parsed object the firmware keeps in memory:
 ```json
 {
   "name": "led-control",
-  "description": "Report device state; the onboard LED is firmware-owned and unlit.",
-  "version": "1.0",
-  "keywords": ["led", "gpio", "signal"],
-  "tools": ["sys.diagnostics", "gpio.read"],
-  "max_body_bytes": 2048
+  "description": "The onboard LED is firmware-owned and permanently unlit; no tool can read or drive it. Report state from sys.diagnostics."
 }
 ```
 
@@ -1090,7 +1111,7 @@ failure stops the sequence and is reported as `E_CONFIG` (boot) or in the
 | 8 | Cross-field: `agent.max_input_bytes <= serial.max_line_bytes`; `extra_body` has no `model`/`messages`/`tools`/`stream` key | config | `E_CONFIG`, config rejected |
 | 9 | `secret_ref` syntax, then NVS resolution in namespace `secrets` | config | `E_CONFIG`, config rejected |
 | 10 | Declarative tool name not a built-in, host in `tools.http_allow_hosts`, `nvs:` header refs resolvable | tools | tool dropped: `E_TOOL` on call, or `E_CONFIG` at load if a ref is unresolvable |
-| 11 | Skill/template frontmatter `name` equals file stem | skills, prompts | item dropped, warning logged |
+| 11 | Skill/template frontmatter `name` equals its directory name (skills) or file stem (templates) | skills, prompts | item dropped, warning logged |
 
 Degradation policy:
 
@@ -1134,7 +1155,7 @@ Default / reject matrix:
 | `agent.max_input_bytes` | <= `serial.max_line_bytes`, default 3072 | derived |
 | `/config.json` | <= 8 KiB `[ASSUMPTION]` | proposed |
 | `/tasks.json` | <= 8 KiB, <= `tools.task_max` tasks `[ASSUMPTION]` | proposed |
-| `/skills/*.md` | <= 8 KiB per file, <= 16 skills total `[ASSUMPTION]` | proposed; one budget for built-in and imported files alike |
+| `/skills/<name>/SKILL.md` | <= 8 KiB per file, <= 16 skills total `[ASSUMPTION]` | proposed; one budget for built-in and imported files alike |
 | `/prompts/*.md` | <= 4 KiB per file, <= 16 templates total `[ASSUMPTION]` | proposed; same |
 | `/tools/*.json` | <= 2 KiB per file, <= 16 tools total `[ASSUMPTION]` | proposed; same |
 | Declarative HTTP result fed to the model (after `response_path`) | 4096 bytes, then truncated | [ASSUMPTION] |
@@ -1167,7 +1188,7 @@ levelling, so the quota, not the partition, is what bounds the model.
    destructive task changes stay outside the agent's reach.
 7. Resolved: `/prompts/`, `/skills/` and `/tools/*.json` reach the device two ways.
    A subset ships baked into the `userfs` image built at flash time — the built-in
-   skills (`/skills/*.md`: one per task domain the model can get silently wrong, so
+   skills (`/skills/<name>/SKILL.md`: one per task domain the model can get silently wrong, so
    `led-control`, `scheduler-authoring`, `i2c-bus`, `memory-hygiene`,
    `mqtt-publishing`, `file-layout` and `tool-refusals`), the system prompt
    (`/prompts/system.md`), the two shipped declarative tools

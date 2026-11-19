@@ -1,10 +1,10 @@
 ---
 name: led-control
 description: The onboard LED is firmware-owned and permanently unlit; no tool can read or drive it. Report state from sys.diagnostics.
-version: 1.2.0
-keywords: [led, gpio, signal, diagnostics]
-tools: [sys.diagnostics, gpio.read]
-max_body_bytes: 2048
+metadata:
+  version: "1.2.0"
+  keywords: "led gpio signal diagnostics"
+allowed-tools: sys.diagnostics gpio.read
 ---
 
 # LED Control

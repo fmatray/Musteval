@@ -732,7 +732,7 @@ reads are never refused.
 
 ### 4.2 `reload`
 
-Re-reads `/config.json`, `/tasks.json`, `/prompts/*.md`, `/skills/*.md` and
+Re-reads `/config.json`, `/tasks.json`, `/prompts/*.md`, `/skills/*/SKILL.md` and
 `/tools/*.json` from flash without rebooting, and re-runs the service start-up that
 follows a boot when it can clear `boot_failures` — so `wifi.*` and `ntp.timezone` are
 re-applied, not merely re-read. `serial.*` still takes effect at the next boot and is
@@ -1013,20 +1013,26 @@ declarative tool definitions. It is **host-only**: no tool wraps it, so the mode
 cannot call it. Built-in content ships in the `userfs` image built at flash time;
 this command adds or replaces user-imported files next to it.
 
+A skill is a directory holding `SKILL.md` ([agentskills.io](https://agentskills.io/specification)),
+so the only legal skill path is `/skills/<name>/SKILL.md` and the importer creates
+that `<name>` directory itself. There is no `sandbox.mkdir` for `/skills/`: that
+command is confined to `/workspace/`, and a skill that needed one could never be
+imported at all.
+
 Files are written in chunks because the RX line cap is 4 KiB and a skill may be
 8 KiB. Each frame carries one chunk; the bridge splits, the device assembles.
 
 ```json
-{"v":1,"type":"command","id":"b-21","ts":1730572300,"name":"fs.put","args":{"path":"/skills/led-control.md","data":"LS0tCm5hbWU6IGxlZC1jb250cm9sCi0tLQo=","encoding":"base64","offset":0,"final":true}}
+{"v":1,"type":"command","id":"b-21","ts":1730572300,"name":"fs.put","args":{"path":"/skills/led-control/SKILL.md","data":"LS0tCm5hbWU6IGxlZC1jb250cm9sCmRlc2NyaXB0aW9uOiBkCi0tLQo=","encoding":"base64","offset":0,"final":true}}
 ```
 
 ```json
-{"v":1,"type":"command.result","id":"d-29","ts":1730572300,"reply_to":"b-21","name":"fs.put","ok":true,"result":{"path":"/skills/led-control.md","bytes":21,"created":true,"requires_reboot":false},"duration_ms":48}
+{"v":1,"type":"command.result","id":"d-29","ts":1730572300,"reply_to":"b-21","name":"fs.put","ok":true,"result":{"path":"/skills/led-control/SKILL.md","bytes":41,"created":true,"requires_reboot":false},"duration_ms":48}
 ```
 
 | Arg | Type | Required | Notes |
 |---|---|---|---|
-| `path` | string | yes | Absolute, under one of `/config.json`, `/tasks.json`, `/skills/`, `/prompts/`, `/tools/` |
+| `path` | string | yes | Absolute, under one of `/config.json`, `/tasks.json`, `/prompts/`, `/tools/*.json`, or `/skills/<name>/SKILL.md`. The importer creates the one directory above a skill file; nothing else is a legal skill path |
 | `data` | string | yes | One chunk. Raw bytes must not exceed 2048, so a base64 chunk encodes to at most 2732 and the whole line stays under the 4 KiB cap |
 | `encoding` | string | no | `base64` or `utf8`; default `utf8` |
 | `offset` | int | no | Byte offset this chunk starts at; default `0`. A chunk whose offset is not the current staged size is `E_PROTOCOL` |

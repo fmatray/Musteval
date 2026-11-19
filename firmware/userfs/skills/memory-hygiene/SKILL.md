@@ -1,10 +1,10 @@
 ---
 name: memory-hygiene
 description: Store durable facts in memory.* instead of files, within the key and size bounds.
-version: 1.0.0
-keywords: [memory, persist, kv, nvs, recall]
-tools: [memory.get, memory.set, memory.list, memory.delete]
-max_body_bytes: 4096
+metadata:
+  version: "1.0.0"
+  keywords: "memory persist kv nvs recall"
+allowed-tools: memory.get memory.set memory.list memory.delete
 ---
 
 # Durable memory

@@ -303,6 +303,21 @@ esp_err_t store_write_image_chunk(const char *agent_path, const uint8_t *data,
     char vfs[STORE_PATH_MAX];
     esp_err_t err = image_vfs(agent_path, vfs, sizeof vfs);
     if (err != ESP_OK) return err;
+
+    /* agentskills.io: an imported skill is `/skills/<name>/SKILL.md`, and the one
+     * directory above it is the skill's identity. `sandbox.mkdir` reaches only
+     * `/workspace/`, so the importer would otherwise need a tool it does not have.
+     * Creating it here, once, keeps the whole import inside the allowlisted path the
+     * caller already validated; an existing directory is the normal case. */
+    if (offset == 0) {
+        char *slash = strrchr(vfs, '/');
+        if (slash != NULL && slash != vfs) {
+            *slash = '\0';
+            (void)mkdir(vfs, 0777);
+            *slash = '/';
+        }
+    }
+
     return write_chunk_canonical(agent_path, vfs, data, len, offset, final,
                                  out_bytes, out_created);
 }

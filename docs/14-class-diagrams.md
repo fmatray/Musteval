@@ -855,7 +855,7 @@ classDiagram
   namespace skills {
     class skills_module["skills_module<br/>firmware/components/skills/include/skills.h:45"] {
       <<component>>
-      +skills_parse(stem, text, len, out, body_offset) esp_err_t
+      +skills_parse(dir_name, text, len, out, body_offset) esp_err_t
       +skills_index(skills, count, out, cap, budget, written, dropped) esp_err_t
       +skills_read_body(name, out, cap, len) esp_err_t
       +skills_name_ok(name) bool
@@ -866,9 +866,7 @@ classDiagram
       <<struct>>
       char name[SKILL_NAME_MAX];
       char description[SKILL_DESC_MAX];
-      char version[SKILL_VERSION_MAX];
-      size_t max_body_bytes;
-      bool has_max_body;
+      /* name and description only; the spec's optional fields are not parsed */
       bool valid;
     }
   }

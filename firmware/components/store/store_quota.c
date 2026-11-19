@@ -72,11 +72,31 @@ bool store_import_path_ok(const char *path)
     if (path == NULL) return false;
     if (strcmp(path, "/config.json") == 0 || strcmp(path, "/tasks.json") == 0) return true;
 
+    /* agentskills.io: a skill is `<name>/SKILL.md` inside `/skills/`, so the only
+     * legal skill path is one directory deep. Nothing else under `/skills/` is a
+     * skill, and a loose `.md` there would import and never load. The writer creates
+     * the `<name>` directory (`store_write_image_chunk`), since `sandbox.mkdir`
+     * reaches only `/workspace/`. */
+    static const char skill_leaf[] = "/SKILL.md";
+    if (strncmp(path, "/skills/", 8) == 0) {
+        size_t leaf = strlen(skill_leaf);
+        size_t len = strlen(path);
+        if (len <= 8 + leaf) return false;
+        if (strcmp(path + len - leaf, skill_leaf) != 0) return false;
+        /* One level only: `<name>` is the skill's identity, so a deeper path names a
+         * directory the loader never lists. */
+        if (memchr(path + 8, '/', len - 8 - leaf) != NULL) return false;
+        /* The name rule is the loader's (`skills_name_ok`), not this file's: `store`
+         * is L0 and `skills` is L1, so a second copy here would be two owners of
+         * one rule. A directory the loader refuses is imported and then dropped
+         * with a warning, which is what a bad frontmatter already does. */
+        return true;
+    }
+
     /* `04` §4.16's "disallowed extension": the directory fixes it, since each one
      * carries exactly one file type (`03-config.md` §Storage limits). A name
      * without the suffix would be listed as a template or tool and never parsed. */
     static const struct { const char *dir; const char *ext; } dirs[] = {
-        { "/skills/",  ".md"   },
         { "/prompts/", ".md"   },
         { "/tools/",   ".json" },
     };

@@ -115,10 +115,11 @@ Goal: implement the serialized agent run and the tool execution engine.
  - Control: `cancel` command interrupts current run → `E_CANCELLED`, including while
    the run is inside a provider request: the in-flight exchange is aborted, so the
    frame arrives without waiting out `llm.providers[].timeout_ms`.
- - Import: `fs.put` in 2 KiB chunks writes `/skills/<n>.md`, and after `reload` the
-   skill appears; the same upload to a path shipped in the image returns `E_CONFIG`
-   and the built-in is unchanged; an interrupted upload leaves the prior file
-   intact and `fs.read` never shows a partial file.
+ - Import: `fs.put` in 2 KiB chunks writes `/skills/<n>/SKILL.md` (the importer
+   makes the `<n>` directory), and after `reload` the skill appears; the same
+   upload to a path shipped in the image returns `E_CONFIG` and the built-in is
+   unchanged; an interrupted upload leaves the prior file intact and `fs.read`
+   never shows a partial file.
  - Import caps: an upload whose assembled size exceeds the per-directory cap, or
    would push the directory past 16 entries, returns `E_STORAGE` and does not commit.
  - Scan: `wifi.scan` returns the networks the radio hears, strongest first, with

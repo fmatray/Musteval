@@ -1,10 +1,10 @@
 ---
 name: i2c-bus
 description: Probe, read and write a 7-bit I2C device, including the register-pointer ritual.
-version: 1.0.0
-keywords: [i2c, sensor, bus, peripheral, register]
-tools: [i2c.scan, i2c.read, i2c.write]
-max_body_bytes: 4096
+metadata:
+  version: "1.0.0"
+  keywords: "i2c sensor bus peripheral register"
+allowed-tools: i2c.scan i2c.read i2c.write
 ---
 
 # Working with the I2C bus

@@ -1,10 +1,10 @@
 ---
 name: file-layout
 description: Which path is writable, the workspace quota, and how to page or stage a file.
-version: 1.0.0
-keywords: [filesystem, workspace, quota, staging, paths]
-tools: [fs.list, fs.read, fs.write, fs.delete]
-max_body_bytes: 4096
+metadata:
+  version: "1.0.0"
+  keywords: "filesystem workspace quota staging paths"
+allowed-tools: fs.list fs.read fs.write fs.delete
 ---
 
 # Where files live

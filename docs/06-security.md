@@ -178,7 +178,7 @@ job — none of them is sufficient alone:
 | `/config.json` | `E_TOOL`, maps to `/fs/config.json`, not writable by any tool |
 | `/fs/config.json` | `E_TOOL`; resolver rejects, and no layer below would stop it |
 | `workspace/notes.md` | `E_TOOL`, not absolute |
-| `/workspace/data/../../skills/x.md` | `E_TOOL` |
+| `/workspace/data/../../skills/x/SKILL.md` | `E_TOOL` |
 
 `fs.read` is not sandboxed -- reading is not a write -- but it can reach `/fs`, which
 is intentional: the agent may read its own skills, prompts and tools. One path is carved

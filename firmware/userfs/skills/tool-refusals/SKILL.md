@@ -1,10 +1,9 @@
 ---
 name: tool-refusals
 description: Read a refusal code and decide: fix the call, wait, or stop.
-version: 1.0.0
-keywords: [error, refusal, tool, terminal, gate]
-tools: []
-max_body_bytes: 4096
+metadata:
+  version: "1.0.0"
+  keywords: "error refusal tool terminal gate"
 ---
 
 # Reading a refusal
@@ -48,10 +47,10 @@ with `geo.enabled: false`, for example. No argument fixes it; the user edits
 **`E_INTERNAL`.** An unclassified firmware fault. Not yours to diagnose or retry
 inside this run; report it.
 
-**`E_TOOL` from `skill.read`.** The skill name does not resolve, or the body exceeds
-`max_body_bytes`. The refusal does not hint at the nearest name, deliberately, so do
-not guess a second spelling repeatedly — if the index does not list it, it is not
-there.
+**`E_TOOL` from `skill.read`.** The skill name does not resolve, or the body is
+larger than a tool result can carry. The refusal does not hint at the nearest name,
+deliberately, so do not guess a second spelling repeatedly — if the index does not
+list it, it is not there.
 
 ## Loops
 

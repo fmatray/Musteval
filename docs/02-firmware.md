@@ -20,7 +20,7 @@ the energy rules are in `docs/08-code-architecture.md`; this table is the summar
 | `sched` | L2 | Task trigger logic, `tasks.json` tracking, timers | `store`, `cfg`, `clock`, `link`* |
 | `tools` | L2 | Tool registry (built-in, declarative, remote) | `store`, `cfg`, `net`, `geo`, `mqtt`, `mcp`, `sched`* |
 | `llm` | L1 | HTTPS client, provider failover chain, prompt assembly | `net`, `cfg` |
-| `skills` | L1 | Prompt template loading from `/skills/*.md` | `store` |
+| `skills` | L1 | Skill loading from `/skills/<name>/SKILL.md` (agentskills.io layout) | `store` |
 | `mcp` | L1 | Remote MCP server communication (HTTP/JSON-RPC) | `net`, `cfg`, `store` |
 | `mqtt` | L1 | One client per configured broker, subscriptions, publish | `net`, `cfg` |
 | `geo` | L1 | WiFi scan positioning with provider fallback | `net`, `cfg` |
@@ -500,11 +500,15 @@ no per-call tool entry point. Dispatch to built-in, declarative or MCP tools is
 
 ### `skills`
 - `skills_build_index()`: Assembles the skill index at boot and on `reload` from
-  every `/skills/*.md` frontmatter. One line per skill of the form
+  every `/skills/<name>/SKILL.md` frontmatter. One line per skill of the form
   `- <name>: <description>` is appended to the system prompt before history. The
   index counts against `agent.max_input_bytes`; if the total prompt exceeds the cap,
   skills are dropped from the end of the index in name order until it fits, and the
   omission is logged. The body remains load-on-demand via `skill.read`.
+  A description is clipped to `SKILL_DESC_MAX - 1` (256) characters when it is
+  parsed, not refused: the whole index is 1024 bytes, so a longer line could never
+  be shown, and a 1025-byte field per skill cost 13 KiB of static RAM to hold text
+  no prompt can print (`03-config.md` §skills).
 
 ### `link` — Framing
 The only module that builds an envelope (`08-code-architecture.md` §3); every other

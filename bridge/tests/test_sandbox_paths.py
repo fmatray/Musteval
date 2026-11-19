@@ -81,15 +81,54 @@ def test_display_marks_a_directory_with_a_trailing_slash():
 @pytest.mark.parametrize(
     "path",
     [
-        "rel/skills/a.md",
+        "rel/skills/a/SKILL.md",
         "/skills/a\x00b.md",
         # `..` with no segment to pop climbs above `/` rather than above a
         # directory, so there is no canonical form to test against the allowlist.
-        "/../skills/a.md",
+        "/../skills/a/SKILL.md",
     ],
 )
 def test_an_import_path_that_cannot_canonicalise_is_refused(path):
     """`04` §4.16: an import path is canonicalised the way the device does it, so a
     relative path, an embedded NUL or a climb above the root has no form the
     allowlist could match. The device refuses these; the bridge must agree."""
+    assert userfs_import_ok(path) is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/config.json",
+        "/tasks.json",
+        "/skills/led-control/SKILL.md",
+        "/prompts/brief.md",
+        "/prompts/sub/brief.md",  # a nested template is still a template
+        "/tools/gpio.json",
+    ],
+)
+def test_an_import_path_the_device_accepts_is_accepted(path):
+    """`04` §4.16: the bridge refuses before sending, so a path it refuses is dead
+    for a file the device would have taken."""
+    assert userfs_import_ok(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspace/notes.md",  # the sandbox is not userfs
+        "/config.json.bak",
+        "/skills/led-control.md",  # a loose `.md` under `/skills/` is not a skill
+        "/skills/led-control/skill.md",  # the leaf is fixed and case-sensitive
+        "/skills/led-control/notes.md",
+        "/skills/led-control/SKILL.md.bak",
+        "/skills/a/b/SKILL.md",  # one level: the directory is the skill's identity
+        "/skills/SKILL.md",  # no name segment
+        "/skills/",  # no leaf at all
+        "/tools/gpio.md",
+        "/prompts/brief.json",
+    ],
+)
+def test_an_import_path_the_device_refuses_is_refused(path):
+    """agentskills.io: a skill is `<name>/SKILL.md` under `/skills/`, so anything
+    else there imports and never loads."""
     assert userfs_import_ok(path) is False

@@ -1,10 +1,10 @@
 ---
 name: mqtt-publishing
 description: Publish within a broker's topic allowlist; payloads leave unredacted.
-version: 1.0.0
-keywords: [mqtt, broker, publish, topic, telemetry]
-tools: [mqtt.list, mqtt.publish]
-max_body_bytes: 4096
+metadata:
+  version: "1.0.0"
+  keywords: "mqtt broker publish topic telemetry"
+allowed-tools: mqtt.list mqtt.publish
 ---
 
 # Publishing over MQTT

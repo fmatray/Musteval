@@ -1,10 +1,10 @@
 ---
 name: scheduler-authoring
 description: Author a persistent task with task.set: trigger, repeat and missed policy.
-version: 1.0.0
-keywords: [task, schedule, automation, trigger, repeat]
-tools: [task.list, task.set]
-max_body_bytes: 4096
+metadata:
+  version: "1.0.0"
+  keywords: "task schedule automation trigger repeat"
+allowed-tools: task.list task.set
 ---
 
 # Authoring scheduled tasks

@@ -202,41 +202,45 @@ def test_the_seed_system_prompt_only_recommends_mermaid_kinds_that_render():
 
 SKILLS_DIR = Path("firmware/userfs/skills")
 
-# `03-config.md` §skills frontmatter schema, and the parser in
-# `components/skills/skills_index.c`: a file that breaks any of these is dropped from
-# the index with a logged warning, so the agent never sees it and nothing fails.
-SKILL_FILES = sorted(SKILLS_DIR.glob("*.md"))
+# `03-config.md` §skills, the agentskills.io layout, and the parser in
+# `components/skills/skills_index.c`: a directory that breaks any of these is dropped
+# from the index with a logged warning, so the agent never sees it and nothing fails.
+# The name rule is the spec's, transcribed from agentskills.io/specification.
+SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+SKILL_FILES = sorted(SKILLS_DIR.glob("*/SKILL.md"))
 
 
 def test_the_image_ships_skills_to_check():
     assert SKILL_FILES, f"no skill found under {SKILLS_DIR}"
 
 
-@pytest.mark.parametrize("skill_file", SKILL_FILES, ids=lambda p: p.stem)
+def test_every_skill_is_a_directory_holding_SKILL_md():
+    """A loose `.md` under `/skills/` is not a skill, so it would ship and never load."""
+    assert sorted(SKILLS_DIR.glob("*.md")) == []
+    for path in SKILLS_DIR.iterdir():
+        assert path.is_dir(), f"{path.name} is not a skill directory"
+
+
+@pytest.mark.parametrize("skill_file", SKILL_FILES, ids=lambda p: p.parent.name)
 def test_every_shipped_skill_satisfies_the_frontmatter_schema(skill_file):
-    import re
     text = skill_file.read_text(encoding="utf-8")
     match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
-    assert match is not None, f"{skill_file.name} has no frontmatter block"
+    assert match is not None, f"{skill_file} has no frontmatter block"
     fm = match.group(1)
-    fields = dict(re.findall(r"^([a-z_]+): (.*)$", fm, re.M))
+    fields = dict(re.findall(r"^([a-z-]+): (.*)$", fm, re.M))
 
-    # Rule 11: the declared name must equal the stem, or the skill is dropped.
-    assert fields.get("name") == skill_file.stem
-    assert re.fullmatch(r"[a-z0-9_-]{1,32}", fields["name"])
+    # The spec's name rule: 1..64 chars, `[a-z0-9-]`, no leading/trailing or doubled
+    # hyphen, and it must equal the parent directory name.
+    name = fields.get("name", "")
+    assert name == skill_file.parent.name, f"{name!r} != {skill_file.parent.name!r}"
+    assert 1 <= len(name) <= 64
+    assert SKILL_NAME_RE.fullmatch(name), name
 
     desc = fields.get("description", "")
-    assert 1 <= len(desc) <= 200, f"description is {len(desc)} chars"
-
-    keywords = fields.get("keywords", "[]").strip("[]")
-    words = [w.strip() for w in keywords.split(",") if w.strip()]
-    assert len(words) <= 8
-    for word in words:
-        assert re.fullmatch(r"[a-z0-9_-]+", word), f"{word!r} is not a lowercase word"
+    assert 1 <= len(desc) <= 1024, f"description is {len(desc)} chars"
 
     body = text[match.end():].encode("utf-8")
-    assert body, f"{skill_file.name} has an empty body"
-    assert len(body) <= int(fields.get("max_body_bytes", 4096))
+    assert body, f"{skill_file} has an empty body"
     assert len(text.encode("utf-8")) <= 8 * 1024
 
 

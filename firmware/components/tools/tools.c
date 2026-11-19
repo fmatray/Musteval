@@ -456,7 +456,7 @@ static esp_err_t call_skill_read(const json_node_t *args, json_doc_t **out,
     size_t len = 0;
     esp_err_t err = skills_read_body(name, s_read_buf, TOOLS_RESULT_MAX, &len);
     if (err == ESP_ERR_INVALID_SIZE) {
-        set_why(why, why_cap, "skill.read: the body exceeds the skill's max_body_bytes");
+        set_why(why, why_cap, "skill.read: the body is larger than a tool result can carry");
         return err;
     }
     if (err != ESP_OK) {

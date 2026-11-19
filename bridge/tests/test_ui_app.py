@@ -1504,18 +1504,18 @@ async def test_fs_put_confirms_the_upload_in_words():
                                  reply_to=frame["id"]))]
         if frame.get("type") == "command" and frame.get("name") == "fs.put":
             return [_result(frame, "fs.put",
-                            {"path": "/skills/a.md", "bytes": 12,
+                            {"path": "/skills/a/SKILL.md", "bytes": 12,
                              "created": True, "requires_reboot": True})]
         return []
 
     async def body(app, pilot):
         # The renderer, not the `/fs put` modal: the staging path is covered in
         # `test_ui.py`, and this asserts what the reply looks like once it lands.
-        await app._request("fs.put", {"path": "/skills/a.md", "data": "",
+        await app._request("fs.put", {"path": "/skills/a/SKILL.md", "data": "",
                                       "offset": 0, "final": True})
         await _await_chat(pilot, app, "reboot to apply")
         text = _text(app)
-        assert "/skills/a.md: 12 bytes, created (reboot to apply)" in text
+        assert "/skills/a/SKILL.md: 12 bytes, created (reboot to apply)" in text
         assert "requires_reboot" not in text
 
     await _run(reply, body)

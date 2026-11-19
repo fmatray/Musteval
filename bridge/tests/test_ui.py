@@ -1216,7 +1216,7 @@ async def test_fs_put_asks_for_the_host_file_and_chunks_it(tmp_path):
     async with app.run_test() as pilot:
         await _connect(pilot, app)
         await pilot.pause(0.2)
-        app.submit("/fs put /skills/skill.md")
+        app.submit("/fs put /skills/skill/SKILL.md")
         await _fs_put_modal(pilot, app, str(source))
         for _ in range(120):
             puts = [f for f in _written(transport) if f.get("name") == "fs.put"]
@@ -1224,7 +1224,7 @@ async def test_fs_put_asks_for_the_host_file_and_chunks_it(tmp_path):
                 break
             await pilot.pause(0.02)
         puts = [f for f in _written(transport) if f.get("name") == "fs.put"]
-        assert [f["args"]["path"] for f in puts] == ["/skills/skill.md"] * 3
+        assert [f["args"]["path"] for f in puts] == ["/skills/skill/SKILL.md"] * 3
         assert [f["args"]["offset"] for f in puts] == [
             0, FS_PUT_CHUNK_BYTES, FS_PUT_CHUNK_BYTES * 2
         ]
@@ -1247,7 +1247,7 @@ async def test_fs_put_cancelled_at_the_prompt_sends_nothing():
         await _connect(pilot, app)
         await pilot.pause(0.2)
         before = len(transport.written)
-        app.submit("/fs put /skills/skill.md")
+        app.submit("/fs put /skills/skill/SKILL.md")
         for _ in range(120):
             if isinstance(app.screen, ValuePrompt):
                 break
@@ -1278,7 +1278,7 @@ async def test_fs_put_of_an_unreadable_path_names_it_and_sends_nothing(tmp_path)
         await _connect(pilot, app)
         await pilot.pause(0.2)
         before = len(transport.written)
-        app.submit("/fs put /skills/skill.md")
+        app.submit("/fs put /skills/skill/SKILL.md")
         await _fs_put_modal(pilot, app, str(missing))
         for _ in range(120):
             if str(missing) in "".join(chat_lines(app)):

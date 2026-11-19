@@ -29,7 +29,7 @@ def test_every_produced_name_is_a_frozen_command():
     texts = [
         "/sys status", "/sys reload", "/sys reboot", "/templates", "/template t1", "/geo",
         "/tasks", "/run t1", "/config get a.b", "/config set a.b c", "/mqtt",
-        "/mqtt publish s1 t p", "/fs put /skills/a.md",
+        "/mqtt publish s1 t p", "/fs put /skills/a/SKILL.md",
         "/sandbox", "/sandbox list /workspace/runs", "/sandbox read /workspace/a.txt",
         "/sandbox delete /workspace/a.txt",
     ]
@@ -381,7 +381,7 @@ def test_todo_view_refuses_a_target_it_would_drop():
 
 def test_fs_put_splits_under_the_rx_cap():
     data = b"x" * (FS_PUT_CHUNK_BYTES * 2 + 10)
-    frames = parse("/fs put /skills/a.md", CommandState(upload_bytes=data))
+    frames = parse("/fs put /skills/a/SKILL.md", CommandState(upload_bytes=data))
     assert len(frames) == 3
     assert [f.body["args"]["final"] for f in frames] == [False, False, True]
     assert [f.body["args"]["offset"] for f in frames] == [0, FS_PUT_CHUNK_BYTES, FS_PUT_CHUNK_BYTES * 2]
@@ -397,11 +397,11 @@ def test_fs_put_requires_an_absolute_path():
 
 def test_fs_put_without_a_loaded_file():
     with pytest.raises(CommandError, match="no file loaded"):
-        parse("/fs put /skills/a.md", CommandState())
+        parse("/fs put /skills/a/SKILL.md", CommandState())
 
 
 def test_fs_put_of_an_empty_file_still_sends_one_final_chunk():
-    (frame,) = parse("/fs put /skills/empty.md", CommandState(upload_bytes=b""))
+    (frame,) = parse("/fs put /skills/empty/SKILL.md", CommandState(upload_bytes=b""))
     assert frame.body["args"]["final"] is True
     assert frame.body["args"]["data"] == ""
 
@@ -613,7 +613,7 @@ def test_a_ping_target_never_falls_back_to_device():
     [
         "/config.json",
         "/tasks.json",
-        "/skills/brief.md",
+        "/skills/brief/SKILL.md",
         "/prompts/daily.md",
         "/tools/weather_now.json",
     ],
@@ -630,7 +630,11 @@ def test_fs_put_accepts_every_path_the_device_allowlists(path):
     "path",
     [
         "/workspace/a.txt",  # the sandbox is not userfs
-        "/skills/a.txt",  # the directory fixes the extension
+        "/skills/a.txt",  # the layout fixes the leaf: only SKILL.md loads
+        "/skills/loose.md",  # a loose .md under /skills/ is not a skill
+        "/skills/a/skill.md",  # the leaf name is fixed and case-sensitive
+        "/skills/a/notes.md",
+        "/skills/nested/a/SKILL.md",  # one level only: the directory is the skill
         "/tools/a.md",
         "/prompts/.md",  # a dotfile has no stem and would list as a template
         "/skills/",

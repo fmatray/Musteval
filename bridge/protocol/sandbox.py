@@ -61,7 +61,12 @@ def is_dir(path: str) -> bool:
 #: `04` §4.16: the directories `fs.put` may write into, and the one extension each
 #: carries. A name without its suffix would be listed as a template or a tool and
 #: never parsed, so the directory fixes the extension.
-IMPORT_DIRS = (("/skills/", ".md"), ("/prompts/", ".md"), ("/tools/", ".json"))
+IMPORT_DIRS = (("/prompts/", ".md"), ("/tools/", ".json"))
+
+#: agentskills.io: a skill is `<name>/SKILL.md`, so an import into `/skills/` names
+#: the leaf inside a directory `sandbox.mkdir` already made. A loose `.md` directly
+#: under `/skills/` imports but never loads, which is why it is not admitted.
+SKILL_LEAF = "/SKILL.md"
 
 #: `04` §4.16: the two whole documents an import may replace.
 IMPORT_FILES = ("/config.json", "/tasks.json")
@@ -92,6 +97,13 @@ def import_path_ok(path: str) -> bool:
     canonical = "/" + "/".join(parts)
     if canonical in IMPORT_FILES:
         return True
+    if canonical.startswith("/skills/"):
+        inside = canonical[len("/skills/"):]
+        leaf = SKILL_LEAF.lstrip("/")
+        if not inside.endswith("/" + leaf):
+            return False
+        name = inside[: -len(leaf) - 1]
+        return bool(name) and "/" not in name
     for prefix, suffix in IMPORT_DIRS:
         if not canonical.startswith(prefix):
             continue
