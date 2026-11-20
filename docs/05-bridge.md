@@ -1501,6 +1501,11 @@ provider cannot blank another's credential.
   `_fetch_models` call `/onboard` uses, because the list is the proof the key works. A
   provider that publishes none is named as such in chat and no secret is stored, so a
   mistyped key does not become a stored key that fails on the next prompt.
+- **A model step that answers no model writes nothing.** `03-config.md` makes
+  `llm.providers[].model` required, so a blank one is a row the schema refuses; chat
+  says a model is required and the gesture ends. The step hands back the same
+  `{model, thinking, skip_model}` mapping `/onboard` reads, never an object with
+  attributes.
 - **Nothing here reports a provider as down.** That verdict belongs to `status`
   (`render.llm_verdict`), and a modal that repeated it would be a second opinion about
   a fact one owner already decides.

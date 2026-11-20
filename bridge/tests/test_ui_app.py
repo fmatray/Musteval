@@ -2453,7 +2453,10 @@ async def test_the_add_provider_gesture_lands_one_entry_and_one_key():
             base_url="https://api.groq.com/openai/v1", api_key="sk-groq",
             model="", provider="groq",
         )
-        picked = type("Picked", (), {"model": "llama", "extra_body": {}})()
+        # `ModelStep.answer()` returns this dict; the stub used to invent an object
+        # with attributes, which is why the `.model` read survived review and only
+        # crashed against a real step.
+        picked = {"model": "llama", "thinking": "none", "skip_model": False}
 
         async def fetch(_answers):
             return ["llama"]
@@ -2487,6 +2490,49 @@ async def test_the_add_provider_gesture_lands_one_entry_and_one_key():
         assert [e["id"] for e in arrays[0]["args"]["value"]] == ["openai", "groq"]
         assert arrays[0]["args"]["value"][-1]["api_key_ref"] == "nvs:key_groq"
         assert "2 providers configured" in _text(app)
+
+    await _run(_device(), body)
+
+
+async def test_a_model_step_that_answers_no_model_writes_nothing():
+    """`03-config.md`: `llm.providers[].model` is required, so a blank model is a
+    document the device refuses on the next `config.set`. Saying so in chat ends the
+    gesture; sending it would store a key for a provider that can never run."""
+
+    async def body(app, pilot):
+        from bridge.ui.modals import ModelStep, ProviderStep
+        from bridge.ui.onboard import Answers
+
+        answers = Answers(
+            ssid="", password="",
+            base_url="https://api.groq.com/openai/v1", api_key="sk-groq",
+            model="", provider="groq",
+        )
+
+        async def fetch(_answers):
+            # A published list, so the blank answer reaches the model step's answer
+            # rather than being turned away by an empty catalog before it.
+            return ["llama"]
+
+        app._fetch_models = fetch  # type: ignore[method-assign]
+
+        async def drive(screen):
+            if isinstance(screen, ProviderStep):
+                return answers
+            if isinstance(screen, ModelStep):
+                return {"model": "", "thinking": "none", "skip_model": True}
+            return "add a provider"
+
+        app.push_screen_wait = drive  # type: ignore[method-assign]
+        before = len(app.session._transport.written)
+        await app._providers()
+        written = [json.loads(line) for line in app.session._transport.written[before:]]
+        assert not [f for f in written if f.get("type") == "secret.set"]
+        assert not [
+            f for f in written
+            if (f.get("args") or {}).get("path") == "llm.providers"
+        ]
+        assert "a model is required" in _text(app)
 
     await _run(_device(), body)
 
@@ -2896,7 +2942,9 @@ async def test_an_add_whose_array_write_is_refused_says_so_and_keeps_the_key():
     from bridge.ui.modals import ModelStep, ProviderStep
 
     async def body(app, pilot):
-        picked = type("Picked", (), {"model": "llama", "extra_body": {}})()
+        # Same dict `ModelStep.answer()` returns; the object stub here is what let
+        # the `.model` read pass review and crash on a real step.
+        picked = {"model": "llama", "thinking": "none", "skip_model": False}
 
         async def drive(screen):
             if isinstance(screen, ProviderStep):

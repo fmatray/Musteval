@@ -3354,8 +3354,17 @@ class BridgeApp(App):
             if picked is None:
                 self._chat().write("provider add cancelled")
                 return
-            answers.model = picked.model
-            answers.extra_body = dict(picked.extra_body)
+            # `ModelStep.answer()` is the same dict `/onboard` reads, not an object:
+            # reading `.model` off it raised `AttributeError` and killed the worker.
+            answers.model = str(picked.get("model") or "")
+            if not answers.model:
+                # `03-config.md` makes `model` required, so a blank one is a document
+                # the device refuses; say so here rather than send it.
+                self._chat().write("provider add: a model is required, nothing written")
+                return
+            answers.extra_body = self._extra_body(
+                answers.provider or "", str(picked.get("thinking") or "none")
+            )
             # One key per provider, so removing one row cannot blank another's
             # (`05` §7.8). The id is the unique member the schema already enforces.
             secret_key = provider_secret_key(answers.provider or "custom")
