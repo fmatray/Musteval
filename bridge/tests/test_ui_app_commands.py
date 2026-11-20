@@ -54,7 +54,12 @@ def _frames(app) -> list[dict]:
 
 def _mounted(screen, selector: str) -> bool:
     """True once a widget is in the DOM. `query_one` raises before the compose pass,
-    so a predicate that used it would fail the moment it is evaluated, not retry."""
+    so a predicate that used it would fail the moment it is evaluated, not retry.
+
+    A screen exists the moment it is pushed, but its children exist only after it
+    has been composed. Every wait for a modal that then reads a child must wait for
+    the child too: the screen-type wait alone is a race that loses only under a
+    loaded run, and it failed four of the `FilePrompt` tests in one full sweep."""
     try:
         screen.query_one(selector)
     except Exception:
@@ -871,6 +876,7 @@ async def test_sys_prompt_opens_the_persona_file_the_config_names():
     async def body(app, pilot):
         app.submit("/sys prompt")
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         assert seen == ["other.md"]
         assert app.screen.query_one("#file-body").text == "persona v1"
 
@@ -916,9 +922,6 @@ async def test_sys_prompt_writes_the_edit_back_and_says_the_next_run_uses_it():
 
     async def body(app, pilot):
         app.submit("/sys prompt")
-        # The screen exists the moment it is pushed; `#file-body` exists once it has
-        # been composed. Waiting on the screen alone is a race that only loses under
-        # a loaded run — it cost one coverage sweep, at 63 %.
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
         await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         app.screen.query_one("#file-body").text = "persona v2"
@@ -947,6 +950,7 @@ async def test_an_unchanged_prompt_writes_nothing():
     async def body(app, pilot):
         app.submit("/sys prompt")
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         app.screen.action_save()
         await _until(pilot, lambda: not isinstance(app.screen, FilePrompt))
         await _until(pilot, lambda: False, rounds=40)
@@ -962,6 +966,7 @@ async def test_an_empty_prompt_is_discarded_rather_than_written():
     async def body(app, pilot):
         app.submit("/sys prompt")
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         app.screen.query_one("#file-body").text = "   \n"
         app.screen.action_save()
         await _await_chat(pilot, app, "nothing written")
@@ -987,6 +992,7 @@ async def test_a_refused_prompt_write_stops_at_the_first_chunk():
     async def body(app, pilot):
         app.submit("/sys prompt")
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         # 3000 bytes is two chunks at `SANDBOX_CHUNK_BYTES`, so a loop that ignored
         # the refusal would send a second one.
         app.screen.query_one("#file-body").text = "x" * 3000
@@ -1007,6 +1013,7 @@ async def test_a_prompt_above_one_chunk_is_written_in_offsets():
     async def body(app, pilot):
         app.submit("/sys prompt")
         await _until(pilot, lambda: isinstance(app.screen, FilePrompt))
+        await _until(pilot, lambda: _mounted(app.screen, "#file-body"))
         # 3000 bytes is two chunks, the second shorter than the first.
         text = "y" * 3000
         app.screen.query_one("#file-body").text = text
