@@ -1423,6 +1423,12 @@ reasoning, one screen over. A scan the device marks `truncated` is a third answe
 succeeded, so its rows are offered, and the note says the list stopped early rather
 than letting a reader conclude the network they want is out of range.
 
+**Enter applies the form from the passphrase field as well as from the picker.** The
+hint line names the gesture, and one that only works from the field the reader is not
+typing in is a hint that lies. On the scanned form the key has two jobs: while the
+picker's overlay is open `Enter` chooses the network, and it applies the form only
+once the overlay is closed.
+
 **Add by hand** takes an ssid and a passphrase, for a hidden network. The ssid is
 stripped at both ends and the passphrase is not: a space is part of a passphrase, and
 nobody means one at either end of an ssid. A typed ssid already in the array is

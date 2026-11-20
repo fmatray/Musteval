@@ -1752,12 +1752,24 @@ class WifiScanForm(PromptBox[dict[str, Any] | None]):
     network that appeared while the reader was looking at it.
     """
 
+    # `priority` because the passphrase `Input` binds Enter to `Input.Submitted`,
+    # which nothing here handled, so Enter in that field did nothing at all. The
+    # picker keeps its own Enter while its overlay is open (`check_action`), which
+    # is the key that chooses the network.
     BINDINGS = [
-        Binding("enter", "submit", "Apply", show=False),
+        Binding("enter", "submit", "Apply", show=False, priority=True),
         Binding("ctrl+r", "refresh", "Refresh", show=False),
     ]
     CSS = _CSS
     AUTO_FOCUS = "#wifi-pick"
+
+    def check_action(self, action: str, parameters: Any) -> bool | None:
+        """Enter applies, except where the picker's open overlay is using it."""
+        if action == "submit":
+            picks = self.query("#wifi-pick")
+            if picks and picks.first(Select).expanded:
+                return False
+        return True
 
     def __init__(
         self, title: str, scan: list[dict[str, Any]] | None = None, note: str = ""
@@ -1817,7 +1829,9 @@ class WifiScanForm(PromptBox[dict[str, Any] | None]):
 class WifiCustomForm(PromptBox[dict[str, Any] | None]):
     """`05` §7.6: a network the scan cannot see, named and keyed by hand."""
 
-    BINDINGS = [Binding("enter", "submit", "Apply", show=False)]
+    # `priority` for the same reason as `WifiScanForm`: both fields are `Input`s, so
+    # their own Enter binding posted `Submitted` and Enter did nothing.
+    BINDINGS = [Binding("enter", "submit", "Apply", show=False, priority=True)]
     CSS = _CSS
     AUTO_FOCUS = "#wifi-ssid"
 

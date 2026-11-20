@@ -797,7 +797,9 @@ async def test_the_scan_form_answers_a_refresh_request_rather_than_a_network():
     form = WifiScanForm("Add a network", scan=[{"ssid": "Cafe"}])
     async with _host(form).run_test(size=(80, 24)) as pilot:
         await pilot.pause(0.05)
-        pilot.app.screen.action_refresh()
+        # Pressed, not called: the binding is what puts `refresh` through
+        # `check_action`, which must let it past while `submit` is guarded.
+        await pilot.press("ctrl+r")
         await pilot.pause(0.05)
         assert pilot.app.dismissed["value"] == {"refresh": True}
 
@@ -851,3 +853,62 @@ async def test_a_rekey_form_names_the_ssid_and_does_not_ask_for_it():
         await pilot.pause(0.05)
         assert pilot.app.dismissed["value"] == {"ssid": "home", "password": "newpass"}
 
+
+async def test_enter_applies_the_scan_form_from_the_passphrase_field():
+    """`05` §7.6: the form's own hint says `Enter: apply`. The passphrase field is an
+    `Input`, whose Enter binding posts `Input.Submitted` — with no handler, the key
+    did nothing from there, so the hint named a gesture that only worked after
+    tabbing back to the picker."""
+    from bridge.ui.modals import WifiScanForm
+
+    form = WifiScanForm("Add a network", scan=[{"ssid": "Cafe"}])
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        await pilot.press("tab")
+        assert pilot.app.focused.id == "wifi-password"
+        await pilot.press("h", "u", "n", "t", "e", "r", "2")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert pilot.app.dismissed["value"] == {"ssid": "Cafe", "password": "hunter2"}
+
+
+async def test_enter_still_picks_a_network_while_the_picker_overlay_is_open():
+    """The same key has two jobs on one form. With the overlay open it chooses the
+    network — dismissing the form there would add whatever was highlighted before
+    the reader opened the list."""
+    from bridge.ui.modals import WifiScanForm
+
+    form = WifiScanForm("Add a network", scan=[{"ssid": "Cafe"}, {"ssid": "home"}])
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        # Queried by id: `09` §4 forbids a test importing `textual`, and `.expanded`
+        # and `.value` are the only members this asserts on.
+        pick = pilot.app.screen.query_one("#wifi-pick")
+        await pilot.press("down")
+        await pilot.pause(0.05)
+        assert pick.expanded
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert pick.value == "home"
+        assert "value" not in pilot.app.dismissed
+        # Closed again, Enter is the form's.
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert pilot.app.dismissed["value"]["ssid"] == "home"
+
+
+async def test_enter_applies_the_custom_form_from_the_passphrase_field():
+    """Both fields on the hand-typed form are `Input`s, so both lost Enter the same
+    way. The hint names Enter; it has to apply from where the reader is typing."""
+    from bridge.ui.modals import WifiCustomForm
+
+    form = WifiCustomForm("Add a network")
+    async with _host(form).run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.05)
+        await pilot.press("c", "a", "f", "e", "tab")
+        assert pilot.app.focused.id == "wifi-password"
+        await pilot.press("p", "w")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert pilot.app.dismissed["value"] == {"ssid": "cafe", "password": "pw"}
