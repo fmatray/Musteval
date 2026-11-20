@@ -470,21 +470,36 @@ def render_status(status: dict[str, Any]) -> list[str]:
             return f"[dim]{bad}[/dim]"
         return f"[green]{good}[/green]" if value else f"[red]{bad}[/red]"
 
+    def shown(value: Any, word: str = "—") -> str:
+        """`04` §3.9 types these nullable, so an absent one is drawn as absent.
+
+        A device with no provider, no model and no network is a legal document, and
+        `str(None)` printed `None` on four rows of a grid whose whole job is to say
+        what is missing (`17` §2)."""
+        if value is None or value == "":
+            return word
+        return escape(str(value))
+
+    rssi = wifi.get("rssi")
+    rssi_cell = f"{rssi}dBm" if isinstance(rssi, (int, float)) else "—"
     return [
-        f"[b]WIFI [/b] {escape(str(wifi.get('state')))} ({escape(str(wifi.get('ssid')))}) "
-        f"| rssi {wifi.get('rssi')}dBm | ip {escape(str(wifi.get('ip')))}",
-        f"[b]TIME [/b] unix {clock.get('unix')} | tz {escape(str(clock.get('tz')))} "
+        f"[b]WIFI [/b] {shown(wifi.get('state'), 'off')} "
+        f"({shown(wifi.get('ssid'), 'no network')}) "
+        f"| rssi {rssi_cell} | ip {shown(wifi.get('ip'))}",
+        f"[b]TIME [/b] unix {shown(clock.get('unix'))} | tz {shown(clock.get('tz'))} "
         f"| synced {verdict(clock.get('synced'), 'yes', 'no')}",
-        f"[b]LLM  [/b] {escape(str(llm.get('provider')))} ({escape(str(llm.get('model')))}) "
+        f"[b]LLM  [/b] {shown(llm.get('provider'), 'no provider')} "
+        f"({shown(llm.get('model'), 'no model')}) "
         f"| available {verdict(llm_verdict(llm), 'yes', 'no')}",
-        f"[b]AGENT[/b] {busy} | queue {agent.get('queue_depth')}/{agent.get('max_queue')}",
-        f"[b]MEM  [/b] heap {mem.get('heap_free')} | psram {mem.get('psram_free')}",
-        f"[b]DISK [/b] userfs {userfs.get('used_bytes')}/{userfs.get('total_bytes')} "
-        f"| wsfs {wsfs.get('used_bytes')}/{wsfs.get('total_bytes')} "
-        f"(quota {storage.get('workspace_quota_bytes')})",
+        f"[b]AGENT[/b] {busy} | queue {shown(agent.get('queue_depth'))}"
+        f"/{shown(agent.get('max_queue'))}",
+        f"[b]MEM  [/b] heap {shown(mem.get('heap_free'))} | psram {shown(mem.get('psram_free'))}",
+        f"[b]DISK [/b] userfs {shown(userfs.get('used_bytes'))}/{shown(userfs.get('total_bytes'))} "
+        f"| wsfs {shown(wsfs.get('used_bytes'))}/{shown(wsfs.get('total_bytes'))} "
+        f"(quota {shown(storage.get('workspace_quota_bytes'))})",
         f"[b]MQTT [/b] {brokers}",
         f"[b]GEO  [/b] {geo_line}",
-        f"[b]BOOT [/b] {escape(str(status.get('boot_id')))} | uptime {status.get('uptime_s')}s",
+        f"[b]BOOT [/b] {shown(status.get('boot_id'))} | uptime {shown(status.get('uptime_s'))}s",
     ]
 
 

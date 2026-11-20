@@ -311,6 +311,12 @@ one fresh `status` frame.
 +-----------------------------------------------------------------------+
 ```
 
+`04` §3.9 types `wifi.ssid`, `wifi.rssi`, `wifi.ip`, `llm.provider` and `llm.model` as
+nullable, and a device with no provider, no model and no network is a legal document.
+Those cells name the absence — `no provider`, `no model`, `no network`, `off`, `—`
+for the rssi — rather than printing `None`, which is a Python word on a screen that
+exists to say what is missing.
+
 ### 5.3 Tasks Screen (`/tasks`, F4)
 Lists scheduled and triggered tasks.
 

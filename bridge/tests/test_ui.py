@@ -1304,3 +1304,31 @@ def test_the_list_helpers_tolerate_a_non_dict_row():
     lines = wifi_known_lines({}, {"networks": ["junk", {"ssid": "Cafe", "rssi": -70}]},
                              [{"ssid": "Cafe", "priority": 1}])
     assert "in range" in lines[0] and "-70 dBm" in lines[0]
+
+
+def test_the_status_grid_draws_absent_facts_as_absent():
+    """`04` §3.9 types the provider, the model, the ssid and the rssi as nullable, and
+    a device with no provider, no model and no network is a legal document. The grid
+    printed `None` on every one of those cells — the row whose job is to say what is
+    missing said the word `None` instead."""
+    # Written as the device emits it: keys present, values JSON null.
+    bare = {
+        "wifi": {"state": "off", "ssid": None, "rssi": None, "ip": None},
+        "time": {"synced": False, "unix": 0, "tz": "UTC0"},
+        "llm": {"provider": None, "model": None, "available": False,
+                "last_error": None},
+        "agent": {"busy": False, "run_id": None, "queue_depth": 0, "max_queue": 2},
+        "mem": {"heap_free": 100, "psram_free": 0},
+        "storage": {"userfs": {"used_bytes": 0, "total_bytes": 10},
+                    "wsfs": {"used_bytes": 0, "total_bytes": 10},
+                    "workspace_quota_bytes": 10},
+        "mqtt": [], "geo": None, "boot_id": "b1", "uptime_s": 1,
+    }
+    lines = render_status(bare)
+    assert "None" not in "\n".join(lines)
+    llm_row = next(line for line in lines if "LLM" in line)
+    assert "no provider" in llm_row and "no model" in llm_row
+    wifi_row = next(line for line in lines if "WIFI" in line)
+    assert "no network" in wifi_row and "rssi —" in wifi_row
+    # An empty document is the extreme of the same case and must not raise.
+    assert "None" not in "\n".join(render_status({}))
